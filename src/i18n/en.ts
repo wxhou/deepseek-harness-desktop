@@ -23,7 +23,7 @@ export const en: Translations = {
     extracting: "Extracting resource package...",
     starting: "Starting DeepSeek Harness service...",
     ready: "Service is ready",
-    error: "Startup failed: {{error}}",
+    error: "Startup failed",
     loading: "Loading interface...",
   },
   errors: {

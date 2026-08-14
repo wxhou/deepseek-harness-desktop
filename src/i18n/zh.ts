@@ -23,7 +23,7 @@ export const zh: Translations = {
     extracting: "正在解压资源包...",
     starting: "正在启动 DeepSeek Harness 服务...",
     ready: "服务已就绪",
-    error: "启动失败：{{error}}",
+    error: "启动失败",
     loading: "正在加载界面...",
   },
   errors: {

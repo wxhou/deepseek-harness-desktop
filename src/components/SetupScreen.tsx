@@ -41,7 +41,7 @@ export default function SetupScreen({
   const { t } = useI18n();
   const loading = status === "starting";
   const error = status === "error";
-  const heading = error ? t("status.error", { error: errorMsg || t("errors.unknown") }) : title;
+  const heading = error ? t("status.error") : title;
   const description = error ? "" : detail || t("status.installing");
   const visibleLogs = logs.length ? logs : [t("ui.waiting_logs")];
 
@@ -58,8 +58,8 @@ export default function SetupScreen({
           </div>
         </div>
 
-        <h2 className="mt-[18px] mb-1.5 text-xl font-semibold text-ink">{heading}</h2>
-        <p className="mb-6 min-h-[18px] text-[13px] break-all text-muted">{description}</p>
+        <h2 className="mt-[18px] mb-1.5 text-xl font-semibold text-ink truncate">{heading}</h2>
+        <p className="mb-6 min-h-[18px] text-[13px] break-all text-muted">{errorMsg || description}</p>
 
         <div className="mb-5 flex items-center gap-3">
           <div className="h-2 flex-1 overflow-hidden rounded-full bg-panel2" role="progressbar" aria-valuenow={Math.round(percentage)}>
