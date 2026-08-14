@@ -28,7 +28,7 @@ const btnPrimary =
 
 export default function App() {
   const { t } = useI18n();
-  const [status, setStatus] = useState<SetupStatus>("installing");
+  const [status, setStatus] = useState<SetupStatus>("checking");
   const [installer, setInstaller] = useState<InstallerState>(initialInstaller);
   const [errorMsg, setErrorMsg] = useState("");
   const [serviceUrl, setServiceUrl] = useState("http://127.0.0.1:3080");
@@ -119,13 +119,19 @@ export default function App() {
       const runtimeInfo = await invoke<{ service_url: string }>("get_runtime_info");
       setServiceUrl(runtimeInfo.service_url);
 
+      // 已安装过则跳过安装界面，避免每次启动都闪现“正在安装依赖...”
+      const config = await invoke<{ installed: boolean }>("get_app_config");
+
       // 1. Install dependencies (Node runtime + harness package).
-      setStatus("installing");
-      setInstaller({ ...initialInstaller, title: t("status.installing") });
+      if (!config.installed) {
+        setStatus("installing");
+        setInstaller({ ...initialInstaller, title: t("status.installing") });
+      }
       await invoke("install_dependencies");
 
       // 2. Launch + health check.
       setStatus("starting");
+      setInstaller((prev) => ({ ...prev, title: t("status.starting") }));
       await invoke("launch_harness");
       setServiceRunning(true);
 

@@ -1,6 +1,6 @@
 import { useI18n } from "../i18n/context";
 
-export type SetupStatus = "installing" | "starting" | "ready" | "error";
+export type SetupStatus = "checking" | "installing" | "starting" | "ready" | "error";
 
 export interface InstallProgress {
   title: string;
@@ -39,10 +39,16 @@ export default function SetupScreen({
   onRetry,
 }: SetupScreenProps) {
   const { t } = useI18n();
-  const loading = status === "starting";
+  const loading = status === "checking" || status === "starting";
   const error = status === "error";
-  const heading = error ? t("status.error") : title;
-  const description = error ? "" : detail || t("status.installing");
+  const defaultText =
+    status === "checking"
+      ? t("status.checking")
+      : status === "starting"
+        ? t("status.starting")
+        : t("status.installing");
+  const heading = error ? t("status.error") : title || defaultText;
+  const description = error ? "" : detail || defaultText;
   const visibleLogs = logs.length ? logs : [t("ui.waiting_logs")];
 
   return (
