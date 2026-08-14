@@ -31,13 +31,10 @@
 
 ## 功能
 
-- **一键安装** — 无需 Node.js / pnpm / Docker。内置 Harness 内核与 Node 运行时，本机有兼容 Node 则直接复用；首次启动全自动装配。
-- **自愈更新** — 每次启动自动同步 [deepseek-harness-pkg](https://github.com/hairyf/deepseek-harness-pkg) 最新版本，内核更新无需手动重装（发现新版时静默弹出「立即更新 / 稍后」提示）。
-- **纯本地运行** — `dsh web` 服务运行在 `http://127.0.0.1:3080`，profile、会话与设置全部留在本机。
-- **隐私默认** — 隔离 `$DSH_HOME`，默认关闭遥测（`DSH_TELEMETRY_DISABLED=1`）。
-- **Tauri 2 轻量外壳** — 比 Electron 安装包更小、内存占用更低；无边框原生窗口 + 自定义窗口控制，跟随亮 / 暗主题。
-- **内嵌 Web 界面** — 完整 Harness 界面运行在窗口内，侧边栏提供服务状态、端口、日志、自启动、重启 / 停止、浏览器打开、复制地址、数据目录与语言切换。
-- **跨平台双语** — Windows（NSIS/MSI）、macOS（DMG）、Linux（AppImage）；界面中英双语。
+- **一键安装** — 无需 Node.js / pnpm / Docker，内置 Harness 内核与 Node 运行时，首次启动全自动装配。
+- **自愈更新** — 每次启动自动同步最新版本，发现新版时静默弹出「立即更新 / 稍后」提示。
+- **轻量跨平台** — Tauri 2 外壳，安装包更小、内存占用更低；Windows / macOS / Linux 原生窗口，界面中英双语。
+- **内嵌 Web 界面** — Harness 界面运行在窗口内，侧边栏提供服务状态、端口、日志、自启动、浏览器打开、数据目录与语言等控制。
 
 > **为什么用 Tauri 而不是 Electron？** 相同功能下它更轻：更小的安装包、更低的内存占用、更跟手的原生窗口控制——对可能要常驻后台的本地 agent 尤为重要；内嵌的是系统 WebView2/WebKit 而非自带 Chromium，进一步缩小安装体积。
 

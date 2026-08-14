@@ -31,13 +31,10 @@
 
 ## Features
 
-- **One-click install** — No Node.js / pnpm / Docker needed. The app bundles the Harness kernel and a Node runtime, reusing a compatible local Node when present; first-launch setup is fully automatic.
-- **Self-healing updates** — Syncs to the latest release from [deepseek-harness-pkg](https://github.com/hairyf/deepseek-harness-pkg) on every launch, so upstream fixes arrive without manual reinstalls (a silent "Update Now / Later" prompt appears when a newer release is found).
-- **Runs 100% locally** — `dsh web` serves at `http://127.0.0.1:3080`; profiles, sessions and settings stay on your machine.
-- **Privacy by default** — Isolated `$DSH_HOME`, telemetry disabled out of the box (`DSH_TELEMETRY_DISABLED=1`).
-- **Lightweight Tauri 2 shell** — Smaller installers and lower idle RAM than Electron, with a frameless, theme-aware native window and custom window controls.
-- **Embedded web UI** — The full Harness interface runs inside the window, with a sidebar for version, service status, port, logs, auto-start, restart / stop, open in browser, copy URL, data folder and language.
-- **Cross-platform & bilingual** — Windows (NSIS/MSI), macOS (DMG) and Linux (AppImage); UI in Chinese and English.
+- **One-click install** — No Node.js / pnpm / Docker needed; bundles the Harness kernel and a Node runtime with fully automatic first-run setup.
+- **Self-healing updates** — Syncs to the latest release on every launch, with a silent "Update Now / Later" prompt when a newer version is found.
+- **Lightweight & cross-platform** — A Tauri 2 shell with smaller installers and lower RAM; native windows on Windows / macOS / Linux with a bilingual UI.
+- **Embedded web UI** — The full Harness interface runs in-window, with a sidebar for service status, port, logs, auto-start, open in browser, data folder and language.
 
 > **Why Tauri and not Electron?** The same features run lighter: a smaller installer and lower idle RAM, with native window controls that stay snappy — important for a local agent host you may keep open all day. The embedded WebView2/WebKit (not a bundled Chromium) also shrinks the install footprint.
 
