@@ -76,7 +76,7 @@ export default function WindowControls({ sidebarOpen, onToggleSidebar }: WindowC
       <div data-tauri-drag-region className="fixed w-[410px] top-0 z-40 h-6" />
       <div data-tauri-drag-region className="fixed inset-x-0 left-[410px] top-0 z-40 h-12" />
       <div className="fixed top-2 right-2 z-50">
-      <div className="flex items-center gap-0.5 rounded-lg border border-line bg-panel/80 p-1 backdrop-blur-md">
+      <div className="flex items-center gap-0.5 rounded-lg bg-panel/80 p-1 backdrop-blur-md">
         <button
           className={btn}
           onClick={onToggleSidebar}
