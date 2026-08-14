@@ -91,6 +91,7 @@ fn tray<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<()> {
 fn handler() -> impl Fn(Invoke<Wry>) -> bool + Send + Sync + 'static {
     tauri::generate_handler![
         bridge::cmd::install_dependencies,
+        bridge::cmd::check_dsh_update,
         bridge::cmd::launch_harness,
         bridge::cmd::shutdown_harness,
         bridge::cmd::restart_harness,
@@ -106,6 +107,7 @@ fn handler() -> impl Fn(Invoke<Wry>) -> bool + Send + Sync + 'static {
         bridge::cmd::clear_service_logs,
         bridge::cmd::set_language,
         bridge::cmd::toggle_sidebar,
+        bridge::cmd::get_dsh_theme,
     ]
 }
 

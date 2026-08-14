@@ -57,6 +57,26 @@ pub async fn install_dependencies(app_handle: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// 静默检查是否有新版 Harness 可用（只查不装，供进入页面后后台调用）
+#[tauri::command]
+pub async fn check_dsh_update(
+    app_handle: AppHandle,
+) -> Result<Option<download::LatestDshPkg>, String> {
+    // 本地没有安装时无需提示更新
+    let dsh_files_ok = download::Dsh.check_installed(&app_handle);
+    if !dsh_files_ok {
+        return Ok(None);
+    }
+
+    let latest = download::fetch_latest_dsh_pkg_info().await?;
+    let current = config::get_dsh_pkg_commit(&app_handle);
+    if current.as_deref() == Some(latest.commit.as_str()) {
+        Ok(None)
+    } else {
+        Ok(Some(latest))
+    }
+}
+
 /// 启动 Harness 服务
 #[tauri::command]
 pub async fn launch_harness(app_handle: AppHandle) -> Result<(), String> {
@@ -212,4 +232,10 @@ pub fn set_language(app_handle: AppHandle, lang: String) {
 #[tauri::command]
 pub async fn toggle_sidebar() -> Result<bool, String> {
     Ok(true)
+}
+
+/// 当前 dsh 主题偏好（light/dark/system），用于让桌面外壳跟随内嵌页面主题
+#[tauri::command]
+pub fn get_dsh_theme(app_handle: AppHandle) -> config::DshTheme {
+    config::get_dsh_theme(&app_handle)
 }

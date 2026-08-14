@@ -39,16 +39,10 @@ export default function SetupScreen({
   onRetry,
 }: SetupScreenProps) {
   const { t } = useI18n();
-  const loading = status === "checking" || status === "starting";
   const error = status === "error";
-  const defaultText =
-    status === "checking"
-      ? t("status.checking")
-      : status === "starting"
-        ? t("status.starting")
-        : t("status.installing");
-  const heading = error ? t("status.error") : title || defaultText;
-  const description = error ? "" : detail || defaultText;
+  const installing = status === "installing";
+  const heading = error ? t("status.error") : title || t("status.installing");
+  const description = error ? "" : detail || t("status.installing");
   const visibleLogs = logs.length ? logs : [t("ui.waiting_logs")];
 
   return (
@@ -67,23 +61,27 @@ export default function SetupScreen({
         <h2 className="mt-[18px] mb-1.5 text-xl font-semibold text-ink truncate">{heading}</h2>
         <p className="mb-6 min-h-[18px] text-[13px] break-all text-muted">{errorMsg || description}</p>
 
-        <div className="mb-5 flex items-center gap-3">
-          <div className="h-2 flex-1 overflow-hidden rounded-full bg-panel2" role="progressbar" aria-valuenow={Math.round(percentage)}>
-            <div className="h-full bg-gradient-to-r from-accent to-accent2 transition-[width] duration-150" style={{ width: `${Math.min(percentage, 100)}%` }} />
-          </div>
-          <span className="min-w-[44px] text-right text-[13px] font-semibold tabular-nums text-accent2">{Math.round(percentage)}%</span>
-        </div>
+        {installing && (
+          <>
+            <div className="mb-5 flex items-center gap-3">
+              <div className="h-2 flex-1 overflow-hidden rounded-full bg-panel2" role="progressbar" aria-valuenow={Math.round(percentage)}>
+                <div className="h-full bg-gradient-to-r from-accent to-accent2 transition-[width] duration-150" style={{ width: `${Math.min(percentage, 100)}%` }} />
+              </div>
+              <span className="min-w-[44px] text-right text-[13px] font-semibold tabular-nums text-accent2">{Math.round(percentage)}%</span>
+            </div>
 
-        <div className="mb-5 min-h-[112px] max-h-[184px] overflow-y-auto rounded-lg border border-line bg-[#0a0a0c] px-3.5 py-2.5 text-left font-mono text-xs leading-[1.7]" aria-label={t("ui.install_log")}>
-          {visibleLogs.slice(-LOG_LIMIT).map((line, index) => (
-            <p key={`${line}-${index}`} className="m-0 flex gap-2 overflow-hidden text-ellipsis whitespace-nowrap text-[#b8b8c0]">
-              <span className="shrink-0 text-accent select-none">›</span>
-              <span className="min-w-0 overflow-hidden text-ellipsis">{line}</span>
-            </p>
-          ))}
-        </div>
+            <div className="mb-5 min-h-[112px] max-h-[184px] overflow-y-auto rounded-lg border border-line bg-log-bg px-3.5 py-2.5 text-left font-mono text-xs leading-[1.7]" aria-label={t("ui.install_log")}>
+              {visibleLogs.slice(-LOG_LIMIT).map((line, index) => (
+                <p key={`${line}-${index}`} className="m-0 flex gap-2 overflow-hidden text-ellipsis whitespace-nowrap text-log-ink">
+                  <span className="shrink-0 text-accent select-none">›</span>
+                  <span className="min-w-0 overflow-hidden text-ellipsis">{line}</span>
+                </p>
+              ))}
+            </div>
+          </>
+        )}
 
-        {loading && (
+        {!error && (
           <div className="inline-flex items-center gap-2.5">
             <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-line border-t-accent" />
             <span className="text-[11px] font-semibold tracking-[0.18em] text-muted">PROCESSING...</span>

@@ -18,6 +18,7 @@ export const zh: Translations = {
   status: {
     checking: "正在检查系统环境...",
     installing: "正在安装依赖...",
+    updating: "正在更新 DeepSeek Harness...",
     preparing_engine: "正在准备 Node.js 运行时... {{progress}}%",
     downloading_harness: "正在下载 DeepSeek Harness... {{progress}}%",
     extracting: "正在解压资源包...",
@@ -25,6 +26,11 @@ export const zh: Translations = {
     ready: "服务已就绪",
     error: "启动失败",
     loading: "正在加载界面...",
+  },
+  update: {
+    available: "发现新版本 {{tag}}，是否立即更新？",
+    now: "立即更新",
+    later: "稍后",
   },
   errors: {
     service_start_timeout: "DeepSeek Harness 启动超时，请检查端口 {{port}} 是否被占用或启动过慢。",
@@ -54,6 +60,11 @@ export const zh: Translations = {
     running: "运行中",
     stopped: "已停止",
     settings: "设置",
+    minimize: "最小化",
+    maximize: "最大化",
+    restore: "还原",
+    close: "关闭",
+    drag_window: "拖动窗口，双击最大化",
     waiting_logs: "等待安装日志...",
     install_log: "安装日志",
   },

@@ -4,16 +4,22 @@ export default {
   theme: {
     extend: {
       colors: {
-        canvas: "#0d0d0f",
-        panel: "#151518",
-        panel2: "#1c1c21",
-        line: "#2a2a31",
-        ink: "#e8e8ea",
-        muted: "#9a9aa3",
-        accent: "#4d6bfe",
-        accent2: "#6e8bff",
-        danger: "#e5484d",
-        ok: "#46a758",
+        // 主题色通过 CSS 变量定义（见 src/style/main.css），
+        // 由 <html data-theme="light"> 在浅色/深色之间切换
+        canvas: "var(--color-canvas)",
+        panel: "var(--color-panel)",
+        panel2: "var(--color-panel-2)",
+        "panel-hover": "var(--color-panel-hover)",
+        line: "var(--color-line)",
+        "line-strong": "var(--color-line-strong)",
+        ink: "var(--color-ink)",
+        muted: "var(--color-muted)",
+        accent: "var(--color-accent)",
+        accent2: "var(--color-accent-2)",
+        danger: "var(--color-danger)",
+        ok: "var(--color-ok)",
+        "log-bg": "var(--color-log-bg)",
+        "log-ink": "var(--color-log-ink)",
       },
       fontFamily: {
         sans: [

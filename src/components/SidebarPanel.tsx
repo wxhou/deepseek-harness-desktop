@@ -37,7 +37,7 @@ export default function SidebarPanel({
 }: SidebarPanelProps) {
   const { t, language, setLanguage } = useI18n();
   const btnBase =
-    "inline-flex cursor-pointer items-center justify-center rounded-md border border-line bg-panel2 px-2 py-1 text-xs text-ink transition-colors hover:border-[#3a3a44] hover:bg-[#26262d] disabled:cursor-not-allowed disabled:opacity-55";
+    "inline-flex cursor-pointer items-center justify-center rounded-md border border-line bg-panel2 px-2 py-1 text-xs text-ink transition-colors hover:border-line-strong hover:bg-panel-hover disabled:cursor-not-allowed disabled:opacity-55";
   const btnPrimary = `${btnBase} border-accent bg-accent text-white hover:border-accent2 hover:bg-accent2`;
   const btnDanger = `${btnBase} border-[rgba(229,72,77,0.4)] text-danger`;
   const btnBlock = " mt-1.5 w-full";
@@ -135,7 +135,7 @@ export default function SidebarPanel({
 
   return (
     <aside
-      className={`fixed inset-y-0 right-0 z-30 flex w-[300px] flex-col overflow-y-auto border-l border-line bg-panel shadow-2xl transition-transform duration-200 ease-out ${
+      className={`fixed top-14.5 right-0 bottom-0 z-30 flex w-[300px] flex-col overflow-y-auto border-l border-t rounded-md border-line bg-panel shadow-2xl transition-transform duration-200 ease-out ${
         open ? "translate-x-0" : "translate-x-full"
       }`}
     >
@@ -248,7 +248,7 @@ export default function SidebarPanel({
               ↻
             </button>
           </h3>
-          <pre className="m-0 max-h-[200px] overflow-auto whitespace-pre-wrap break-all rounded-md border border-line bg-[#0a0a0c] px-2 py-2 text-[11px] leading-[1.45] text-[#b8b8c0]">{logs || t("ui.no_logs")}</pre>
+          <pre className="m-0 max-h-[200px] overflow-auto whitespace-pre-wrap break-all rounded-md border border-line bg-log-bg px-2 py-2 text-[11px] leading-[1.45] text-log-ink">{logs || t("ui.no_logs")}</pre>
           <button className={btnBase} onClick={clearLogs}>
             {t("buttons.clear_logs")}
           </button>

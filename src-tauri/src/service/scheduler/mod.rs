@@ -17,6 +17,7 @@ async fn scheduler_permanent_loop(app_handle: AppHandle) {
         crate::task::tick_check_dsh_process::trigger(app_handle.clone())
             .await
             .unwrap();
+        crate::config::check_and_emit_theme(&app_handle);
         interval.tick().await;
     }
 }
