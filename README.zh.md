@@ -22,8 +22,6 @@
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-black?style=flat-square" alt="Windows | macOS | Linux" />
 </p>
 
-> **免环境、纯本地、隐私默认地运行 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（约 8.2 万★）的桌面版 —— 无需 Node.js / pnpm / Docker，约 3 分钟即可从零跑起来。**
-
 <p align="center">
   <img src="docs/preivew.png" width="720" alt="DeepSeek Harness Desktop 界面预览" />
 </p>
