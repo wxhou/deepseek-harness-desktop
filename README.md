@@ -22,8 +22,6 @@
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-black?style=flat-square" alt="Windows | macOS | Linux" />
 </p>
 
-> **The free desktop way to run [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (~82k★) in ~2 minutes — zero Node.js / pnpm / Docker setup, fully local, private by default.**
-
 <p align="center">
   <img src="docs/preivew.png" width="720" alt="DeepSeek Harness Desktop preview" />
 </p>
