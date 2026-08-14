@@ -216,6 +216,6 @@ pub async fn toggle_sidebar() -> Result<bool, String> {
 
 /// 当前 dsh 主题偏好（light/dark/system），用于让桌面外壳跟随内嵌页面主题
 #[tauri::command]
-pub fn get_dsh_theme(app_handle: AppHandle) -> config::theme::DshTheme {
-    config::theme::get_dsh_theme(&app_handle)
+pub fn get_dsh_theme(app_handle: AppHandle) -> config::DshTheme {
+    config::get_dsh_theme(&app_handle)
 }
