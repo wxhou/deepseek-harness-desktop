@@ -15,11 +15,14 @@
 </p>
 
 <p align="center">
+  <img src="https://img.shields.io/github/stars/hairyf/deepseek-harness-desktop?style=flat-square&logo=github" alt="GitHub stars" />
   <img src="https://img.shields.io/badge/version-0.1.8-4D6BFE?style=flat-square" alt="version 0.1.8" />
   <img src="https://img.shields.io/badge/Tauri-2-24C8DB?style=flat-square&logo=tauri&logoColor=white" alt="Tauri 2" />
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="MIT license" />
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-black?style=flat-square" alt="Windows | macOS | Linux" />
 </p>
+
+> **The free desktop way to run [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (~82k★) in ~2 minutes — zero Node.js / pnpm / Docker setup, fully local, private by default.**
 
 <p align="center">
   <img src="docs/preivew.png" width="720" alt="DeepSeek Harness Desktop preview" />
@@ -41,6 +44,8 @@
 | **Embedded web UI** | The complete DeepSeek Harness interface runs inside the native window, with a sidebar for version info, service address, port, auto-start, logs, connection status, and restart / stop / open-in-browser / copy URL / open data folder / language actions. |
 | **Cross-platform** | Installers for Windows (NSIS/MSI), macOS (DMG), and Linux (AppImage). |
 | **Bilingual UI** | The interface ships in Chinese and English. |
+
+> **Why Tauri and not Electron?** The same features run lighter: a smaller installer and lower idle RAM, with native window controls that stay snappy — important for a local agent host you may keep open all day. The embedded WebView2/WebKit (not a bundled Chromium) also shrinks the install footprint.
 
 ## Quick Start
 
