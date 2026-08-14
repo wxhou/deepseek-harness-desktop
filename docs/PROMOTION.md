@@ -272,3 +272,26 @@ Dsh 桌面版 —— 在本地一键运行 DeepSeek Harness，无需安装 Node.
 - [ ] 国内：**V2EX → 知乎 → 即刻/微博 → 小红书** 依次或分天发布，用不同角度，避免同一平台连发被判定营销
 - [ ] 每个平台评论区置顶放 GitHub 链接 + 一句「欢迎 star/issue 收集反馈」
 - [ ] 观察数据：star 增速、issue/PR 量、各平台链接点击，据此复盘下一步渠道
+---
+
+## 10. 实际发布日志（OpenCLI 执行记录）
+
+> 基于真实执行记录，帮助你和协作者追踪各平台发布状态。
+
+| 平台 | 账号 | 状态 | 链接 / 备注 |
+| --- | --- | --- | --- |
+| GitHub README | hairyf | ✅ 已 push | commit `b66b2fb`，README 增强（钩子/badge/Why-Tauri）|
+| Twitter/X | @hairy2579 | ✅ 已发布 | https://x.com/hairy2579/status/2088201272092684335 |
+| 小红书 | Hairyf | 🟡 已存草稿 | 标题「把8万⭐AI平台做成桌面App」，含1图+5话题，待审核后点发布 |
+| 即刻 | Hairyf | ✅ 已发布 | 短动态「把 DeepSeek Harness 做成桌面 App」|
+| 微博 | mrmao202207 | ✅ 已发布 | 文字版（配图接口返回 Not allowed，故文字先行）|
+| 知乎 | Hairyf | ⛔ 受阻 | 「未激活用户不允许此操作」→ 需先完成知乎账号激活方可发布 |
+| Hacker News | — | ⚠️ 手动 | OpenCLI 只有读命令，无 submit；需账号 + `mk` API 手动发 Show HN |
+| Reddit | u/Inevitable_Stay_9276 | ⚠️ 受限 | OpenCLI 仅 comment/reply，无发帖 submit 命令；需手动发 r/LocalLLaMA 帖子 |
+| V2EX | — | ⚠️ 手动 | OpenCLI 仅读+签到，无建帖；需手动发「分享创造」节点 |
+
+### 你仍需手动完成的事
+1. **小红书**：到创作者中心草稿箱 review 并发（正文我已写好，含 GitHub 链接）。
+2. **知乎**：完成账号激活（知乎网页端绑定/升级到可写），之后我可立即代发已备好的回答草稿。
+3. **HN / Reddit / V2EX / 知乎文章版**：正文均已写好（见本文档相关小节），登录后粘贴发布即可。
+
