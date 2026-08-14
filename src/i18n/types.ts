@@ -18,6 +18,7 @@ export interface Translations {
   status: {
     checking: string;
     installing: string;
+    updating: string;
     preparing_engine: string;
     downloading_harness: string;
     extracting: string;
@@ -25,6 +26,11 @@ export interface Translations {
     ready: string;
     error: string;
     loading: string;
+  };
+  update: {
+    available: string;
+    now: string;
+    later: string;
   };
   errors: {
     service_start_timeout: string;

@@ -18,6 +18,7 @@ export const en: Translations = {
   status: {
     checking: "Checking system environment...",
     installing: "Installing dependencies...",
+    updating: "Updating DeepSeek Harness...",
     preparing_engine: "Preparing Node.js runtime... {{progress}}%",
     downloading_harness: "Downloading DeepSeek Harness... {{progress}}%",
     extracting: "Extracting resource package...",
@@ -25,6 +26,11 @@ export const en: Translations = {
     ready: "Service is ready",
     error: "Startup failed",
     loading: "Loading interface...",
+  },
+  update: {
+    available: "A new version {{tag}} is available. Update now?",
+    now: "Update Now",
+    later: "Later",
   },
   errors: {
     service_start_timeout: "DeepSeek Harness startup timeout. Please check whether port {{port}} is occupied or the startup is too slow.",

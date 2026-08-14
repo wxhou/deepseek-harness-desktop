@@ -214,11 +214,18 @@ pub fn ensure_extract<'a, R: Runtime>(
 /// GitHub API 地址（未认证限流 60 次/小时/IP，仅供每次启动检查一次）
 const DSH_PKG_GITHUB_API: &str = "https://api.github.com/repos/hairyf/deepseek-harness-pkg";
 
-/// 查询 GitHub 上最新 Harness 发行版对应的 commit hash
+/// 最新 Harness 发行版信息（版本 tag + 对应 commit hash）
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LatestDshPkg {
+    pub tag: String,
+    pub commit: String,
+}
+
+/// 查询 GitHub 上最新 Harness 发行版信息
 ///
 /// 先取最新 release 的 tag_name，再通过 commits 端点把 tag 解析为 commit。
 /// 网络不可用或 API 限流时返回 Err，由调用方决定是否保留本地安装。
-pub async fn fetch_latest_dsh_pkg_commit() -> Result<String, String> {
+pub async fn fetch_latest_dsh_pkg_info() -> Result<LatestDshPkg, String> {
     let client = reqwest::Client::builder()
         .user_agent("deepseek-harness-desktop")
         .timeout(std::time::Duration::from_secs(5))
@@ -252,9 +259,18 @@ pub async fn fetch_latest_dsh_pkg_commit() -> Result<String, String> {
         .json()
         .await
         .map_err(|e| format!("Failed to parse release commit response: {}", e))?;
-    commit
+    let sha = commit
         .get("sha")
         .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .ok_or_else(|| "Missing sha in release commit response".to_string())
+        .ok_or_else(|| "Missing sha in release commit response".to_string())?;
+
+    Ok(LatestDshPkg {
+        tag: tag_name.to_string(),
+        commit: sha.to_string(),
+    })
+}
+
+/// 查询 GitHub 上最新 Harness 发行版对应的 commit hash
+pub async fn fetch_latest_dsh_pkg_commit() -> Result<String, String> {
+    fetch_latest_dsh_pkg_info().await.map(|info| info.commit)
 }

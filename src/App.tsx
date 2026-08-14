@@ -17,6 +17,11 @@ interface InstallerState {
   logs: string[];
 }
 
+interface DshUpdateInfo {
+  tag: string;
+  commit: string;
+}
+
 const initialInstaller: InstallerState = {
   title: "",
   detail: "",
@@ -30,13 +35,16 @@ const btnPrimary =
 export default function App() {
   const { t } = useI18n();
   useDshTheme();
-  const [status, setStatus] = useState<SetupStatus>("checking");
+  const [status, setStatus] = useState<SetupStatus>("ready");
   const [installer, setInstaller] = useState<InstallerState>(initialInstaller);
   const [errorMsg, setErrorMsg] = useState("");
   const [serviceUrl, setServiceUrl] = useState("http://127.0.0.1:3080");
   const [iframeLoaded, setIframeLoaded] = useState(false);
   const [iframeError, setIframeError] = useState(false);
   const [iframeKey, setIframeKey] = useState(0);
+  const [serviceHealthy, setServiceHealthy] = useState(false);
+  const [updateInfo, setUpdateInfo] = useState<DshUpdateInfo | null>(null);
+  const [updating, setUpdating] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(() => {
     const saved = localStorage.getItem("sidebarOpen");
     return saved === null ? false : saved === "true";
@@ -93,30 +101,74 @@ export default function App() {
     }
   };
 
+  // 安装进度流：只前进不后退，供首次安装/手动更新共用
+  const listenInstallProgress = useCallback(async (): Promise<UnlistenFn> => {
+    return listen<InstallProgress>("install-progress", (e) => {
+      const payload = e.payload;
+      setInstaller((prev) => {
+        if (payload.percentage < prev.percentage) {
+          return prev;
+        }
+        const logs = payload.log
+          ? [...prev.logs, payload.log].slice(-5)
+          : prev.logs;
+        return {
+          title: payload.title || prev.title,
+          detail: payload.detail || prev.detail,
+          percentage: payload.percentage,
+          logs,
+        };
+      });
+    });
+  }, []);
+
+  // 后台静默检查是否有新版 Harness（网络失败/API 限流时静默跳过）
+  const checkForUpdate = useCallback(async () => {
+    try {
+      const info = await invoke<DshUpdateInfo | null>("check_dsh_update");
+      if (info) {
+        setUpdateInfo(info);
+      }
+    } catch (err) {
+      console.log("[App] update check skipped:", err);
+    }
+  }, []);
+
+  // 拉起服务并等待健康检查通过，通过后才挂载 iframe
+  const launchAndWait = useCallback(async () => {
+    setStatus("ready");
+    setInstaller(initialInstaller);
+    setServiceHealthy(false);
+    setIframeLoaded(false);
+    setIframeError(false);
+    await invoke("launch_harness");
+    setServiceRunning(true);
+
+    let healthy = false;
+    for (let attempt = 0; attempt < MAX_RETRIES && !healthy; attempt++) {
+      healthy = await checkHealthViaProxy();
+      if (!healthy) {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+      }
+    }
+    if (!healthy) {
+      throw new Error(
+        t("errors.service_start_timeout", { port: new URL(serviceUrl).port || "3080" }),
+      );
+    }
+    setServiceHealthy(true);
+  }, [serviceUrl, t]);
+
   const boot = useCallback(async () => {
     const token = ++bootToken.current;
+    // 回到加载态：已安装时不再显示检测/启动界面，直接进入页面加载状态
+    setServiceHealthy(false);
+    setIframeLoaded(false);
+    setIframeError(false);
     let unlistenInstall: UnlistenFn | null = null;
 
     try {
-      // Install-progress stream: only ever move the percentage forward, like
-      // the reference installer store.
-      unlistenInstall = await listen<InstallProgress>("install-progress", (e) => {
-        const payload = e.payload;
-        setInstaller((prev) => {
-          if (payload.percentage < prev.percentage) {
-            return prev;
-          }
-          const logs = payload.log
-            ? [...prev.logs, payload.log].slice(-5)
-            : prev.logs;
-          return {
-            title: payload.title || prev.title,
-            detail: payload.detail || prev.detail,
-            percentage: payload.percentage,
-            logs,
-          };
-        });
-      });
+      unlistenInstall = await listenInstallProgress();
 
       const runtimeInfo = await invoke<{ service_url: string }>("get_runtime_info");
       setServiceUrl(runtimeInfo.service_url);
@@ -124,35 +176,20 @@ export default function App() {
       // 已安装过则跳过安装界面，避免每次启动都闪现“正在安装依赖...”
       const config = await invoke<{ installed: boolean }>("get_app_config");
 
-      // 1. Install dependencies (Node runtime + harness package).
+      // 仅首次使用需要检测环境/安装依赖；之后直接进入页面
       if (!config.installed) {
         setStatus("installing");
         setInstaller({ ...initialInstaller, title: t("status.installing") });
+        await invoke("install_dependencies");
       }
-      await invoke("install_dependencies");
 
-      // 2. Launch + health check.
-      setStatus("starting");
-      setInstaller((prev) => ({ ...prev, title: t("status.starting") }));
-      await invoke("launch_harness");
-      setServiceRunning(true);
-
-      let healthy = false;
-      for (let attempt = 0; attempt < MAX_RETRIES && !healthy; attempt++) {
-        healthy = await checkHealthViaProxy();
-        if (!healthy) {
-          await new Promise((resolve) => setTimeout(resolve, 2000));
-        }
-      }
-      if (!healthy) {
-        throw new Error(
-          t("errors.service_start_timeout", { port: new URL(serviceUrl).port || "3080" }),
-        );
-      }
+      await launchAndWait();
 
       if (token !== bootToken.current) return;
-      setStatus("ready");
-      refreshIframe();
+      // 已安装时后台静默检查新版，发现后提示用户
+      if (config.installed) {
+        void checkForUpdate();
+      }
     } catch (err) {
       if (token !== bootToken.current) return;
       console.error("[App] startup failed:", err);
@@ -162,7 +199,31 @@ export default function App() {
     } finally {
       unlistenInstall?.();
     }
-  }, [refreshIframe, serviceUrl, t]);
+  }, [listenInstallProgress, launchAndWait, checkForUpdate, t]);
+
+  // 手动更新：重新下载安装新版并重启服务
+  const handleUpdate = async () => {
+    if (updating) return;
+    setUpdating(true);
+    setUpdateInfo(null);
+    let unlistenInstall: UnlistenFn | null = null;
+    try {
+      unlistenInstall = await listenInstallProgress();
+      setStatus("installing");
+      setInstaller({ ...initialInstaller, title: t("status.updating") });
+      await invoke("install_dependencies");
+      await launchAndWait();
+      setUpdateInfo(null);
+    } catch (err) {
+      console.error("[App] update failed:", err);
+      setErrorMsg(String(err));
+      setStatus("error");
+      setServiceRunning(false);
+    } finally {
+      unlistenInstall?.();
+      setUpdating(false);
+    }
+  };
 
   // React StrictMode 在 dev 下会执行两次 effect，这里确保 boot 只挂载一次
   useEffect(() => {
@@ -174,13 +235,13 @@ export default function App() {
   // 进入 ready 后如果 iframe 长时间未加载（dsh 未就绪/挂起），
   // 转为错误界面，避免一直停在黑色加载遮罩
   useEffect(() => {
-    if (status !== "ready" || iframeLoaded) return;
+    if (status !== "ready" || !serviceHealthy || iframeLoaded) return;
     const timer = setTimeout(() => {
       setIframeLoaded(false);
       setIframeError(true);
     }, 20000);
     return () => clearTimeout(timer);
-  }, [status, iframeLoaded, iframeKey]);
+  }, [status, serviceHealthy, iframeLoaded, iframeKey]);
 
   const restart = async () => {
     try {
@@ -274,7 +335,7 @@ export default function App() {
             <p>{t("status.loading")}</p>
           </div>
         )}
-        {iframeError && (
+        {serviceHealthy && iframeError && (
           <div className="absolute inset-0 z-[1] flex flex-col items-center justify-center gap-3 bg-canvas text-ink">
             <p>{t("ui.iframe_error")}</p>
             <p className="text-muted">{t("ui.ensure_running", { url: serviceUrl })}</p>
@@ -283,21 +344,40 @@ export default function App() {
             </button>
           </div>
         )}
-        <iframe
-          key={iframeKey}
-          className="block h-full w-full border-none bg-white"
-          src={iframeSrc}
-          onLoad={() => {
-            setIframeLoaded(true);
-            setIframeError(false);
-          }}
-          onError={() => {
-            setIframeError(true);
-            setIframeLoaded(false);
-          }}
-          title={t("app.open_editor")}
-        />
+        {serviceHealthy && (
+          <iframe
+            key={iframeKey}
+            className="block h-full w-full border-none bg-white"
+            src={iframeSrc}
+            onLoad={() => {
+              setIframeLoaded(true);
+              setIframeError(false);
+            }}
+            onError={() => {
+              setIframeError(true);
+              setIframeLoaded(false);
+            }}
+            title={t("app.open_editor")}
+          />
+        )}
       </main>
+      {updateInfo && !updating && (
+        <div className="fixed bottom-4 right-4 z-50 flex max-w-[420px] items-center gap-3 rounded-lg border border-accent/40 bg-panel px-4 py-3 shadow-lg">
+          <div className="min-w-0 flex-1">
+            <p className="text-[13px] font-semibold text-ink">{t("update.available", { tag: updateInfo.tag })}</p>
+            <p className="mt-0.5 text-xs text-muted">{updateInfo.commit.slice(0, 7)}</p>
+          </div>
+          <button className={btnPrimary} onClick={handleUpdate}>
+            {t("update.now")}
+          </button>
+          <button
+            className="inline-flex cursor-pointer items-center justify-center rounded-md border border-line bg-panel2 px-3 py-1.5 text-[13px] text-ink transition-colors hover:bg-panel-hover"
+            onClick={() => setUpdateInfo(null)}
+          >
+            {t("update.later")}
+          </button>
+        </div>
+      )}
       <button
         onClick={handleToggleSidebar}
         title={t("ui.settings")}
