@@ -74,9 +74,9 @@ export default function SetupScreen({
           <span className="min-w-[44px] text-right text-[13px] font-semibold tabular-nums text-accent2">{Math.round(percentage)}%</span>
         </div>
 
-        <div className="mb-5 min-h-[112px] max-h-[184px] overflow-y-auto rounded-lg border border-line bg-[#0a0a0c] px-3.5 py-2.5 text-left font-mono text-xs leading-[1.7]" aria-label={t("ui.install_log")}>
+        <div className="mb-5 min-h-[112px] max-h-[184px] overflow-y-auto rounded-lg border border-line bg-log-bg px-3.5 py-2.5 text-left font-mono text-xs leading-[1.7]" aria-label={t("ui.install_log")}>
           {visibleLogs.slice(-LOG_LIMIT).map((line, index) => (
-            <p key={`${line}-${index}`} className="m-0 flex gap-2 overflow-hidden text-ellipsis whitespace-nowrap text-[#b8b8c0]">
+            <p key={`${line}-${index}`} className="m-0 flex gap-2 overflow-hidden text-ellipsis whitespace-nowrap text-log-ink">
               <span className="shrink-0 text-accent select-none">›</span>
               <span className="min-w-0 overflow-hidden text-ellipsis">{line}</span>
             </p>

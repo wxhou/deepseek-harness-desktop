@@ -213,3 +213,9 @@ pub fn set_language(app_handle: AppHandle, lang: String) {
 pub async fn toggle_sidebar() -> Result<bool, String> {
     Ok(true)
 }
+
+/// 当前 dsh 主题偏好（light/dark/system），用于让桌面外壳跟随内嵌页面主题
+#[tauri::command]
+pub fn get_dsh_theme(app_handle: AppHandle) -> config::theme::DshTheme {
+    config::theme::get_dsh_theme(&app_handle)
+}

@@ -6,6 +6,7 @@ import SetupScreen, { InstallProgress, SetupStatus } from "./components/SetupScr
 import SidebarPanel from "./components/SidebarPanel";
 import { useI18n } from "./i18n/context";
 import { generateTimestampedUrl } from "./hooks/useAutoSync";
+import { useDshTheme } from "./hooks/useDshTheme";
 
 const MAX_RETRIES = 8;
 
@@ -28,6 +29,7 @@ const btnPrimary =
 
 export default function App() {
   const { t } = useI18n();
+  useDshTheme();
   const [status, setStatus] = useState<SetupStatus>("checking");
   const [installer, setInstaller] = useState<InstallerState>(initialInstaller);
   const [errorMsg, setErrorMsg] = useState("");
@@ -227,7 +229,7 @@ export default function App() {
         <button
           onClick={handleToggleSidebar}
           title={t("ui.settings")}
-          className={`fixed top-4 z-40 flex h-9 w-9 cursor-pointer items-center justify-center rounded-md border border-line bg-panel2 text-ink shadow-lg transition-all duration-200 hover:bg-[#26262d] ${
+          className={`fixed top-4 z-40 flex h-9 w-9 cursor-pointer items-center justify-center rounded-md border border-line bg-panel2 text-ink shadow-lg transition-all duration-200 hover:bg-panel-hover ${
             sidebarOpen ? "right-[316px]" : "right-4"
           }`}
         >
@@ -299,7 +301,7 @@ export default function App() {
       <button
         onClick={handleToggleSidebar}
         title={t("ui.settings")}
-        className={`fixed top-4 z-40 flex h-9 w-9 cursor-pointer items-center justify-center rounded-md border border-line bg-panel2 text-ink shadow-lg transition-all duration-200 hover:bg-[#26262d] ${
+        className={`fixed top-4 z-40 flex h-9 w-9 cursor-pointer items-center justify-center rounded-md border border-line bg-panel2 text-ink shadow-lg transition-all duration-200 hover:bg-panel-hover ${
           sidebarOpen ? "right-[316px]" : "right-4"
         }`}
       >

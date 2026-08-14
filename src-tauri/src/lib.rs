@@ -106,6 +106,7 @@ fn handler() -> impl Fn(Invoke<Wry>) -> bool + Send + Sync + 'static {
         bridge::cmd::clear_service_logs,
         bridge::cmd::set_language,
         bridge::cmd::toggle_sidebar,
+        bridge::cmd::get_dsh_theme,
     ]
 }
 
