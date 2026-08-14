@@ -1,7 +1,6 @@
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
-use std::process::{ChildStderr, ChildStdout};
 use std::thread;
 use std::time::Duration;
 
@@ -53,11 +52,14 @@ pub fn is_port_in_use(port: u16) -> bool {
 /// - `stdout`: 子进程的标准输出
 /// - `stderr`: 子进程的标准错误输出
 /// - `log_path`: 前端日志面板读取的日志文件
-pub fn spawn_output_readers(
-    stdout: Option<ChildStdout>,
-    stderr: Option<ChildStderr>,
+pub fn spawn_output_readers<R1, R2>(
+    stdout: Option<R1>,
+    stderr: Option<R2>,
     log_path: PathBuf,
-) {
+) where
+    R1: Read + Send + 'static,
+    R2: Read + Send + 'static,
+{
     // 在独立线程中读取 stdout
     if let Some(stdout) = stdout {
         let log_path = log_path.clone();
