@@ -12,7 +12,7 @@ use tauri::Runtime;
 /// os error 32 = ERROR_SHARING_VIOLATION（文件被占用），os error 5 = 访问被拒绝，
 /// 这两类错误通常是瞬时的，等待锁释放后重试即可成功。
 fn create_file_with_retry(outpath: &Path) -> Result<fs::File, String> {
-    const MAX_ATTEMPTS: u32 = 12;
+    const MAX_ATTEMPTS: u32 = 40;
     const RETRY_DELAY: Duration = Duration::from_millis(250);
 
     for attempt in 1..=MAX_ATTEMPTS {

@@ -9,7 +9,7 @@ use super::format::get_dsh_service_url;
 use super::utils::search_node_binary;
 
 /// 获取 App Data 基础目录
-fn get_base_dir<R: Runtime>(app_handle: &AppHandle<R>) -> PathBuf {
+pub fn get_base_dir<R: Runtime>(app_handle: &AppHandle<R>) -> PathBuf {
     app_handle
         .path()
         .app_data_dir()
