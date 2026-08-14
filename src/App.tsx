@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
-import { Wrench } from "lucide-react";
+import WindowControls from "./components/WindowControls";
 import SetupScreen, { InstallProgress, SetupStatus } from "./components/SetupScreen";
 import SidebarPanel from "./components/SidebarPanel";
 import { useI18n } from "./i18n/context";
@@ -287,15 +287,7 @@ export default function App() {
             onRetry={boot}
           />
         </main>
-        <button
-          onClick={handleToggleSidebar}
-          title={t("ui.settings")}
-          className={`fixed top-4 z-40 flex h-9 w-9 cursor-pointer items-center justify-center rounded-md border border-line bg-panel2 text-ink shadow-lg transition-all duration-200 hover:bg-panel-hover ${
-            sidebarOpen ? "right-[316px]" : "right-4"
-          }`}
-        >
-          <Wrench className="h-[18px] w-[18px]" />
-        </button>
+        <WindowControls sidebarOpen={sidebarOpen} onToggleSidebar={handleToggleSidebar} />
         <SidebarPanel
           open={sidebarOpen}
           serviceRunning={serviceRunning}
@@ -322,6 +314,7 @@ export default function App() {
             onRetry={boot}
           />
         </main>
+        <WindowControls sidebarOpen={sidebarOpen} onToggleSidebar={handleToggleSidebar} />
       </div>
     );
   }
@@ -378,15 +371,7 @@ export default function App() {
           </button>
         </div>
       )}
-      <button
-        onClick={handleToggleSidebar}
-        title={t("ui.settings")}
-        className={`fixed top-4 z-40 flex h-9 w-9 cursor-pointer items-center justify-center rounded-md border border-line bg-panel2 text-ink shadow-lg transition-all duration-200 hover:bg-panel-hover ${
-          sidebarOpen ? "right-[316px]" : "right-4"
-        }`}
-      >
-        <Wrench className="h-[18px] w-[18px]" />
-      </button>
+      <WindowControls sidebarOpen={sidebarOpen} onToggleSidebar={handleToggleSidebar} />
       <SidebarPanel
         open={sidebarOpen}
         serviceRunning={serviceRunning}

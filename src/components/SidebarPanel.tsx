@@ -135,7 +135,7 @@ export default function SidebarPanel({
 
   return (
     <aside
-      className={`fixed inset-y-0 right-0 z-30 flex w-[300px] flex-col overflow-y-auto border-l border-line bg-panel shadow-2xl transition-transform duration-200 ease-out ${
+      className={`fixed top-14.5 right-0 bottom-0 z-30 flex w-[300px] flex-col overflow-y-auto border-l border-t rounded-md border-line bg-panel shadow-2xl transition-transform duration-200 ease-out ${
         open ? "translate-x-0" : "translate-x-full"
       }`}
     >
