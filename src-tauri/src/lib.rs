@@ -112,6 +112,13 @@ fn handler() -> impl Fn(Invoke<Wry>) -> bool + Send + Sync + 'static {
 // configure tauri builder
 fn builder() -> tauri::Builder<tauri::Wry> {
     tauri::Builder::default()
+        // 点击关闭按钮时隐藏到托盘而不是退出程序
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+            }
+        })
         // Opener plugin
         .plugin(tauri_plugin_opener::init())
         // FS plugin
