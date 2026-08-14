@@ -8,6 +8,7 @@ use crate::service::download;
 use crate::service::workflow::utils::{is_dsh_running, is_port_in_use, spawn_output_readers};
 use std::collections::HashMap;
 use std::fs;
+use std::path::Path;
 use std::process::{Command, Stdio};
 #[cfg(windows)]
 use std::ffi::OsString;
@@ -30,9 +31,11 @@ fn kill_port_holder(port: u16) {
 
     #[cfg(windows)]
     {
-        // 使用 PowerShell 清理端口占用进程（更稳定）
+        // 使用 PowerShell 找到占用端口的进程，再通过 taskkill /T 结束整个进程树。
+        // dsh 会派生 node worker 子进程，若只杀端口占用者，子进程仍会锁定原生
+        // 模块 DLL（如 sharp 的 libvips-42.dll），导致重新解压失败。
         let ps_cmd = format!(
-            "Get-NetTCPConnection -LocalPort {} -ErrorAction SilentlyContinue | ForEach-Object {{ Stop-Process -Id $_.OwningProcess -Force }}",
+            "$ids = Get-NetTCPConnection -LocalPort {} -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique; foreach ($id in $ids) {{ taskkill /PID $id /T /F 2>$null }}",
             port
         );
 
@@ -58,6 +61,39 @@ fn kill_port_holder(port: u16) {
         if let Err(e) = cmd.output() {
             log::error!("Failed to kill port holder: {}", e);
         }
+    }
+}
+
+/// 结束本应用（AppData 目录）下由 dsh 拉起的 node 进程。
+///
+/// sharp 等原生模块 DLL 会被 node 及其子进程加载并锁定。服务崩溃或失去响应时
+/// HTTP 探测不到，但这些进程仍持有 DLL；仅杀端口占用者会漏掉不再监听端口的
+/// 子进程。这里通过可执行文件路径或命令行是否位于 AppData 目录来识别。
+#[cfg(windows)]
+fn kill_dsh_processes(base_dir: &Path) {
+    let base = base_dir.to_string_lossy().to_string();
+    let ps_cmd = format!(
+        "Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" | Where-Object {{ ($_.ExecutablePath -like '{base}\\*') -or ($_.CommandLine -like '*{base}\\*') }} | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }}"
+    );
+
+    let mut cmd = Command::new("powershell");
+    cmd.args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-WindowStyle",
+        "Hidden",
+        "-Command",
+        &ps_cmd,
+    ]);
+
+    // 隐藏 PowerShell 窗口，避免弹出黑色控制台窗口
+    use std::os::windows::process::CommandExt;
+    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    cmd.stdout(Stdio::null());
+    cmd.stderr(Stdio::null());
+
+    if let Err(e) = cmd.output() {
+        log::error!("Failed to kill dsh processes: {}", e);
     }
 }
 
@@ -270,12 +306,28 @@ pub async fn stop(app_handle: tauri::AppHandle) -> Result<(), String> {
     LAUNCH_GUARD.store(false, Ordering::SeqCst);
     kill_port_holder(port);
 
+    // 连带清理 dsh 派生的 node 子进程：它们可能不再监听端口，
+    // 但仍把原生模块 DLL 加载在内存中（Windows 文件锁）
+    #[cfg(windows)]
+    kill_dsh_processes(&config::get_base_dir(&app_handle));
+
     // 给系统一点时间释放端口 (重要！)
     tokio::time::sleep(std::time::Duration::from_millis(800)).await;
 
     status::set_status(status::Status::Stopped);
     status::emit_status(&app_handle);
     Ok(())
+}
+
+/// 应用退出时同步回收 Harness 进程。
+///
+/// 退出路径上不更新状态、不做异步等待，仅强制结束端口占用者及其进程树，
+/// 以及 AppData 目录下的 node 进程，避免残留进程把原生模块 DLL 锁在内存，
+/// 导致下次启动重新解压失败。
+pub fn stop_on_exit(app_handle: tauri::AppHandle, port: u16) {
+    kill_port_holder(port);
+    #[cfg(windows)]
+    kill_dsh_processes(&config::get_base_dir(&app_handle));
 }
 
 /// 安装环境（Node.js 运行时 + 打包的 Harness 发行版）
@@ -287,10 +339,18 @@ pub async fn install(
 
     // 安装前先停止正在运行的 Harness 服务：运行中的 node 进程会把
     // 原生模块 DLL（如 sharp 的 libvips-42.dll）加载进内存并锁住文件，
-    // 不停止的话覆盖解压必然失败（Windows os error 32）
+    // 不停止的话覆盖解压必然失败（Windows os error 32）。
+    // 注意不能只依赖 HTTP 探测：服务崩溃/失去响应时探测不到，但 node
+    // 进程可能仍存活并持有 DLL，因此探测不到时也要强制清理。
     if is_dsh_running().await {
         log::info!("Stopping running Harness service before installation");
         stop(app_handle.clone()).await?;
+    } else {
+        log::warn!("Harness service not responding, force cleaning dsh processes");
+        kill_port_holder(config::get_store_dat_setting(&app_handle).port);
+        #[cfg(windows)]
+        kill_dsh_processes(&config::get_base_dir(&app_handle));
+        tokio::time::sleep(std::time::Duration::from_millis(800)).await;
     }
 
     let window = app_handle
