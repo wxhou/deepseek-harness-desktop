@@ -4,10 +4,6 @@
   </a>
 </p>
 
-<p align="center">
-  <img src="docs/preivew.png" width="720" alt="DeepSeek Harness Desktop 界面预览" />
-</p>
-
 <h1 align="center">DeepSeek Harness 桌面版</h1>
 
 <p align="center">
@@ -19,7 +15,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.1.0-4D6BFE?style=flat-square" alt="version 0.1.0" />
+  <img src="https://img.shields.io/badge/version-0.1.6-4D6BFE?style=flat-square" alt="version 0.1.6" />
   <img src="https://img.shields.io/badge/Tauri-2-24C8DB?style=flat-square&logo=tauri&logoColor=white" alt="Tauri 2" />
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="MIT license" />
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-black?style=flat-square" alt="Windows | macOS | Linux" />
@@ -36,11 +32,14 @@
 | | |
 | --- | --- |
 | **一键安装** | 首次启动自动安装打包好的 Harness 发行版；若本机已存在版本兼容的 Node.js（v22.15.0+ / v23.8.0+）则直接复用，否则自动下载 Node.js 运行时，无需手动配置任何环境 |
+| **自动更新** | 每次启动对比已安装的 Harness 发行版与 [deepseek-harness-pkg](https://github.com/hairyf/deepseek-harness-pkg) 最新 release commit，不一致时自动重新下载，上游修复无需手动重装即可生效 |
+| **静默更新提示** | 已安装后再次启动会跳过安装界面直接进入 Harness，并在后台静默检查新版，发现后弹出轻量「立即更新 / 稍后」提示 |
 | **纯本地运行** | `dsh web` 服务运行在 `http://127.0.0.1:3080`，profile、会话与设置全部保存在本机 |
 | **隐私默认** | 隔离的 `$DSH_HOME`，默认关闭遥测（`DSH_TELEMETRY_DISABLED=1`） |
+| **原生窗口外壳** | 无边框窗口 + 自定义顶部拖拽栏与窗口控制（最小化 / 最大化 / 还原 / 关闭，双击最大化） |
+| **主题跟随** | 桌面外壳跟随 dsh 页面主题，侧边栏与窗口控制自动适配亮色 / 暗色 |
+| **内嵌 Web 界面** | 完整的 DeepSeek Harness 界面运行在原生窗口中，侧边栏提供版本信息、服务地址、端口、自启动、日志、连接状态以及重启 / 停止 / 浏览器打开 / 复制地址 / 打开数据目录 / 语言切换等操作 |
 | **跨平台** | Windows（NSIS/MSI）、macOS（DMG）、Linux（AppImage）安装包 |
-| **内嵌 Web 界面** | 完整的 DeepSeek Harness 界面运行在原生窗口中，侧边栏提供版本信息、服务地址、端口、自启动、日志以及重启 / 停止 / 浏览器打开等操作 |
-| **校验下载** | Harness 发行包使用 SHA-256 摘要校验后再使用 |
 | **中英双语** | 界面支持中文与 English |
 
 ## 快速开始
@@ -49,7 +48,7 @@
 2. 安装并启动应用；
 3. 首次运行会自动安装依赖：若检测到本机已安装版本兼容的 Node.js（v22.15.0+ / v23.8.0+）则直接复用，否则自动下载 Node.js 运行时与 Harness 发行包（合计约几百 MB）；就绪后内嵌的 Harness 界面会打开在 `http://127.0.0.1:3080`。
 
-> 首次运行需要联网；之后一切都在本地完成。
+> 首次运行需要联网；之后一切都在本地完成。安装完成后，再次启动会跳过安装引导直接进入 Harness，并在后台静默检查新版，发现新版时弹出更新提示。
 
 **系统要求**
 
@@ -116,6 +115,7 @@ pnpm icons
 ```
 
 - Harness 发行版由 [deepseek-harness-pkg](https://github.com/hairyf/deepseek-harness-pkg) 构建并发布，发布契约见 [docs/PKG-CONTRACT.md](docs/PKG-CONTRACT.md)；
+- 每次启动应用都会从 `deepseek-harness-pkg` 拉取最新 release commit，本地发行版过期时自动重新下载（GitHub 不可达时保留本地安装）。
 - 完整架构说明见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
 
 ## 数据目录
@@ -139,6 +139,8 @@ pnpm icons
 - **3080 端口被占用？** 在侧边栏设置中修改端口并重启服务。
 - **首次安装时发生了什么？** 侧边栏会实时展示安装日志与服务日志。
 - **为什么首次启动要下载这么多内容？** 需要一次性下载 Node.js 运行时与 Harness 发行包（约几百 MB），之后即可离线运行。
+- **为什么每次启动都会访问 GitHub？** 用于对比本地 Harness 发行版与最新 release commit，不一致时自动重新下载；GitHub 不可达时保留本地安装。
+- **安装后如何更新？** 启动后跳过安装界面，后台静默检查新版并弹出「立即更新 / 稍后」提示；点击更新会重新下载发行版并重启服务。
 
 ## 安全声明
 
