@@ -194,3 +194,51 @@ pub fn ensure_extract<'a, R: Runtime>(
 
     Ok(())
 }
+
+/// GitHub API 地址（未认证限流 60 次/小时/IP，仅供每次启动检查一次）
+const DSH_PKG_GITHUB_API: &str = "https://api.github.com/repos/hairyf/deepseek-harness-pkg";
+
+/// 查询 GitHub 上最新 Harness 发行版对应的 commit hash
+///
+/// 先取最新 release 的 tag_name，再通过 commits 端点把 tag 解析为 commit。
+/// 网络不可用或 API 限流时返回 Err，由调用方决定是否保留本地安装。
+pub async fn fetch_latest_dsh_pkg_commit() -> Result<String, String> {
+    let client = reqwest::Client::builder()
+        .user_agent("deepseek-harness-desktop")
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+
+    // 1. 最新 release 的 tag_name
+    let release: serde_json::Value = client
+        .get(format!("{}/releases/latest", DSH_PKG_GITHUB_API))
+        .send()
+        .await
+        .map_err(|e| format!("Failed to request latest release: {}", e))?
+        .error_for_status()
+        .map_err(|e| format!("Latest release request failed: {}", e))?
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse latest release response: {}", e))?;
+    let tag_name = release
+        .get("tag_name")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "Missing tag_name in latest release response".to_string())?;
+
+    // 2. 通过 commits 端点把 tag 解析为 commit hash
+    let commit: serde_json::Value = client
+        .get(format!("{}/commits/{}", DSH_PKG_GITHUB_API, tag_name))
+        .send()
+        .await
+        .map_err(|e| format!("Failed to request release commit: {}", e))?
+        .error_for_status()
+        .map_err(|e| format!("Release commit request failed: {}", e))?
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse release commit response: {}", e))?;
+    commit
+        .get("sha")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| "Missing sha in release commit response".to_string())
+}

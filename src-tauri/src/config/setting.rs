@@ -10,6 +10,8 @@ pub struct Setting {
     pub port: u16,
     pub auto_start: bool,
     pub language: String,
+    #[serde(default)]
+    pub dsh_pkg_commit: Option<String>,
 }
 
 impl Default for Setting {
@@ -19,6 +21,7 @@ impl Default for Setting {
             port: DSH_PORT,
             auto_start: true,
             language: "zh-CN".to_string(),
+            dsh_pkg_commit: None,
         }
     }
 }
@@ -47,4 +50,16 @@ pub fn get_store_dat_setting(app_handle: &AppHandle) -> Setting {
     value
         .and_then(|v| serde_json::from_value(v).ok())
         .unwrap_or_else(Setting::default)
+}
+
+/// 已安装 Harness 发行版对应的 GitHub release commit hash
+pub fn get_dsh_pkg_commit(app_handle: &AppHandle) -> Option<String> {
+    get_store_dat_setting(app_handle).dsh_pkg_commit
+}
+
+/// 记录已安装 Harness 发行版的 GitHub release commit hash
+pub fn set_dsh_pkg_commit(app_handle: &AppHandle, commit: String) {
+    let mut setting = get_store_dat_setting(app_handle);
+    setting.dsh_pkg_commit = Some(commit);
+    set_store_dat_setting(app_handle, setting);
 }
