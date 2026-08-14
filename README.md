@@ -43,10 +43,7 @@
 
 ## Preview
 
-<p align="center">
-  <img src="website/public/screenshots/main.png" width="49%" alt="Main window — embedded Harness web UI" />
-  <img src="website/public/screenshots/detail.png" width="49%" alt="Sidebar — service status / port / logs / auto-start" />
-</p>
+![DeepSeek Harness Desktop](docs/preivew.png)
 
 ## Quick Start
 

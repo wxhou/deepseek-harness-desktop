@@ -43,10 +43,7 @@
 
 ## 界面预览
 
-<p align="center">
-  <img src="website/public/screenshots/main.png" width="49%" alt="主界面 — 内嵌 Harness Web 界面" />
-  <img src="website/public/screenshots/detail.png" width="49%" alt="侧边栏 — 服务状态 / 端口 / 日志 / 自启动" />
-</p>
+![DeepSeek Harness Desktop](docs/preivew.png)
 
 ## 快速开始
 
