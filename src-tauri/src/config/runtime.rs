@@ -94,9 +94,29 @@ fn is_executable(_path: &Path) -> bool {
     true
 }
 
+/// 运行 `node --version` 并捕获输出
+///
+/// Windows 打包版是 GUI 进程（没有控制台），必须以 CREATE_NO_WINDOW 启动
+/// node.exe，否则每次版本检查都会闪现一个黑色 cmd 窗口。
+fn node_version_output(node: &Path) -> Option<std::process::Output> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        std::process::Command::new(node)
+            .arg("--version")
+            .creation_flags(0x08000000) // CREATE_NO_WINDOW
+            .output()
+            .ok()
+    }
+    #[cfg(not(windows))]
+    {
+        std::process::Command::new(node).arg("--version").output().ok()
+    }
+}
+
 /// 获取指定 Node.js 二进制的版本号（例如 "22.22.0"）
 fn get_node_version_of(node: &Path) -> Option<String> {
-    let output = std::process::Command::new(node).arg("--version").output().ok()?;
+    let output = node_version_output(node)?;
     if !output.status.success() {
         return None;
     }
@@ -213,9 +233,9 @@ pub fn is_runtime_compatible(app_handle: &tauri::AppHandle) -> bool {
     if !node.exists() {
         return false;
     }
-    let output = match std::process::Command::new(&node).arg("--version").output() {
-        Ok(out) => out,
-        Err(_) => return false,
+    let output = match node_version_output(&node) {
+        Some(out) => out,
+        None => return false,
     };
     if !output.status.success() {
         return false;
