@@ -97,24 +97,29 @@ export default function App() {
 
     try {
       // Install-progress stream: only ever move the percentage forward, like
-      // the reference installer store.
-      unlistenInstall = await listen<InstallProgress>("install-progress", (e) => {
-        const payload = e.payload;
-        setInstaller((prev) => {
-          if (payload.percentage < prev.percentage) {
-            return prev;
-          }
-          const logs = payload.log
-            ? [...prev.logs, payload.log].slice(-5)
-            : prev.logs;
-          return {
-            title: payload.title || prev.title,
-            detail: payload.detail || prev.detail,
-            percentage: payload.percentage,
-            logs,
-          };
+      // the reference installer store. 事件监听失败（例如 IPC 自定义协议被
+      // CSP 拦截、回退 postMessage 也异常）不应阻断启动流程，因此容错跳过。
+      try {
+        unlistenInstall = await listen<InstallProgress>("install-progress", (e) => {
+          const payload = e.payload;
+          setInstaller((prev) => {
+            if (payload.percentage < prev.percentage) {
+              return prev;
+            }
+            const logs = payload.log
+              ? [...prev.logs, payload.log].slice(-5)
+              : prev.logs;
+            return {
+              title: payload.title || prev.title,
+              detail: payload.detail || prev.detail,
+              percentage: payload.percentage,
+              logs,
+            };
+          });
         });
-      });
+      } catch (err) {
+        console.error("[App] failed to listen install-progress:", err);
+      }
 
       const runtimeInfo = await invoke<{ service_url: string }>("get_runtime_info");
       setServiceUrl(runtimeInfo.service_url);
