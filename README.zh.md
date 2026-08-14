@@ -25,6 +25,10 @@
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-black?style=flat-square" alt="Windows | macOS | Linux" />
 </p>
 
+<p align="center">
+  <img src="docs/preivew.png" width="720" alt="DeepSeek Harness Desktop 界面预览" />
+</p>
+
 > **状态：开发预览。** 上游 `dsh` 仍在快速迭代，存在破坏性变更；本项目同步跟随。
 
 ## 功能
