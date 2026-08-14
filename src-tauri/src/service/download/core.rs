@@ -115,10 +115,37 @@ pub fn ensure_extract<'a, R: Runtime>(
         return Ok(());
     }
 
-    // 清理并准备目标目录
+    // 清理并准备目标目录（Windows 上文件可能被短暂占用，重试等待释放）
     if dest.exists() {
         log::debug!("Destination directory exists, cleaning");
-        fs::remove_dir_all(&dest).ok();
+        let mut cleaned = false;
+        for attempt in 1..=5 {
+            match fs::remove_dir_all(&dest) {
+                Ok(()) => {
+                    cleaned = true;
+                    break;
+                }
+                Err(e) => {
+                    if attempt < 5 {
+                        log::warn!(
+                            "Failed to clean {:?} (attempt {}/5), file may be locked: {}",
+                            dest,
+                            attempt,
+                            e
+                        );
+                        std::thread::sleep(std::time::Duration::from_millis(300));
+                    } else {
+                        log::error!("Failed to clean {:?}: {}", dest, e);
+                    }
+                }
+            }
+        }
+        if !cleaned {
+            log::error!(
+                "Could not fully clean destination {:?}, some files may still be locked",
+                dest
+            );
+        }
     }
     fs::create_dir_all(&dest).map_err(|e| {
         log::error!("Failed to create destination directory: {}", e);

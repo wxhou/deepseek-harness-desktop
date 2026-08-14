@@ -253,6 +253,15 @@ pub async fn stop(app_handle: tauri::AppHandle) -> Result<(), String> {
 /// 安装环境（Node.js 运行时 + 打包的 Harness 发行版）
 pub async fn install(app_handle: &tauri::AppHandle) -> Result<(), String> {
     log::info!("Starting installation process");
+
+    // 安装前先停止正在运行的 Harness 服务：运行中的 node 进程会把
+    // 原生模块 DLL（如 sharp 的 libvips-42.dll）加载进内存并锁住文件，
+    // 不停止的话覆盖解压必然失败（Windows os error 32）
+    if is_dsh_running().await {
+        log::info!("Stopping running Harness service before installation");
+        stop(app_handle.clone()).await?;
+    }
+
     let window = app_handle
         .get_webview_window("main")
         .ok_or("Failed to get main window")?;

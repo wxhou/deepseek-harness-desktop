@@ -1,10 +1,40 @@
 use std::fs;
 use std::io::copy;
 use std::io::Cursor;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use crate::service::download::ProgressTracker;
 use tauri::Runtime;
+
+/// 创建文件，Windows 上文件被其他进程短暂占用（杀软扫描、残留进程）时自动重试
+///
+/// os error 32 = ERROR_SHARING_VIOLATION（文件被占用），os error 5 = 访问被拒绝，
+/// 这两类错误通常是瞬时的，等待锁释放后重试即可成功。
+fn create_file_with_retry(outpath: &Path) -> Result<fs::File, String> {
+    const MAX_ATTEMPTS: u32 = 12;
+    const RETRY_DELAY: Duration = Duration::from_millis(250);
+
+    for attempt in 1..=MAX_ATTEMPTS {
+        match fs::File::create(outpath) {
+            Ok(file) => return Ok(file),
+            Err(e) if matches!(e.raw_os_error(), Some(32 | 5)) => {
+                log::warn!(
+                    "File {:?} is locked by another process (attempt {}/{})",
+                    outpath,
+                    attempt,
+                    MAX_ATTEMPTS
+                );
+                std::thread::sleep(RETRY_DELAY);
+            }
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    Err(format!(
+        "File {:?} is still locked after {} attempts",
+        outpath, MAX_ATTEMPTS
+    ))
+}
 
 /// 解压 ZIP 文件到指定目录
 pub fn extract_zip<'a, R: Runtime>(
@@ -69,7 +99,7 @@ pub fn extract_zip<'a, R: Runtime>(
                     format!("Failed to create parent directory {:?}: {}", p, e)
                 })?;
             }
-            let mut outfile = fs::File::create(&outpath).map_err(|e| {
+            let mut outfile = create_file_with_retry(&outpath).map_err(|e| {
                 log::error!(
                     "Failed to create file {:?}: {} (parent exists: {})",
                     outpath,
