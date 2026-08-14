@@ -63,6 +63,12 @@ export default function App() {
     });
   };
 
+  // 点击侧边栏外内容（遮罩）时收起侧边栏
+  const handleCloseSidebar = () => {
+    setSidebarOpen(false);
+    localStorage.setItem("sidebarOpen", "false");
+  };
+
   const refreshIframe = useCallback(() => {
     setIframeLoaded(false);
     setIframeError(false);
@@ -296,6 +302,7 @@ export default function App() {
         <SidebarPanel
           open={sidebarOpen}
           serviceRunning={serviceRunning}
+          onClose={handleCloseSidebar}
           onRestart={restart}
           onShutdown={shutdown}
           onStart={boot}
@@ -380,6 +387,7 @@ export default function App() {
       <SidebarPanel
         open={sidebarOpen}
         serviceRunning={serviceRunning}
+        onClose={handleCloseSidebar}
         onRestart={restart}
         onShutdown={shutdown}
         onStart={boot}

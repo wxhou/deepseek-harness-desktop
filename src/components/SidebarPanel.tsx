@@ -21,6 +21,7 @@ export interface AppConfig {
 interface SidebarPanelProps {
   open: boolean;
   serviceRunning: boolean;
+  onClose: () => void;
   onRestart: () => void;
   onShutdown: () => void;
   onStart: () => void;
@@ -30,6 +31,7 @@ interface SidebarPanelProps {
 export default function SidebarPanel({
   open,
   serviceRunning,
+  onClose,
   onRestart,
   onShutdown,
   onStart,
@@ -134,11 +136,14 @@ export default function SidebarPanel({
   };
 
   return (
-    <aside
-      className={`fixed top-14.5 right-0 bottom-0 z-30 flex w-[300px] flex-col overflow-y-auto border-l border-t rounded-md border-line bg-panel shadow-2xl transition-transform duration-200 ease-out ${
-        open ? "translate-x-0" : "translate-x-full"
-      }`}
-    >
+    <>
+      {/* 点击侧边栏外内容时关闭侧边栏；透明遮罩位于内容之上、侧边栏(以及窗口控制)之下 */}
+      {open && <div aria-hidden onClick={onClose} className="fixed inset-0 z-[25]" />}
+      <aside
+        className={`fixed top-14.5 right-0 bottom-0 z-30 flex w-[300px] flex-col overflow-y-auto border-l border-t rounded-md border-line bg-panel shadow-2xl transition-transform duration-200 ease-out ${
+          open ? "translate-x-0" : "translate-x-full"
+        }`}
+      >
       <div className="px-3 pt-4 pb-5">
         <div className="mb-[18px]">
           <h3 className="mb-2 flex items-center justify-between gap-1.5 text-xs uppercase tracking-[0.06em] text-muted">{t("ui.connection_status")}</h3>
@@ -261,5 +266,6 @@ export default function SidebarPanel({
         )}
       </div>
     </aside>
+    </>
   );
 }
