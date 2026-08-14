@@ -4,10 +4,6 @@
   </a>
 </p>
 
-<p align="center">
-  <img src="docs/preivew.png" width="720" alt="DeepSeek Harness Desktop preview" />
-</p>
-
 <h1 align="center">DeepSeek Harness Desktop</h1>
 
 <p align="center">
@@ -23,6 +19,10 @@
   <img src="https://img.shields.io/badge/Tauri-2-24C8DB?style=flat-square&logo=tauri&logoColor=white" alt="Tauri 2" />
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="MIT license" />
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-black?style=flat-square" alt="Windows | macOS | Linux" />
+</p>
+
+<p align="center">
+  <img src="docs/preivew.png" width="720" alt="DeepSeek Harness Desktop preview" />
 </p>
 
 > **Status: developer preview.** The upstream `dsh` is still iterating rapidly with compatibility-breaking changes; this project tracks it closely.
