@@ -1,5 +1,7 @@
 pub mod status;
 pub mod utils;
+#[cfg(windows)]
+pub(crate) mod win_spawn;
 
 use crate::config;
 use crate::service::download;
@@ -7,6 +9,8 @@ use crate::service::workflow::utils::{is_dsh_running, is_port_in_use, spawn_outp
 use std::collections::HashMap;
 use std::fs;
 use std::process::{Command, Stdio};
+#[cfg(windows)]
+use std::ffi::OsString;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::Manager;
 
@@ -181,35 +185,59 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     fs::create_dir_all(log_path.parent().unwrap_or(std::path::Path::new(".")))
         .map_err(|e| format!("create log dir failed: {e}"))?;
 
-    let mut cmd = Command::new(&node_binary_path);
-    cmd.arg(&dsh_binary_path)
-        .arg("--profile")
-        .arg("web")
-        .arg("--host")
-        .arg("127.0.0.1")
-        .arg("--port")
-        .arg(&setting.port.to_string())
-        .envs(&envs)
-        .current_dir(config::get_dsh_install_path(&app_handle))
-        // 核心修正：提供一个空的 stdin 防止 setRawMode 报错
-        .stdin(Stdio::null())
-        // 使用管道捕获输出，以便在子线程中读取
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000);
-    }
-
     log::info!("Starting Harness process");
-    match cmd.spawn() {
-        Ok(mut child) => {
+
+    // Windows 打包版是 GUI 进程（没有控制台）。直接以 CREATE_NO_WINDOW 启动
+    // node 会让 dsh 派生的子进程各自新建可见控制台窗口（频繁闪烁 cmd 黑窗），
+    // 因此 Windows 上改用“隐藏控制台”方式启动，见 win_spawn 模块。
+    let spawn_result = {
+        #[cfg(windows)]
+        {
+            let args: Vec<OsString> = vec![
+                dsh_binary_path.as_os_str().to_os_string(),
+                OsString::from("--profile"),
+                OsString::from("web"),
+                OsString::from("--host"),
+                OsString::from("127.0.0.1"),
+                OsString::from("--port"),
+                OsString::from(setting.port.to_string()),
+            ];
+            win_spawn::spawn_with_hidden_console(
+                &node_binary_path,
+                &args,
+                Some(&config::get_dsh_install_path(&app_handle)),
+                &envs,
+            )
+            .map(|(stdout, stderr)| (Some(stdout), Some(stderr)))
+        }
+        #[cfg(not(windows))]
+        {
+            let mut cmd = Command::new(&node_binary_path);
+            cmd.arg(&dsh_binary_path)
+                .arg("--profile")
+                .arg("web")
+                .arg("--host")
+                .arg("127.0.0.1")
+                .arg("--port")
+                .arg(&setting.port.to_string())
+                .envs(&envs)
+                .current_dir(config::get_dsh_install_path(&app_handle))
+                // 核心修正：提供一个空的 stdin 防止 setRawMode 报错
+                .stdin(Stdio::null())
+                // 使用管道捕获输出，以便在子线程中读取
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            cmd.spawn().map(|mut child| {
+                let stdout = child.stdout.take();
+                let stderr = child.stderr.take();
+                (stdout, stderr)
+            })
+        }
+    };
+
+    match spawn_result {
+        Ok((stdout, stderr)) => {
             log::info!("Harness process started successfully");
-            // 获取 stdout 和 stderr，并启动读取线程
-            let stdout = child.stdout.take();
-            let stderr = child.stderr.take();
             spawn_output_readers(stdout, stderr, log_path);
 
             // 后台等待 dsh 就绪后释放启动守卫，覆盖启动窗口内的并发调用
