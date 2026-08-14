@@ -1,13 +1,13 @@
 name: Build & Release
 
 on:
-  # 正式发布：推送 v* tag 触发
+  # 正式发布：推送 v* tag 触发（先由 changelogithub 生成 changelog 并创建 release，再并行打包上传产物）
   # git tag -a v0.1.0 -m "release: DeepSeek Harness Desktop v0.1.0"
   # git push origin v0.1.0
   push:
     tags:
       - 'v*'
-  # 手动触发：支持单平台、多平台测试打包
+  # 手动触发：支持单平台、多平台测试打包（草稿 + 预发布，不打扰正式用户）
   workflow_dispatch:
     inputs:
       platform_filter:
@@ -25,12 +25,60 @@ on:
 permissions:
   contents: write
 
-env:
-  TAURI_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
-  TAURI_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
-
 jobs:
+  # 正式发布专用：根据 commit/PR 生成 changelog 并创建 release。
+  # 需要完整 git 历史（fetch-depth: 0），避免 changelog 生成器拿不到提交记录。
+  changelog:
+    name: Generate Changelog
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+          cache-dependency-path: 'pnpm-lock.yaml'
+
+      - name: Generate GitHub Changelog
+        id: changelogithub
+        run: pnpx changelogithub
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Append Artifacts section to release
+        if: steps.changelogithub.outcome == 'success'
+        run: |
+          gh release view ${{ github.ref_name }} --json body -q .body > release_notes.md
+          cat >> release_notes.md << 'EOF'
+
+             ### 📦 Artifacts
+             - **macOS (Apple Silicon)**: 下载 `aarch64.dmg`
+             - **macOS (Intel)**: 下载 `x64.dmg`
+             - **Windows**: 下载 `.exe`
+             - **Linux**: 下载 `.AppImage`
+          EOF
+          gh release edit ${{ github.ref_name }} --notes-file release_notes.md
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   publish:
+    # tag 触发时等待 changelog 生成完成再打包；手动触发时跳过 changelog 直接测试打包
+    needs: changelog
+    if: github.event_name == 'workflow_dispatch' || needs.changelog.result == 'success'
     strategy:
       fail-fast: false
       matrix:
@@ -71,6 +119,8 @@ jobs:
       - name: Checkout repository
         if: steps.check.outputs.should_run == 'true'
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install pnpm
         if: steps.check.outputs.should_run == 'true'
@@ -103,13 +153,8 @@ jobs:
         if: steps.check.outputs.should_run == 'true'
         run: pnpm install --no-frozen-lockfile
 
-      - name: Generate Changelog
-        id: changelog
-        if: steps.check.outputs.should_run == 'true' && github.event_name == 'push'
-        uses: mikepenz/release-changelog-builder-action@v4
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
+      # 正式发布：release 已由 changelog 任务创建，这里只上传产物。
+      # 注意：不要传 releaseBody —— tauri-action 会用它覆盖已有 release 的正文。
       - name: Build and Release (For Tags)
         if: steps.check.outputs.should_run == 'true' && github.event_name == 'push'
         uses: tauri-apps/tauri-action@v0
@@ -121,14 +166,6 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'DeepSeek Harness Desktop ${{ github.ref_name }}'
-          releaseBody: |
-            ${{ steps.changelog.outputs.changelog }}
-
-            ### 📦 Artifacts
-            - **macOS (Apple Silicon)**: 下载 `aarch64.dmg`
-            - **macOS (Intel)**: 下载 `x64.dmg`
-            - **Windows**: 下载 `.exe`
-            - **Linux**: 下载 `.AppImage`
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: true
@@ -148,7 +185,6 @@ jobs:
             DeepSeek Harness Desktop 手动触发的单平台/全平台测试构建。
             触发分支: `${{ github.ref_name }}`
             打包平台: `${{ github.event.inputs.platform_filter }}`
-          draft: true
           prerelease: true
           args: ${{ matrix.args }}
 
