@@ -1,4 +1,5 @@
 use crate::config;
+use crate::service::download::{self, Installable};
 use crate::service::workflow;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_clipboard_manager::ClipboardExt;
@@ -9,20 +10,48 @@ use tauri_plugin_opener::OpenerExt;
 /// 启动逻辑由前端显式调用 `launch_harness` 完成，避免重复拉起进程。
 #[tauri::command]
 pub async fn install_dependencies(app_handle: AppHandle) -> Result<(), String> {
-    let mut setting = config::get_store_dat_setting(&app_handle);
-    if setting.installed {
-        log::debug!("Already installed, skipping installation");
-        return Ok(());
-    }
     if workflow::status::get_status() == workflow::status::Status::Installing {
         log::info!("Installation process already running, skipping");
         return Ok(());
     }
-    log::debug!("Not installed detected, starting installation process");
+
+    // 以实际安装状态为准：本地安装与 GitHub 最新 release 的 commit hash
+    // 不一致时，说明上游 pkg 有更新/修复，需要自动重新下载。
+    let node_ok = download::Nodejs.check_installed(&app_handle);
+    let dsh_files_ok = download::Dsh.check_installed(&app_handle);
+    let dsh_latest = download::fetch_latest_dsh_pkg_commit().await;
+
+    let dsh_ok = match &dsh_latest {
+        Ok(commit) => {
+            dsh_files_ok
+                && config::get_dsh_pkg_commit(&app_handle).as_deref() == Some(commit.as_str())
+        }
+        Err(e) => {
+            // 网络不可用或 GitHub API 限流时保留本地安装，不阻塞启动
+            log::warn!(
+                "Failed to check latest dsh release commit, keeping local install: {}",
+                e
+            );
+            dsh_files_ok
+        }
+    };
+
+    if node_ok && dsh_ok {
+        log::debug!("Dependencies already installed and up to date, skipping installation");
+        let mut setting = config::get_store_dat_setting(&app_handle);
+        if !setting.installed {
+            setting.installed = true;
+            config::set_store_dat_setting(&app_handle, setting);
+        }
+        return Ok(());
+    }
+
+    log::debug!("Dependencies missing or outdated, starting installation process");
     workflow::status::set_status(workflow::status::Status::Installing);
     workflow::status::emit_status(&app_handle);
-    workflow::install(&app_handle).await?;
+    workflow::install(&app_handle, dsh_latest.ok()).await?;
     log::debug!("Installation completed, marked as installed");
+    let mut setting = config::get_store_dat_setting(&app_handle);
     setting.installed = true;
     config::set_store_dat_setting(&app_handle, setting);
     Ok(())

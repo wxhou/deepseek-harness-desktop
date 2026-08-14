@@ -251,7 +251,10 @@ pub async fn stop(app_handle: tauri::AppHandle) -> Result<(), String> {
 }
 
 /// 安装环境（Node.js 运行时 + 打包的 Harness 发行版）
-pub async fn install(app_handle: &tauri::AppHandle) -> Result<(), String> {
+pub async fn install(
+    app_handle: &tauri::AppHandle,
+    dsh_latest_commit: Option<String>,
+) -> Result<(), String> {
     log::info!("Starting installation process");
 
     // 安装前先停止正在运行的 Harness 服务：运行中的 node 进程会把
@@ -273,8 +276,15 @@ pub async fn install(app_handle: &tauri::AppHandle) -> Result<(), String> {
 
     for (index, task) in tasks.iter().enumerate() {
         log::debug!("Processing task {}/{}", index + 1, tasks.len());
-        if task.check_installed(app_handle) {
-            log::debug!("Task {} already installed, skipping", index + 1);
+        // 已安装但 commit 与最新 release 不一致时强制重新下载
+        let outdated = index == 1
+            && dsh_latest_commit.is_some()
+            && config::get_dsh_pkg_commit(app_handle).as_deref() != dsh_latest_commit.as_deref();
+        if task.check_installed(app_handle) && !outdated {
+            log::debug!(
+                "Task {} already installed and up to date, skipping",
+                index + 1
+            );
             tracker.skip_phases(2);
             continue;
         }
@@ -298,6 +308,13 @@ pub async fn install(app_handle: &tauri::AppHandle) -> Result<(), String> {
         download::ensure_extract(&tracker, name, buffer, dest)?;
         log::info!("Extraction completed");
         tracker.end_phase();
+
+        // 记录本次安装对应的 release commit，供下次启动比对
+        if index == 1 {
+            if let Some(commit) = &dsh_latest_commit {
+                config::set_dsh_pkg_commit(app_handle, commit.clone());
+            }
+        }
     }
 
     log::info!("All installation tasks completed");
