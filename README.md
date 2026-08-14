@@ -31,7 +31,7 @@
 
 | | |
 | --- | --- |
-| **One-click install** | On first launch, the app downloads the Node.js runtime and a prebuilt Harness bundle for you — no manual Node.js, pnpm, or Docker setup. |
+| **One-click install** | On first launch the app installs the prebuilt Harness bundle and reuses a compatible local Node.js (v22.15.0+ / v23.8.0+) when present, otherwise downloads the bundled Node.js runtime — no manual setup. |
 | **Runs 100% locally** | The `dsh web` service runs at `http://127.0.0.1:3080`. Profiles, sessions, and settings all live on your machine. |
 | **Privacy by default** | Isolated `$DSH_HOME` and telemetry disabled out of the box (`DSH_TELEMETRY_DISABLED=1`). |
 | **Cross-platform** | Installers for Windows (NSIS/MSI), macOS (DMG), and Linux (AppImage). |
@@ -43,7 +43,7 @@
 
 1. Download the installer for your platform from the [Releases](https://github.com/hairyf/deepseek-harness-desktop/releases) page.
 2. Install and launch the app.
-3. On the first run it downloads the Node.js runtime and the prebuilt Harness bundle (a few hundred MB in total). When setup finishes, the embedded Harness UI opens at `http://127.0.0.1:3080`.
+3. On the first run the app installs its dependencies: if a compatible Node.js (v22.15.0+ / v23.8.0+) is already on your machine it is reused as-is; otherwise the Node.js runtime and the prebuilt Harness bundle are downloaded (a few hundred MB in total). When setup finishes, the embedded Harness UI opens at `http://127.0.0.1:3080`.
 
 > First run requires a network connection. Everything after that runs locally.
 
@@ -54,7 +54,7 @@
 - Linux (mainstream distributions that support AppImage)
 - Network on first launch
 
-The app bundles Node.js **v22.22.0 LTS**, which satisfies the Harness requirement of **v22.15.0+ or v23.8.0+**.
+The app bundles Node.js **v22.22.0 LTS**, which satisfies the Harness requirement of **v22.15.0+ or v23.8.0+**. On first launch it first checks for a local Node.js installation: any compatible version is reused directly and the bundled runtime download is skipped.
 
 ## Development
 

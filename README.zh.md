@@ -35,7 +35,7 @@
 
 | | |
 | --- | --- |
-| **一键安装** | 首次启动自动下载 Node.js 运行时与打包好的 Harness 发行版，无需手动配置任何环境 |
+| **一键安装** | 首次启动自动安装打包好的 Harness 发行版；若本机已存在版本兼容的 Node.js（v22.15.0+ / v23.8.0+）则直接复用，否则自动下载 Node.js 运行时，无需手动配置任何环境 |
 | **纯本地运行** | `dsh web` 服务运行在 `http://127.0.0.1:3080`，profile、会话与设置全部保存在本机 |
 | **隐私默认** | 隔离的 `$DSH_HOME`，默认关闭遥测（`DSH_TELEMETRY_DISABLED=1`） |
 | **跨平台** | Windows（NSIS/MSI）、macOS（DMG）、Linux（AppImage）安装包 |
@@ -47,7 +47,7 @@
 
 1. 在 [Releases](https://github.com/hairyf/deepseek-harness-desktop/releases) 页面下载对应平台的安装包；
 2. 安装并启动应用；
-3. 首次运行会自动下载 Node.js 运行时与 Harness 发行包（合计约几百 MB）；就绪后内嵌的 Harness 界面会打开在 `http://127.0.0.1:3080`。
+3. 首次运行会自动安装依赖：若检测到本机已安装版本兼容的 Node.js（v22.15.0+ / v23.8.0+）则直接复用，否则自动下载 Node.js 运行时与 Harness 发行包（合计约几百 MB）；就绪后内嵌的 Harness 界面会打开在 `http://127.0.0.1:3080`。
 
 > 首次运行需要联网；之后一切都在本地完成。
 
@@ -58,7 +58,7 @@
 - Linux（支持 AppImage 的主流发行版）
 - 首次运行需要网络
 
-应用默认捆绑 Node.js **v22.22.0 LTS**，满足 Harness 的 **v22.15.0+ 或 v23.8.0+** 要求。
+应用默认捆绑 Node.js **v22.22.0 LTS**（满足 Harness 的 **v22.15.0+ 或 v23.8.0+** 要求）。首次启动时会优先检测本机的 Node.js 环境：只要版本兼容就直接复用本地 Node，跳过运行时的下载与安装。
 
 ## 开发与构建
 

@@ -1,7 +1,7 @@
 use serde::Serialize;
 use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager, Runtime};
 
 use super::constants::*;
@@ -49,8 +49,82 @@ pub fn get_dsh_download_url() -> Result<String, String> {
     Ok(format!("{}{}", DSH_CORE_URL, filename))
 }
 
-/// Node.js 二进制路径（安装后）
+/// 在 PATH 及常见安装目录中查找 node 可执行文件（不校验版本）
+fn find_local_node_binary() -> Option<PathBuf> {
+    let bin_name = if cfg!(windows) { "node.exe" } else { "node" };
+
+    let path_dirs: Vec<PathBuf> =
+        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+            .filter(|dir| !dir.as_os_str().is_empty())
+            .collect();
+
+    // macOS 上从 Finder/launchd 启动时 PATH 可能不完整，补充常见安装目录
+    #[cfg(target_os = "macos")]
+    let dirs: Vec<PathBuf> = {
+        let mut dirs = path_dirs;
+        dirs.extend([
+            PathBuf::from("/opt/homebrew/bin"),
+            PathBuf::from("/usr/local/bin"),
+        ]);
+        dirs
+    };
+
+    #[cfg(not(target_os = "macos"))]
+    let dirs = path_dirs;
+
+    for dir in dirs {
+        let candidate = dir.join(bin_name);
+        if candidate.is_file() && is_executable(&candidate) {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+#[cfg(unix)]
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    path.metadata()
+        .map(|meta| meta.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_executable(_path: &Path) -> bool {
+    true
+}
+
+/// 获取指定 Node.js 二进制的版本号（例如 "22.22.0"）
+fn get_node_version_of(node: &Path) -> Option<String> {
+    let output = std::process::Command::new(node).arg("--version").output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let version = stdout.trim().trim_start_matches('v');
+    if version.is_empty() {
+        None
+    } else {
+        Some(version.to_string())
+    }
+}
+
+/// 检测本地是否存在版本兼容的 Node.js 环境，返回其二进制路径
+pub fn get_local_node_path() -> Option<PathBuf> {
+    let node = find_local_node_binary()?;
+    let version = get_node_version_of(&node)?;
+    is_supported_node_version(&version).then_some(node)
+}
+
+/// Node.js 二进制路径
+///
+/// 优先级：本地版本兼容的 Node.js 环境 > 已安装的捆绑运行时
 pub fn get_node_binary_path(app_handle: &tauri::AppHandle) -> PathBuf {
+    if let Some(local_node) = get_local_node_path() {
+        log::debug!("Using local Node.js: {}", local_node.display());
+        return local_node;
+    }
+
     let runtime_dir = get_node_install_path(app_handle);
     // 使用 cfg 宏在编译时确定文件名
     let (rel_path, bin_name) = if cfg!(windows) {
@@ -99,6 +173,16 @@ pub fn get_service_log_path(app_handle: &tauri::AppHandle) -> PathBuf {
 /// 捆绑的 Node.js 版本号
 pub fn get_bundled_node_version() -> String {
     NODE_VERSION.trim_start_matches('v').to_string()
+}
+
+/// 当前实际使用的 Node.js 版本号（本地 Node 优先，其次捆绑运行时）
+pub fn get_active_node_version() -> String {
+    if let Some(local_node) = get_local_node_path() {
+        if let Some(version) = get_node_version_of(&local_node) {
+            return version;
+        }
+    }
+    get_bundled_node_version()
 }
 
 fn parse_node_version(output: &str) -> Option<(u64, u64, u64)> {
@@ -175,7 +259,7 @@ pub fn runtime_info<R: Runtime>(app: &AppHandle<R>, port: u16) -> RuntimeInfo {
     RuntimeInfo {
         app_version: app.package_info().version.to_string(),
         dsh_version: get_dsh_version(app),
-        node_version: get_bundled_node_version(),
+        node_version: get_active_node_version(),
         service_url: get_dsh_service_url(port),
         data_dir: app_data_dir.clone(),
         log_path: PathBuf::from(&app_data_dir)
