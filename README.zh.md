@@ -141,12 +141,14 @@ pnpm icons
 - **为什么首次启动要下载这么多内容？** 需要一次性下载 Node.js 运行时与 Harness 发行包（约几百 MB），之后即可离线运行。
 - **为什么每次启动都会访问 GitHub？** 用于对比本地 Harness 发行版与最新 release commit，不一致时自动重新下载；GitHub 不可达时保留本地安装。
 - **安装后如何更新？** 启动后跳过安装界面，后台静默检查新版并弹出「立即更新 / 稍后」提示；点击更新会重新下载发行版并重启服务。
-- **macOS 提示应用已损坏 / 无法打开？** 应用未签名、未公证，会被 macOS Gatekeeper 打上隔离标记（quarantine）。移除隔离属性即可绕过该检查：
+- **macOS 提示应用已损坏 / 无法打开？** 应用未经过 Apple 公证，首次启动会被 macOS Gatekeeper 拦截。可通过系统设置放行：
 
-  ```bash
-  sudo xattr -dr com.apple.quarantine "/Applications/Deepseek Harness Desktop.app"
-  open "/Applications/Deepseek Harness Desktop.app"
-  ```
+  1. 尝试打开应用，被拦截时点击 **好**（Done）；
+  2. 打开 **系统设置 → 隐私与安全性**；
+  3. 在 **安全性** 区域找到 DeepSeek Harness Desktop，点击 **仍要打开**（Open Anyway）；
+  4. 再次点击 **打开** 确认。
+
+  通常只需操作一次。
 
 ## 安全声明
 
