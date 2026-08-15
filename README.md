@@ -136,11 +136,6 @@ It contains:
 
 ## FAQ
 
-- **Port 3080 is already in use?** Change the port in the sidebar settings and restart the service.
-- **What happens during the first-time setup?** The sidebar shows the install log and the live service log.
-- **Why does the app download so much on first launch?** It downloads the Node.js runtime and the prebuilt Harness bundle (a few hundred MB) once; afterwards everything runs offline.
-- **Why does the app contact GitHub on every launch?** It compares the installed Harness bundle against the latest release commit and re-downloads automatically when they differ, so upstream fixes arrive without a manual reinstall. If GitHub is unreachable, the local install is kept as-is.
-- **How do updates work after the first install?** Later launches skip setup, check in the background for a newer release, and show a small "Update Now / Later" prompt — updating re-downloads the bundle and restarts the service.
 - **macOS reports the app is damaged / can't be opened?** The app is not Apple-notarized, so macOS Gatekeeper blocks it on first launch. Allow it via System Settings:
 
   1. Try to open the app; if macOS blocks it, click **Done**.
