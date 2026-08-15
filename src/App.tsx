@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import WindowControls from "./components/WindowControls";
 import SetupScreen, { InstallProgress, SetupStatus } from "./components/SetupScreen";
-import SidebarPanel from "./components/SidebarPanel";
+import SidebarPanel, { SidebarBusyAction } from "./components/SidebarPanel";
 import { useI18n } from "./i18n/context";
 import { generateTimestampedUrl } from "./hooks/useAutoSync";
 import { useDshTheme } from "./hooks/useDshTheme";
@@ -50,6 +50,7 @@ export default function App() {
     return saved === null ? false : saved === "true";
   });
   const [serviceRunning, setServiceRunning] = useState(false);
+  const [busyAction, setBusyAction] = useState<SidebarBusyAction>(null);
 
   const bootToken = useRef(0);
   const bootStartedRef = useRef(false);
@@ -255,6 +256,8 @@ export default function App() {
   }, [status, serviceHealthy, iframeLoaded, iframeKey]);
 
   const restart = async () => {
+    if (busyAction) return;
+    setBusyAction("restart");
     try {
       await invoke("shutdown_harness");
     } catch (err) {
@@ -262,25 +265,48 @@ export default function App() {
     }
     setServiceRunning(false);
     setIframeLoaded(false);
-    void boot();
+    try {
+      await boot();
+    } finally {
+      setBusyAction(null);
+    }
   };
 
   const shutdown = async () => {
+    if (busyAction) return;
+    setBusyAction("shutdown");
     try {
       await invoke("shutdown_harness");
     } catch (err) {
       console.error("[App] shutdown failed:", err);
+    } finally {
+      setBusyAction(null);
     }
     setServiceRunning(false);
     setStatus("error");
     setErrorMsg(t("ui.stopped"));
   };
 
+  // 服务未运行时点击"重试"：重新拉起服务并等待健康检查
+  const start = async () => {
+    if (busyAction) return;
+    setBusyAction("start");
+    try {
+      await boot();
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
   const openBrowser = async () => {
+    if (busyAction) return;
+    setBusyAction("openBrowser");
     try {
       await invoke("open_in_browser");
     } catch (err) {
       console.error("[App] open in browser failed:", err);
+    } finally {
+      setBusyAction(null);
     }
   };
 
@@ -302,10 +328,11 @@ export default function App() {
         <SidebarPanel
           open={sidebarOpen}
           serviceRunning={serviceRunning}
+          busyAction={busyAction}
           onClose={handleCloseSidebar}
           onRestart={restart}
           onShutdown={shutdown}
-          onStart={boot}
+          onStart={start}
           onOpenBrowser={openBrowser}
         />
       </div>
@@ -387,10 +414,11 @@ export default function App() {
       <SidebarPanel
         open={sidebarOpen}
         serviceRunning={serviceRunning}
+        busyAction={busyAction}
         onClose={handleCloseSidebar}
         onRestart={restart}
         onShutdown={shutdown}
-        onStart={boot}
+        onStart={start}
         onOpenBrowser={openBrowser}
       />
     </div>

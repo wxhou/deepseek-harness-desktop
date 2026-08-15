@@ -18,9 +18,12 @@ export interface AppConfig {
   auto_start: boolean;
 }
 
+export type SidebarBusyAction = "restart" | "shutdown" | "start" | "openBrowser" | null;
+
 interface SidebarPanelProps {
   open: boolean;
   serviceRunning: boolean;
+  busyAction: SidebarBusyAction;
   onClose: () => void;
   onRestart: () => void;
   onShutdown: () => void;
@@ -28,9 +31,17 @@ interface SidebarPanelProps {
   onOpenBrowser: () => void;
 }
 
+// 按钮内的小型加载指示器：边框旋转动画，颜色跟随当前文字
+function Spinner() {
+  return (
+    <span className="inline-block h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-current border-t-transparent" />
+  );
+}
+
 export default function SidebarPanel({
   open,
   serviceRunning,
+  busyAction,
   onClose,
   onRestart,
   onShutdown,
@@ -39,7 +50,7 @@ export default function SidebarPanel({
 }: SidebarPanelProps) {
   const { t, language, setLanguage } = useI18n();
   const btnBase =
-    "inline-flex cursor-pointer items-center justify-center rounded-md border border-line bg-panel2 px-2 py-1 text-xs text-ink transition-colors hover:border-line-strong hover:bg-panel-hover disabled:cursor-not-allowed disabled:opacity-55";
+    "inline-flex cursor-pointer items-center justify-center gap-1.5 rounded-md border border-line bg-panel2 px-2 py-1 text-xs text-ink transition-colors hover:border-line-strong hover:bg-panel-hover disabled:cursor-not-allowed disabled:opacity-55";
   const btnPrimary = `${btnBase} border-accent bg-accent text-white hover:border-accent2 hover:bg-accent2`;
   const btnDanger = `${btnBase} border-[rgba(229,72,77,0.4)] text-danger`;
   const btnBlock = " mt-1.5 w-full";
@@ -49,13 +60,18 @@ export default function SidebarPanel({
   const [logs, setLogs] = useState("");
   const [notice, setNotice] = useState("");
   const [saving, setSaving] = useState(false);
+  const [busy, setBusy] = useState<string | null>(null);
 
   const refreshInfo = async () => {
+    if (busy) return;
+    setBusy("refreshInfo");
     try {
       const nextInfo = await invoke<RuntimeInfo>("get_runtime_info");
       setInfo(nextInfo);
     } catch (err) {
       console.error("[SidebarPanel] failed to load runtime info:", err);
+    } finally {
+      setBusy(null);
     }
   };
 
@@ -70,10 +86,14 @@ export default function SidebarPanel({
   };
 
   const refreshLogs = async () => {
+    if (busy) return;
+    setBusy("refreshLogs");
     try {
       setLogs(await invoke<string>("read_service_logs", { maxBytes: 64 * 1024 }));
     } catch (err) {
       console.error("[SidebarPanel] failed to read logs:", err);
+    } finally {
+      setBusy(null);
     }
   };
 
@@ -109,29 +129,41 @@ export default function SidebarPanel({
   };
 
   const copyUrl = async () => {
+    if (busy) return;
+    setBusy("copy");
     try {
       await invoke("copy_service_url");
       setNotice(t("messages.copy_success"));
     } catch {
       setNotice(t("messages.copy_failed"));
+    } finally {
+      setBusy(null);
     }
   };
 
   const clearLogs = async () => {
+    if (busy) return;
+    setBusy("clearLogs");
     try {
       await invoke("clear_service_logs");
       setLogs("");
       setNotice(t("messages.logs_cleared"));
     } catch (err) {
       console.error("[SidebarPanel] failed to clear logs:", err);
+    } finally {
+      setBusy(null);
     }
   };
 
   const revealDataDir = async () => {
+    if (busy) return;
+    setBusy("revealDataDir");
     try {
       await invoke("reveal_data_dir");
     } catch (err) {
       console.error("[SidebarPanel] failed to reveal data dir:", err);
+    } finally {
+      setBusy(null);
     }
   };
 
@@ -160,11 +192,17 @@ export default function SidebarPanel({
           <h3 className="mb-2 flex items-center justify-between gap-1.5 text-xs uppercase tracking-[0.06em] text-muted">{t("ui.service_url")}</h3>
           <div className="flex items-center gap-1.5">
             <code className="flex-1 truncate rounded-md border border-line bg-panel2 px-2 py-1.5 text-xs">{info?.service_url ?? "-"}</code>
-            <button className={btnBase} onClick={copyUrl} title={t("app.copy_url")}>
+            <button className={btnBase} onClick={copyUrl} disabled={busy === "copy"} title={t("app.copy_url")}>
+              {busy === "copy" && <Spinner />}
               {t("buttons.copy")}
             </button>
           </div>
-          <button className={`${btnBase}${btnBlock}`} onClick={onOpenBrowser}>
+          <button
+            className={`${btnBase}${btnBlock}`}
+            onClick={onOpenBrowser}
+            disabled={busyAction !== null}
+          >
+            {busyAction === "openBrowser" && <Spinner />}
             {t("app.open_browser")}
           </button>
         </div>
@@ -174,19 +212,23 @@ export default function SidebarPanel({
           <div className="flex flex-wrap gap-1.5">
             {serviceRunning ? (
               <>
-                <button className={btnBase} onClick={onRestart}>
+                <button className={btnBase} onClick={onRestart} disabled={busyAction !== null}>
+                  {busyAction === "restart" && <Spinner />}
                   {t("app.restart")}
                 </button>
-                <button className={btnDanger} onClick={onShutdown}>
+                <button className={btnDanger} onClick={onShutdown} disabled={busyAction !== null}>
+                  {busyAction === "shutdown" && <Spinner />}
                   {t("app.shutdown")}
                 </button>
               </>
             ) : (
-              <button className={btnPrimary} onClick={onStart}>
+              <button className={btnPrimary} onClick={onStart} disabled={busyAction !== null}>
+                {busyAction === "start" && <Spinner />}
                 {t("app.retry")}
               </button>
             )}
-            <button className={btnBase} onClick={refreshInfo}>
+            <button className={btnBase} onClick={refreshInfo} disabled={busy === "refreshInfo"}>
+              {busy === "refreshInfo" && <Spinner />}
               {t("app.refresh")}
             </button>
           </div>
@@ -208,7 +250,8 @@ export default function SidebarPanel({
             <dt className="mt-1.5 text-muted">{t("ui.data_dir")}</dt>
             <dd className="mt-0.5 flex items-center justify-center gap-2" title={info?.data_dir}>
               <div className="break-all truncate">{info?.data_dir ?? "-"}</div>
-              <button className={`${btnBase} flex-shrink-0 text-[10px]`} onClick={revealDataDir}>
+              <button className={`${btnBase} flex-shrink-0 text-[10px]`} onClick={revealDataDir} disabled={busy === "revealDataDir"}>
+                {busy === "revealDataDir" && <Spinner />}
                 {t("app.reveal_dir")}
               </button>
             </dd>
@@ -231,7 +274,14 @@ export default function SidebarPanel({
             <span>{t("ui.auto_start")}</span>
           </label>
           <button className={`${btnBase}${btnBlock}`} onClick={saveConfig} disabled={saving}>
-            {saving ? t("ui.saved") : t("ui.save")}
+            {saving ? (
+              <>
+                <Spinner />
+                {t("ui.saved")}
+              </>
+            ) : (
+              t("ui.save")
+            )}
           </button>
           <div className="mt-2.5 flex items-center gap-2 text-[13px]">
             <span>{t("ui.language")}:</span>
@@ -249,12 +299,13 @@ export default function SidebarPanel({
         <div className="flex flex-col gap-1.5">
           <h3 className="mb-2 flex items-center justify-between gap-1.5 text-xs uppercase tracking-[0.06em] text-muted">
             {t("ui.logs")}
-            <button className={btnBase} onClick={refreshLogs} title={t("buttons.refresh_logs")}>
-              ↻
+            <button className={btnBase} onClick={refreshLogs} disabled={busy === "refreshLogs"} title={t("buttons.refresh_logs")}>
+              {busy === "refreshLogs" ? <Spinner /> : "↻"}
             </button>
           </h3>
           <pre className="m-0 max-h-[200px] overflow-auto whitespace-pre-wrap break-all rounded-md border border-line bg-log-bg px-2 py-2 text-[11px] leading-[1.45] text-log-ink">{logs || t("ui.no_logs")}</pre>
-          <button className={btnBase} onClick={clearLogs}>
+          <button className={btnBase} onClick={clearLogs} disabled={busy === "clearLogs"}>
+            {busy === "clearLogs" && <Spinner />}
             {t("buttons.clear_logs")}
           </button>
         </div>
