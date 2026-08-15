@@ -120,15 +120,6 @@ export function Hero() {
         <div className="animate-fade-up relative mx-auto mt-16 max-w-5xl" style={{ animationDelay: "420ms" }}>
           <div className="absolute -inset-x-8 -top-10 bottom-10 -z-10 rounded-[40px] bg-gradient-to-t from-accent/20 to-transparent blur-2xl" />
           <div className="overflow-hidden rounded-2xl border border-line bg-panel shadow-[0_24px_80px_rgba(0,0,0,0.45)]">
-            <div className="flex items-center gap-2 border-b border-line bg-panel-2 px-4 py-3">
-              <span className="h-3 w-3 rounded-full bg-[#ff5f57]" />
-              <span className="h-3 w-3 rounded-full bg-[#febc2e]" />
-              <span className="h-3 w-3 rounded-full bg-[#28c840]" />
-              <div className="mx-auto flex items-center gap-1.5 rounded-md bg-canvas px-4 py-1 text-xs text-muted">
-                <span className="h-2 w-2 rounded-full bg-ok" />
-                http://127.0.0.1:3080
-              </div>
-            </div>
             <img
               src="https://raw.githubusercontent.com/hairyf/deepseek-harness-desktop/main/docs/preivew.png"
               alt={t("hero.imgAlt")}
