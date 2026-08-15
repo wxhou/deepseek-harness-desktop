@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
-import WindowControls from "./components/WindowControls";
+// 暂时改用 Tauri 原生标题栏，自定义顶部导航（WindowControls）隐藏
+// import WindowControls from "./components/WindowControls";
 import SetupScreen, { InstallProgress, SetupStatus } from "./components/SetupScreen";
 import SidebarPanel, { SidebarBusyAction } from "./components/SidebarPanel";
 import { useI18n } from "./i18n/context";
@@ -57,12 +58,13 @@ export default function App() {
 
   const iframeSrc = useMemo(() => generateTimestampedUrl(serviceUrl), [serviceUrl]);
 
-  const handleToggleSidebar = () => {
-    setSidebarOpen((prev) => {
-      localStorage.setItem("sidebarOpen", String(!prev));
-      return !prev;
-    });
-  };
+  // 暂时隐藏自定义顶部导航，改用 Tauri 原生标题栏，以下逻辑暂未使用
+  // const handleToggleSidebar = () => {
+  //   setSidebarOpen((prev) => {
+  //     localStorage.setItem("sidebarOpen", String(!prev));
+  //     return !prev;
+  //   });
+  // };
 
   // 点击侧边栏外内容（遮罩）时收起侧边栏
   const handleCloseSidebar = () => {
@@ -324,7 +326,8 @@ export default function App() {
             onRetry={boot}
           />
         </main>
-        <WindowControls sidebarOpen={sidebarOpen} onToggleSidebar={handleToggleSidebar} />
+        {/* 暂时隐藏自定义顶部导航，使用 Tauri 原生标题栏
+        <WindowControls sidebarOpen={sidebarOpen} onToggleSidebar={handleToggleSidebar} /> */}
         <SidebarPanel
           open={sidebarOpen}
           serviceRunning={serviceRunning}
@@ -353,7 +356,8 @@ export default function App() {
             onRetry={boot}
           />
         </main>
-        <WindowControls sidebarOpen={sidebarOpen} onToggleSidebar={handleToggleSidebar} />
+        {/* 暂时隐藏自定义顶部导航，使用 Tauri 原生标题栏
+        <WindowControls sidebarOpen={sidebarOpen} onToggleSidebar={handleToggleSidebar} /> */}
       </div>
     );
   }
@@ -410,7 +414,8 @@ export default function App() {
           </button>
         </div>
       )}
-      <WindowControls sidebarOpen={sidebarOpen} onToggleSidebar={handleToggleSidebar} />
+      {/* 暂时隐藏自定义顶部导航，使用 Tauri 原生标题栏
+      <WindowControls sidebarOpen={sidebarOpen} onToggleSidebar={handleToggleSidebar} /> */}
       <SidebarPanel
         open={sidebarOpen}
         serviceRunning={serviceRunning}
