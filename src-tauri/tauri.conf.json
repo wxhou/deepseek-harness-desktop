@@ -10,20 +10,6 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "windows": [
-      {
-        "title": "Deepseek Harness Desktop",
-        "width": 1280,
-        "height": 840,
-        "minWidth": 860,
-        "minHeight": 620,
-        "resizable": true,
-        "fullscreen": false,
-        "maximized": false,
-        "decorations": true,
-        "dragDropEnabled": false
-      }
-    ],
     "security": {
       "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost 'self' http://127.0.0.1:* ws://127.0.0.1:*; frame-src http://127.0.0.1:*; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self'"
     }

@@ -197,6 +197,13 @@ pub async fn copy_service_url(app_handle: AppHandle) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// 在系统文件管理器中定位指定文件（Session 日志下载完成后的"在文件夹中显示"）
+#[tauri::command]
+pub fn reveal_in_folder(path: String) -> Result<(), String> {
+    tauri_plugin_opener::reveal_item_in_dir(&path)
+        .map_err(|e| format!("REVEAL_FAILED: {e}"))
+}
+
 /// 在系统文件管理器中打开数据目录
 #[tauri::command]
 pub async fn reveal_data_dir(app_handle: AppHandle) -> Result<(), String> {

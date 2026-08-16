@@ -10,8 +10,21 @@ use tauri::{
     ipc::Invoke,
     menu::{Menu, MenuEvent, MenuItem},
     tray::{MouseButton, TrayIconBuilder, TrayIconEvent},
-    Manager, Runtime, Wry,
+    webview::DownloadEvent,
+    Emitter, Manager, Runtime, WebviewUrl, WebviewWindowBuilder, Wry,
 };
+
+/// 下载完成事件载荷：`on_download` 的 Finished 分支向前端 emit，
+/// 由桌面外壳展示"已保存 + 打开文件夹"提示（iframe 内的下载对用户不可见）。
+#[derive(Clone, serde::Serialize)]
+struct DownloadFinishedPayload {
+    /// 原始下载地址（dsh 的 /api/session.export?sessionId=...）
+    url: String,
+    /// 保存到本地的完整路径；失败或平台拿不到路径时为 None
+    path: Option<String>,
+    /// 下载是否成功
+    success: bool,
+}
 
 // setup app
 fn setup(app_handle: tauri::AppHandle) {
@@ -117,6 +130,7 @@ fn handler() -> impl Fn(Invoke<Wry>) -> bool + Send + Sync + 'static {
         bridge::cmd::open_in_browser,
         bridge::cmd::copy_service_url,
         bridge::cmd::reveal_data_dir,
+        bridge::cmd::reveal_in_folder,
         bridge::cmd::read_service_logs,
         bridge::cmd::clear_service_logs,
         bridge::cmd::set_language,
@@ -128,6 +142,55 @@ fn handler() -> impl Fn(Invoke<Wry>) -> bool + Send + Sync + 'static {
 // configure tauri builder
 fn builder() -> tauri::Builder<tauri::Wry> {
     tauri::Builder::default()
+        // 主窗口在这里手动创建（不再从 tauri.conf.json 声明）：
+        // config 声明的窗口无法挂载 on_download，而内嵌 iframe 的 dsh 页面
+        // 触发下载时 WebView2 静默保存、用户零感知，需要接管下载以给出反馈。
+        .setup(|app| {
+            WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+                .title("Deepseek Harness Desktop")
+                .inner_size(1280.0, 840.0)
+                .min_inner_size(860.0, 620.0)
+                .resizable(true)
+                .decorations(true)
+                .on_download(|webview, event| match event {
+                    DownloadEvent::Requested { url, destination } => {
+                        // 接管下载：保存到系统下载目录，重名时自动加 " (n)" 后缀
+                        *destination = config::unique_download_path(destination);
+                        log::info!(
+                            "[download] requested {} -> {}",
+                            url,
+                            destination.display()
+                        );
+                        true
+                    }
+                    DownloadEvent::Finished {
+                        url,
+                        path,
+                        success,
+                    } => {
+                        let path_str = path.as_ref().map(|p| p.to_string_lossy().to_string());
+                        let payload = DownloadFinishedPayload {
+                            url: url.to_string(),
+                            path: path_str,
+                            success,
+                        };
+                        let _ = webview.emit("harness-download-finished", payload);
+                        log::info!(
+                            "[download] finished {} success={} path={:?}",
+                            url,
+                            success,
+                            path
+                        );
+                        true
+                    }
+                    // DownloadEvent 为 #[non_exhaustive]，预留未来变体
+                    _ => true,
+                })
+                .build()?;
+            tray(&app.handle())?;
+            setup(app.handle().clone());
+            Ok(())
+        })
         // 点击关闭按钮时隐藏到托盘而不是退出程序
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
@@ -151,11 +214,6 @@ pub fn run() {
     logger::init();
 
     builder()
-        .setup(|app| {
-            tray(&app.handle()).unwrap();
-            setup(app.handle().clone());
-            Ok(())
-        })
         .invoke_handler(handler())
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
