@@ -4,8 +4,9 @@ import { useI18n } from '../i18n/i18n-context'
 import Loadable from './loadable'
 import SetupScreen from './setup-screen'
 
+// 官方 md 主按钮：h36 / 圆角 18px 胶囊 / 中性品牌色填充无边框（对应 ui-primitives Button）
 const btnPrimary
-  = 'inline-flex cursor-pointer items-center justify-center rounded-md border border-accent bg-accent px-3 py-1.5 text-[13px] text-white transition-colors hover:bg-accent2 disabled:cursor-not-allowed disabled:opacity-55'
+  = 'inline-flex h-9 cursor-pointer items-center justify-center gap-1 rounded-[18px] bg-btn-fill px-3.5 text-sm leading-[22px] text-btn-ink transition-colors hover:bg-btn-fill-hover disabled:cursor-not-allowed disabled:opacity-40'
 
 interface HarnessViewProps {
   status: SetupStatus

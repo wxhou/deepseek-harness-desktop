@@ -40,10 +40,12 @@ interface SidebarPanelProps {
   onOpenBrowser: () => void
 }
 
-// 按钮内的小型加载指示器：边框旋转动画，颜色跟随当前文字
+// 按钮内的小型加载指示器：边框旋转动画，颜色跟随当前文字。
+// 用 animate-load-spin（直接 animation + keyframes）而非 animate-spin，
+// 避免 Tailwind var() 间接层在 WebView2 下不旋转。
 function Spinner() {
   return (
-    <span className="inline-block h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-current border-t-transparent" />
+    <span className="inline-block h-3 w-3 shrink-0 animate-load-spin rounded-full border-2 border-current border-t-transparent" />
   )
 }
 
@@ -58,10 +60,14 @@ export default function SidebarPanel({
   onOpenBrowser,
 }: SidebarPanelProps) {
   const { t, language, setLanguage } = useI18n()
+  // 官方 sm 按钮几何：h28 / 圆角 14px 胶囊 / padding 0 10px / 12px 字号（对应 ui-primitives Button）
   const btnBase
-    = 'inline-flex cursor-pointer items-center justify-center gap-1.5 rounded-md border border-line bg-panel2 px-2 py-1 text-xs text-ink transition-colors hover:border-line-strong hover:bg-panel-hover disabled:cursor-not-allowed disabled:opacity-55'
-  const btnPrimary = `${btnBase} border-accent bg-accent text-white hover:border-accent2 hover:bg-accent2`
-  const btnDanger = `${btnBase} border-[rgba(229,72,77,0.4)] text-danger`
+    = 'inline-flex h-7 cursor-pointer items-center justify-center gap-1 rounded-[14px] px-2.5 text-xs text-ink transition-colors disabled:cursor-not-allowed disabled:opacity-40'
+  // ghost 风格：透明底 + 官方 interactive-bg-hover/active 微透明底
+  const btnGhost = `${btnBase} hover:bg-btn-hover active:bg-btn-active`
+  // 主按钮：官方中性品牌色填充，无边框
+  const btnPrimary = `${btnBase} bg-btn-fill text-btn-ink hover:bg-btn-fill-hover`
+  const btnDanger = `${btnGhost} text-danger hover:bg-btn-danger-hover`
   const btnBlock = ' mt-1.5 w-full'
   const [info, setInfo] = useState<RuntimeInfo | null>(null)
   const [port, setPort] = useState('3080')
@@ -241,13 +247,13 @@ export default function SidebarPanel({
             <h3 className="mb-2 flex items-center justify-between gap-1.5 text-xs uppercase tracking-[0.06em] text-muted">{t('ui.service_url')}</h3>
             <div className="flex items-center gap-1.5">
               <code className="flex-1 truncate rounded-md border border-line bg-panel2 px-2 py-1.5 text-xs">{info?.service_url ?? '-'}</code>
-              <button className={btnBase} onClick={copyUrl} disabled={busy === 'copy'} title={t('app.copy_url')}>
+              <button className={btnGhost} onClick={copyUrl} disabled={busy === 'copy'} title={t('app.copy_url')}>
                 {busy === 'copy' && <Spinner />}
                 {t('buttons.copy')}
               </button>
             </div>
             <button
-              className={`${btnBase}${btnBlock}`}
+              className={`${btnGhost}${btnBlock}`}
               onClick={onOpenBrowser}
               disabled={busyAction !== null}
             >
@@ -262,7 +268,7 @@ export default function SidebarPanel({
               {serviceRunning
                 ? (
                     <>
-                      <button className={btnBase} onClick={onRestart} disabled={busyAction !== null}>
+                      <button className={btnGhost} onClick={onRestart} disabled={busyAction !== null}>
                         {busyAction === 'restart' && <Spinner />}
                         {t('app.restart')}
                       </button>
@@ -278,7 +284,7 @@ export default function SidebarPanel({
                       {t('app.retry')}
                     </button>
                   )}
-              <button className={btnBase} onClick={refreshInfo} disabled={busy === 'refreshInfo'}>
+              <button className={btnGhost} onClick={refreshInfo} disabled={busy === 'refreshInfo'}>
                 {busy === 'refreshInfo' && <Spinner />}
                 {t('app.refresh')}
               </button>
@@ -307,7 +313,7 @@ export default function SidebarPanel({
               <dt className="mt-1.5 text-muted">{t('ui.data_dir')}</dt>
               <dd className="mt-0.5 flex items-center justify-center gap-2" title={info?.data_dir}>
                 <div className="break-all truncate">{info?.data_dir ?? '-'}</div>
-                <button className={`${btnBase} flex-shrink-0 text-[10px]`} onClick={revealDataDir} disabled={busy === 'revealDataDir'}>
+                <button className={`${btnGhost} flex-shrink-0 text-[10px]`} onClick={revealDataDir} disabled={busy === 'revealDataDir'}>
                   {busy === 'revealDataDir' && <Spinner />}
                   {t('app.reveal_dir')}
                 </button>
@@ -352,7 +358,7 @@ export default function SidebarPanel({
               <p className="mt-1 text-[11px] text-muted">{t('ui.cli_link_hint')}</p>
             </div>
 
-            <button className={`${btnBase}${btnBlock}`} onClick={saveConfig} disabled={saving}>
+            <button className={`${btnPrimary}${btnBlock}`} onClick={saveConfig} disabled={saving}>
               {saving
                 ? (
                     <>
@@ -383,12 +389,12 @@ export default function SidebarPanel({
           <div className="flex flex-col gap-1.5">
             <h3 className="mb-2 flex items-center justify-between gap-1.5 text-xs uppercase tracking-[0.06em] text-muted">
               {t('ui.logs')}
-              <button className={btnBase} onClick={refreshLogs} disabled={busy === 'refreshLogs'} title={t('buttons.refresh_logs')}>
+              <button className={btnGhost} onClick={refreshLogs} disabled={busy === 'refreshLogs'} title={t('buttons.refresh_logs')}>
                 {busy === 'refreshLogs' ? <Spinner /> : '↻'}
               </button>
             </h3>
             <pre className="m-0 max-h-[200px] overflow-auto whitespace-pre-wrap break-all rounded-md border border-line bg-log-bg px-2 py-2 text-[11px] leading-[1.45] text-log-ink">{logs || t('ui.no_logs')}</pre>
-            <button className={btnBase} onClick={clearLogs} disabled={busy === 'clearLogs'}>
+            <button className={btnGhost} onClick={clearLogs} disabled={busy === 'clearLogs'}>
               {busy === 'clearLogs' && <Spinner />}
               {t('buttons.clear_logs')}
             </button>
