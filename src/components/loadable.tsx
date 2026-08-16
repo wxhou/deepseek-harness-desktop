@@ -12,10 +12,12 @@ const LOG_LIMIT = 5
  * wordmark（16px/600/0.08em）+ 20px 2px 单色 spinner（0.8s 旋转，
  * 顶弧取 brand-primary，明暗主题下即黑/白）+ 12px/18px hint，16px gap。
  * 颜色通过 load-* 系列主题变量精确对应官方 dsw alias token。
+ * spinner 动画直接抄官方（.animate-load-spin + @keyframes load-spin），
+ * 不用 Tailwind animate-spin，避免 var() 间接层在 WebView2 下不旋转。
  * 传入 icon/title/subtitle/percentage/logs/errorMsg/onRetry 后按需扩展。
  */
 export interface LoadableProps {
-  /** 状态图标（lucide 组件），不传则不显示（官方 boot 页无图标） */
+  /** 状态图标（lucide 组件），仅失败态显示；加载态已有 spinner，不再叠加图标（官方 boot 页无图标） */
   icon?: LucideIcon
   /** wordmark 位文案，默认官网的 "HARNESS" */
   title?: string
@@ -53,7 +55,8 @@ export default function Loadable({
   return (
     <div className="flex h-full items-center justify-center bg-load-bg -mt-[1px]">
       <div className="flex w-[min(460px,88vw)] flex-col items-center gap-4 text-center">
-        {Icon && <Icon className="size-7 text-load-ink" strokeWidth={1.75} />}
+        {/* 加载态显示 spinner 时隐藏图标（官方 boot 页即无图标），避免与 spinner 重复突兀；仅失败态显示 */}
+        {error && Icon && <Icon className="size-7 text-load-ink" strokeWidth={1.75} />}
 
         <span className="text-base leading-6 font-semibold tracking-[0.08em] text-load-ink truncate">{wordmark}</span>
 
@@ -64,14 +67,14 @@ export default function Loadable({
             )
           : (
               <>
-                <span className="h-5 w-5 animate-spin rounded-full border-2 border-load-ring border-t-load-ink [animation-duration:0.8s]" />
+                <span className="h-5 w-5 animate-load-spin rounded-full border-2 border-load-ring border-t-load-ink" />
                 <p className="min-h-[18px] text-xs leading-[18px] break-all text-load-muted">{hint}</p>
               </>
             )}
 
         {onRetry && (
           <button
-            className="inline-flex cursor-pointer items-center justify-center rounded-md border border-accent bg-accent px-3 py-1.5 text-[13px] text-white transition-colors hover:bg-accent2 disabled:cursor-not-allowed disabled:opacity-55"
+            className="inline-flex h-9 cursor-pointer items-center justify-center gap-1 rounded-[18px] bg-btn-fill px-3.5 text-sm leading-[22px] text-btn-ink transition-colors hover:bg-btn-fill-hover disabled:cursor-not-allowed disabled:opacity-40"
             onClick={onRetry}
           >
             {t('app.retry')}
