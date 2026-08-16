@@ -30,7 +30,7 @@ export function useDshTheme(): ResolvedTheme {
     let unlisten: UnlistenFn | null = null
     let disposed = false
 
-    const apply = (preference: DshThemePreference) => {
+    function apply(preference: DshThemePreference) {
       preferenceRef.current = preference
       if (!disposed) {
         setTheme(resolveTheme(preference))
@@ -53,7 +53,7 @@ export function useDshTheme(): ResolvedTheme {
     })
 
     const mediaQuery = window.matchMedia(DARK_QUERY)
-    const onSystemThemeChange = () => {
+    function onSystemThemeChange() {
       if (preferenceRef.current === 'system') {
         setTheme(resolveTheme('system'))
       }

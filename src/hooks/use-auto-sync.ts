@@ -11,7 +11,7 @@ export function useAutoSync(onSync: () => void) {
   useEffect(() => {
     let unlisten: UnlistenFn | null = null
 
-    const setupListener = async () => {
+    async function setupListener() {
       try {
         unlisten = await listen<string>('app://sync-state', () => onSync())
       }
@@ -20,7 +20,7 @@ export function useAutoSync(onSync: () => void) {
       }
     }
 
-    setupListener()
+    void setupListener()
     return () => {
       unlisten?.()
     }

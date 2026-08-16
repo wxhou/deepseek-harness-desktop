@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 import { useEffect, useState } from 'react'
-import { useI18n } from '../i18n/context'
+import { useI18n } from '../i18n/i18n-context'
 
 export interface RuntimeInfo {
   app_version: string
@@ -74,7 +74,7 @@ export default function SidebarPanel({
   const [saving, setSaving] = useState(false)
   const [busy, setBusy] = useState<string | null>(null)
 
-  const refreshInfo = async () => {
+  async function refreshInfo() {
     if (busy)
       return
     setBusy('refreshInfo')
@@ -90,7 +90,7 @@ export default function SidebarPanel({
     }
   }
 
-  const refreshConfig = async () => {
+  async function refreshConfig() {
     try {
       const nextConfig = await invoke<AppConfig>('get_app_config')
       setPort(String(nextConfig.port))
@@ -102,7 +102,7 @@ export default function SidebarPanel({
     }
   }
 
-  const refreshCliStatus = async () => {
+  async function refreshCliStatus() {
     try {
       setCliStatus(await invoke<CliLinkStatus>('get_cli_link_status'))
     }
@@ -111,7 +111,7 @@ export default function SidebarPanel({
     }
   }
 
-  const refreshLogs = async () => {
+  async function refreshLogs() {
     if (busy)
       return
     setBusy('refreshLogs')
@@ -127,10 +127,10 @@ export default function SidebarPanel({
   }
 
   useEffect(() => {
-    refreshInfo()
-    refreshConfig()
-    refreshCliStatus()
-    refreshLogs()
+    void refreshInfo()
+    void refreshConfig()
+    void refreshCliStatus()
+    void refreshLogs()
     // eslint-disable-next-line react/exhaustive-deps
   }, [])
 
@@ -141,7 +141,7 @@ export default function SidebarPanel({
     return () => clearTimeout(timer)
   }, [notice])
 
-  const saveConfig = async () => {
+  async function saveConfig() {
     setSaving(true)
     try {
       const nextPort = Number(port)
@@ -170,7 +170,7 @@ export default function SidebarPanel({
     }
   }
 
-  const copyUrl = async () => {
+  async function copyUrl() {
     if (busy)
       return
     setBusy('copy')
@@ -186,7 +186,7 @@ export default function SidebarPanel({
     }
   }
 
-  const clearLogs = async () => {
+  async function clearLogs() {
     if (busy)
       return
     setBusy('clearLogs')
@@ -203,7 +203,7 @@ export default function SidebarPanel({
     }
   }
 
-  const revealDataDir = async () => {
+  async function revealDataDir() {
     if (busy)
       return
     setBusy('revealDataDir')

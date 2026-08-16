@@ -43,7 +43,7 @@ export const I18nProvider: React.FC<{ children: ReactNode, defaultLanguage?: Lan
   children,
   defaultLanguage = 'en',
 }) => {
-  const getInitialLanguage = (): Language => {
+  function getInitialLanguage(): Language {
     const saved = localStorage.getItem(STORAGE_KEY) as Language | null
     if (saved === 'en' || saved === 'zh') {
       return saved
@@ -54,7 +54,7 @@ export const I18nProvider: React.FC<{ children: ReactNode, defaultLanguage?: Lan
 
   const [languageState, setLanguageState] = useState<Language>(getInitialLanguage)
 
-  const setLanguage = (lang: Language) => {
+  function setLanguage(lang: Language) {
     setLanguageState(lang)
     localStorage.setItem(STORAGE_KEY, lang)
     invoke('set_language', { lang }).catch(() => {
@@ -62,8 +62,9 @@ export const I18nProvider: React.FC<{ children: ReactNode, defaultLanguage?: Lan
     })
   }
 
-  const t = (key: string, params?: Record<string, string | number>): string =>
-    getTranslation(translations[languageState], key, params)
+  function t(key: string, params?: Record<string, string | number>): string {
+    return getTranslation(translations[languageState], key, params)
+  }
 
   useEffect(() => {
     document.documentElement.lang = languageState
