@@ -1,3 +1,4 @@
+/* eslint-disable react/dom-no-unsafe-iframe-sandbox */
 import type { InstallerState } from '../hooks/use-harness'
 import type { SetupStatus } from './setup-screen'
 import { useI18n } from '../i18n/i18n-context'
@@ -80,10 +81,18 @@ export default function HarnessView({
       {serviceHealthy
         ? (
             // 底色用 load-bg 与官方 boot 页一致，交接瞬间无闪白
+            // allow="all"：dsh 页面与外壳跨源，Permissions Policy 的 clipboard-write
+            // 默认 allowlist 仅 self，跨源 iframe 里 navigator.clipboard.writeText()
+            // 会抛 NotAllowedError（dsh 的复制按钮/JSON 复制均依赖它，控制台报
+            // "Permissions policy violation: The Clipboard API has been blocked"）。
+            // 这里不做白名单限制，直接放行全部策略特性（同禁用拖拽的
+            // disable_drag_drop_handler 一样，是外壳层面对 WebView2 默认行为的修正）。
             <iframe
               key={iframeKey}
               className="block h-full w-full border-none bg-load-bg"
               src={iframeSrc}
+              allow="clipboard-read; clipboard-write; camera; microphone; geolocation; display-capture; autoplay; encrypted-media; fullscreen"
+              sandbox="allow-same-origin allow-scripts allow-popups allow-forms allow-modals allow-downloads allow-storage-access-by-user-activation"
               onLoad={onIframeLoad}
               onError={onIframeError}
               title={t('app.open_editor')}
