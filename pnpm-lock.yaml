@@ -6,7 +6,7 @@ settings:
 
 patchedDependencies:
   bumpp:
-    hash: cb92d54ee0571413536369c45796fd9266607054fb4bdd5ac0400a04d91a85f9
+    hash: 362685edd02f1561e78b740e2b4c1ec2bd8e266eb2e26a64055ae305cac1c3ac
     path: patches/bumpp.patch
 
 importers:
@@ -54,8 +54,8 @@ importers:
         specifier: ^4.6.0
         version: 4.7.0(vite@7.3.6(@types/node@22.20.1)(jiti@2.7.0)(lightningcss@1.30.1)(yaml@2.9.0))
       bumpp:
-        specifier: ^12.2.1
-        version: 12.2.1(patch_hash=cb92d54ee0571413536369c45796fd9266607054fb4bdd5ac0400a04d91a85f9)
+        specifier: 12.2.1
+        version: 12.2.1(patch_hash=362685edd02f1561e78b740e2b4c1ec2bd8e266eb2e26a64055ae305cac1c3ac)
       eslint:
         specifier: ^10.8.1
         version: 10.8.1(jiti@2.7.0)
@@ -3300,7 +3300,7 @@ snapshots:
 
   builtin-modules@5.3.0: {}
 
-  bumpp@12.2.1(patch_hash=cb92d54ee0571413536369c45796fd9266607054fb4bdd5ac0400a04d91a85f9):
+  bumpp@12.2.1(patch_hash=362685edd02f1561e78b740e2b4c1ec2bd8e266eb2e26a64055ae305cac1c3ac):
     dependencies:
       args-tokenizer: 0.3.0
       cac: 7.0.0
