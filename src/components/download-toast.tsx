@@ -2,10 +2,11 @@ import type { DownloadFinishedPayload } from '../hooks/use-harness'
 import { invoke } from '@tauri-apps/api/core'
 import { useI18n } from '../i18n/i18n-context'
 
+// 官方按钮：胶囊形 + 中性品牌色（对应 ui-primitives Button）
 const btnPrimary
-  = 'inline-flex cursor-pointer items-center justify-center rounded-md border border-accent bg-accent px-3 py-1.5 text-[13px] text-white transition-colors hover:bg-accent2 disabled:cursor-not-allowed disabled:opacity-55'
+  = 'inline-flex h-9 cursor-pointer items-center justify-center gap-1 rounded-[18px] bg-btn-fill px-3.5 text-sm leading-[22px] text-btn-ink transition-colors hover:bg-btn-fill-hover disabled:cursor-not-allowed disabled:opacity-40'
 const btnGhost
-  = 'inline-flex cursor-pointer items-center justify-center rounded-md border border-line bg-panel2 px-3 py-1.5 text-[13px] text-ink transition-colors hover:bg-panel-hover'
+  = 'inline-flex h-9 cursor-pointer items-center justify-center gap-1 rounded-[18px] px-3.5 text-sm leading-[22px] text-ink transition-colors hover:bg-btn-hover active:bg-btn-active'
 
 interface DownloadToastProps {
   notice: DownloadFinishedPayload | null
