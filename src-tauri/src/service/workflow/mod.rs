@@ -8,6 +8,8 @@ use crate::service::download;
 use crate::service::workflow::utils::{is_dsh_running, is_port_in_use, spawn_output_readers};
 use std::collections::HashMap;
 use std::fs;
+// Path 仅被 Windows 专属的 kill_dsh_processes 使用，Unix 构建下不引入
+#[cfg(windows)]
 use std::path::Path;
 use std::process::{Command, Stdio};
 #[cfg(windows)]
@@ -324,6 +326,9 @@ pub async fn stop(app_handle: tauri::AppHandle) -> Result<(), String> {
 /// 退出路径上不更新状态、不做异步等待，仅强制结束端口占用者及其进程树，
 /// 以及 AppData 目录下的 node 进程，避免残留进程把原生模块 DLL 锁在内存，
 /// 导致下次启动重新解压失败。
+/// Windows 下需要 app_handle 定位 AppData 目录来清理进程树；
+/// Unix 构建不使用该参数，允许未使用告警以保持签名一致
+#[cfg_attr(not(windows), allow(unused_variables))]
 pub fn stop_on_exit(app_handle: tauri::AppHandle, port: u16) {
     kill_port_holder(port);
     #[cfg(windows)]
@@ -357,9 +362,10 @@ pub async fn install(
         .get_webview_window("main")
         .ok_or("Failed to get main window")?;
     log::debug!("Main window obtained");
-    let mut tracker = download::ProgressTracker::new(&window, 4);
+    // 3 个任务 × 下载/解压 2 个阶段
+    let mut tracker = download::ProgressTracker::new(&window, 6);
     let tasks: Vec<Box<dyn download::Installable>> =
-        vec![Box::new(download::Nodejs), Box::new(download::Dsh)];
+        vec![Box::new(download::Nodejs), Box::new(download::Dsh), Box::new(download::Pnpm)];
     log::info!("Task list created, {} tasks total", tasks.len());
 
     for (index, task) in tasks.iter().enumerate() {
