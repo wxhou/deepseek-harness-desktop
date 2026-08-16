@@ -1,0 +1,71 @@
+/* eslint-disable react/dom-no-unsafe-iframe-sandbox */
+import { CircleAlert } from 'lucide-react'
+import { useStore } from 'valtio-define'
+import { harness } from '../store/modules/harness'
+import { useI18n } from '../store/modules/setting'
+import Loadable from './loadable'
+import Setup from './setup'
+
+/**
+ * 主区域视图：安装/错误态渲染 Setup，
+ * 就绪态渲染 iframe（挂载后加载职责交给 dsh 应用内官方 boot 页，避免两套 loading 叠加）。
+ * 状态与方法全部来自 harness store，不再接收 props。
+ */
+export default function HarnessWebview() {
+  const { t } = useI18n()
+  const {
+    status,
+    serviceHealthy,
+    iframeError,
+    iframeKey,
+    iframeSrc,
+    serviceUrl,
+  } = useStore(harness)
+
+  if (status === 'error') {
+    return (
+      <main className="relative flex-1 bg-canvas">
+        <Setup />
+      </main>
+    )
+  }
+
+  if (status !== 'ready') {
+    return (
+      <main className="relative w-full bg-canvas">
+        <Setup />
+      </main>
+    )
+  }
+
+  return (
+    <main className="relative flex-1 bg-canvas">
+      {serviceHealthy
+        ? (
+            <iframe
+              key={iframeKey}
+              className="block h-full w-full border-none bg-load-bg"
+              src={iframeSrc}
+              allow="clipboard-read; clipboard-write; camera; microphone; geolocation; display-capture; autoplay; encrypted-media; fullscreen"
+              sandbox="allow-same-origin allow-scripts allow-popups allow-forms allow-modals allow-downloads allow-storage-access-by-user-activation"
+              onLoad={harness.markIframeLoaded}
+              onError={harness.markIframeError}
+              title={t('app.open_editor')}
+            />
+          )
+        : (
+            <div className="absolute inset-0 z-[1]">
+              <Loadable subtitle={t('status.loading')} />
+            </div>
+          )}
+      {serviceHealthy && iframeError && (
+        <Loadable
+          icon={CircleAlert}
+          title={t('ui.iframe_error')}
+          errorMsg={t('ui.ensure_running', { url: serviceUrl })}
+          onRetry={harness.refreshIframe}
+        />
+      )}
+    </main>
+  )
+}

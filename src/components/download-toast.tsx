@@ -1,21 +1,13 @@
-import type { DownloadFinishedPayload } from '../hooks/use-harness'
 import { invoke } from '@tauri-apps/api/core'
-import { useI18n } from '../i18n/i18n-context'
+import { useStore } from 'valtio-define'
+import { download } from '../store/modules/download'
+import { useI18n } from '../store/modules/setting'
+import { button, toast } from './primitives'
 
-// 官方按钮：胶囊形 + 中性品牌色（对应 ui-primitives Button）
-const btnPrimary
-  = 'inline-flex h-9 cursor-pointer items-center justify-center gap-1 rounded-[18px] bg-btn-fill px-3.5 text-sm leading-[22px] text-btn-ink transition-colors hover:bg-btn-fill-hover disabled:cursor-not-allowed disabled:opacity-40'
-const btnGhost
-  = 'inline-flex h-9 cursor-pointer items-center justify-center gap-1 rounded-[18px] px-3.5 text-sm leading-[22px] text-ink transition-colors hover:bg-btn-hover active:bg-btn-active'
-
-interface DownloadToastProps {
-  notice: DownloadFinishedPayload | null
-  onClose: () => void
-}
-
-/** 右下角"下载已保存/失败"提示条 */
-export default function DownloadToast({ notice, onClose }: DownloadToastProps) {
+/** 右下角"下载已保存/失败"提示条：状态与关闭操作直接来自 download store */
+export default function DownloadToast() {
   const { t } = useI18n()
+  const { notice } = useStore(download)
 
   if (!notice) {
     return null
@@ -25,12 +17,12 @@ export default function DownloadToast({ notice, onClose }: DownloadToastProps) {
 
   function revealInFolder(targetPath: string) {
     void invoke('reveal_in_folder', { path: targetPath }).catch((err) => {
-      console.error('[App] reveal_in_folder failed:', err)
+      console.error('[Harness] reveal_in_folder failed:', err)
     })
   }
 
   return (
-    <div className="fixed right-4 bottom-4 z-50 flex max-w-[440px] items-start gap-3 rounded-lg border border-line bg-panel px-4 py-3 shadow-lg">
+    <div className={toast({ size: 'md', align: 'start' })}>
       <div className="min-w-0 flex-1">
         <p className="text-[13px] font-semibold text-ink">
           {success ? t('download.saved') : t('download.failed')}
@@ -44,11 +36,11 @@ export default function DownloadToast({ notice, onClose }: DownloadToastProps) {
         )}
       </div>
       {success && path && (
-        <button className={btnPrimary} onClick={() => revealInFolder(path)}>
+        <button className={button({ tone: 'primary' })} onClick={() => revealInFolder(path)}>
           {t('download.show_in_folder')}
         </button>
       )}
-      <button className={btnGhost} onClick={onClose}>
+      <button className={button({ tone: 'ghost' })} onClick={download.dismiss}>
         {t('download.close')}
       </button>
     </div>

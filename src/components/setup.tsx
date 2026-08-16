@@ -1,28 +1,10 @@
 import type { LucideIcon } from 'lucide-react'
+import type { SetupStatus } from '../store/modules/harness'
 import { CircleAlert, CircleCheck, Download, Rocket, ScanSearch } from 'lucide-react'
-import { useI18n } from '../i18n/i18n-context'
+import { useStore } from 'valtio-define'
+import { harness } from '../store/modules/harness'
+import { useI18n } from '../store/modules/setting'
 import Loadable from './loadable'
-
-export type SetupStatus = 'checking' | 'installing' | 'starting' | 'ready' | 'error'
-
-export interface InstallProgress {
-  title: string
-  detail: string
-  log: string
-  type: string
-  percentage: number
-  progress: number
-}
-
-interface SetupScreenProps {
-  status: SetupStatus
-  title: string
-  detail: string
-  percentage: number
-  logs: string[]
-  errorMsg: string
-  onRetry: () => void
-}
 
 // 各阶段对应不同图标，保持与 logo 一致的黑白中性色调
 const STATUS_ICONS: Record<SetupStatus, LucideIcon> = {
@@ -36,21 +18,15 @@ const STATUS_ICONS: Record<SetupStatus, LucideIcon> = {
 /**
  * 安装/更新页：基于通用 Loadable 组件渲染，
  * 视觉与官方 web shell 的 boot 加载页（AppRoot）一致。
+ * 状态与重试动作直接从 harness store 读取，不再接收 props。
  */
-export default function SetupScreen({
-  status,
-  title,
-  detail,
-  percentage,
-  logs,
-  errorMsg,
-  onRetry,
-}: SetupScreenProps) {
+export default function Setup() {
   const { t } = useI18n()
+  const { status, installer, errorMsg } = useStore(harness)
   const error = status === 'error'
   const installing = status === 'installing'
-  const heading = error ? t('status.error') : title || t('status.installing')
-  const description = error ? '' : detail || t('status.installing')
+  const heading = error ? t('status.error') : installer.title || t('status.installing')
+  const description = error ? '' : installer.detail || t('status.installing')
   const StatusIcon = STATUS_ICONS[status]
 
   return (
@@ -58,10 +34,10 @@ export default function SetupScreen({
       icon={StatusIcon}
       title={heading}
       subtitle={error ? undefined : description}
-      percentage={installing ? percentage : undefined}
-      logs={installing ? logs : undefined}
+      percentage={installing ? installer.percentage : undefined}
+      logs={installing ? installer.logs : undefined}
       errorMsg={error ? errorMsg : undefined}
-      onRetry={error ? onRetry : undefined}
+      onRetry={error ? harness.boot : undefined}
     />
   )
 }

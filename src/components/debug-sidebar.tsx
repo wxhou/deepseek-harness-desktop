@@ -1,6 +1,23 @@
 import { invoke } from '@tauri-apps/api/core'
 import { useEffect, useState } from 'react'
-import { useI18n } from '../i18n/i18n-context'
+import { useStore } from 'valtio-define'
+import { harness } from '../store/modules/harness'
+import { setting, useI18n } from '../store/modules/setting'
+import {
+  button,
+  codeBlock,
+  dataDesc,
+  dataTerm,
+  drawer,
+  input,
+  logPanel,
+  notice,
+  overlay,
+  sectionTitle,
+  select,
+  spinner,
+  statusPill,
+} from './primitives'
 
 export interface RuntimeInfo {
   app_version: string
@@ -27,48 +44,20 @@ export interface CliLinkStatus {
   shim_path: string
 }
 
-export type SidebarBusyAction = 'restart' | 'shutdown' | 'start' | 'openBrowser' | null
-
-interface SidebarPanelProps {
-  open: boolean
-  serviceRunning: boolean
-  busyAction: SidebarBusyAction
-  onClose: () => void
-  onRestart: () => void
-  onShutdown: () => void
-  onStart: () => void
-  onOpenBrowser: () => void
-}
-
-// 按钮内的小型加载指示器：边框旋转动画，颜色跟随当前文字。
-// 用 animate-load-spin（直接 animation + keyframes）而非 animate-spin，
-// 避免 Tailwind var() 间接层在 WebView2 下不旋转。
+/** 按钮内的小型加载指示器：边框旋转动画，颜色跟随当前文字 */
 function Spinner() {
-  return (
-    <span className="inline-block h-3 w-3 shrink-0 animate-load-spin rounded-full border-2 border-current border-t-transparent" />
-  )
+  return <span className={spinner()} />
 }
 
-export default function SidebarPanel({
-  open,
-  serviceRunning,
-  busyAction,
-  onClose,
-  onRestart,
-  onShutdown,
-  onStart,
-  onOpenBrowser,
-}: SidebarPanelProps) {
+/**
+ * 右侧调试侧边栏：运行时信息、服务操作、设置与日志。
+ * 展开状态来自 setting store；服务状态与操作（重启/停止/启动/打开浏览器）
+ * 直接引用 harness store 的方法，不再接收 onClose/onRestart 等回调 props。
+ */
+export default function DebugSidebar() {
   const { t, language, setLanguage } = useI18n()
-  // 官方 sm 按钮几何：h28 / 圆角 14px 胶囊 / padding 0 10px / 12px 字号（对应 ui-primitives Button）
-  const btnBase
-    = 'inline-flex h-7 cursor-pointer items-center justify-center gap-1 rounded-[14px] px-2.5 text-xs text-ink transition-colors disabled:cursor-not-allowed disabled:opacity-40'
-  // ghost 风格：透明底 + 官方 interactive-bg-hover/active 微透明底
-  const btnGhost = `${btnBase} hover:bg-btn-hover active:bg-btn-active`
-  // 主按钮：官方中性品牌色填充，无边框
-  const btnPrimary = `${btnBase} bg-btn-fill text-btn-ink hover:bg-btn-fill-hover`
-  const btnDanger = `${btnGhost} text-danger hover:bg-btn-danger-hover`
-  const btnBlock = ' mt-1.5 w-full'
+  const { sidebarOpen } = useStore(setting)
+  const { serviceRunning, busyAction } = useStore(harness)
   const [info, setInfo] = useState<RuntimeInfo | null>(null)
   const [port, setPort] = useState('3080')
   const [autoStart, setAutoStart] = useState(true)
@@ -76,7 +65,7 @@ export default function SidebarPanel({
   const [cliToggled, setCliToggled] = useState(false)
   const [cliStatus, setCliStatus] = useState<CliLinkStatus | null>(null)
   const [logs, setLogs] = useState('')
-  const [notice, setNotice] = useState('')
+  const [noticeMsg, setNoticeMsg] = useState('')
   const [saving, setSaving] = useState(false)
   const [busy, setBusy] = useState<string | null>(null)
 
@@ -89,7 +78,7 @@ export default function SidebarPanel({
       setInfo(nextInfo)
     }
     catch (err) {
-      console.error('[SidebarPanel] failed to load runtime info:', err)
+      console.error('[DebugSidebar] failed to load runtime info:', err)
     }
     finally {
       setBusy(null)
@@ -104,7 +93,7 @@ export default function SidebarPanel({
       setCliLinkEnabled(nextConfig.cli_link_enabled)
     }
     catch (err) {
-      console.error('[SidebarPanel] failed to load config:', err)
+      console.error('[DebugSidebar] failed to load config:', err)
     }
   }
 
@@ -113,7 +102,7 @@ export default function SidebarPanel({
       setCliStatus(await invoke<CliLinkStatus>('get_cli_link_status'))
     }
     catch (err) {
-      console.error('[SidebarPanel] failed to load cli link status:', err)
+      console.error('[DebugSidebar] failed to load cli link status:', err)
     }
   }
 
@@ -125,7 +114,7 @@ export default function SidebarPanel({
       setLogs(await invoke<string>('read_service_logs', { maxBytes: 64 * 1024 }))
     }
     catch (err) {
-      console.error('[SidebarPanel] failed to read logs:', err)
+      console.error('[DebugSidebar] failed to read logs:', err)
     }
     finally {
       setBusy(null)
@@ -141,11 +130,11 @@ export default function SidebarPanel({
   }, [])
 
   useEffect(() => {
-    if (!notice)
+    if (!noticeMsg)
       return
-    const timer = setTimeout(setNotice, 2500, '')
+    const timer = setTimeout(setNoticeMsg, 2500, '')
     return () => clearTimeout(timer)
-  }, [notice])
+  }, [noticeMsg])
 
   async function saveConfig() {
     setSaving(true)
@@ -157,7 +146,7 @@ export default function SidebarPanel({
         cliLinkEnabled,
       })
       setPort(String(nextConfig.port))
-      setNotice(
+      setNoticeMsg(
         cliToggled
           ? cliLinkEnabled
             ? t('messages.cli_link_enabled')
@@ -168,8 +157,8 @@ export default function SidebarPanel({
       await refreshCliStatus()
     }
     catch (err) {
-      console.error('[SidebarPanel] failed to save config:', err)
-      setNotice(t('messages.save_failed'))
+      console.error('[DebugSidebar] failed to save config:', err)
+      setNoticeMsg(t('messages.save_failed'))
     }
     finally {
       setSaving(false)
@@ -182,10 +171,10 @@ export default function SidebarPanel({
     setBusy('copy')
     try {
       await invoke('copy_service_url')
-      setNotice(t('messages.copy_success'))
+      setNoticeMsg(t('messages.copy_success'))
     }
     catch {
-      setNotice(t('messages.copy_failed'))
+      setNoticeMsg(t('messages.copy_failed'))
     }
     finally {
       setBusy(null)
@@ -199,10 +188,10 @@ export default function SidebarPanel({
     try {
       await invoke('clear_service_logs')
       setLogs('')
-      setNotice(t('messages.logs_cleared'))
+      setNoticeMsg(t('messages.logs_cleared'))
     }
     catch (err) {
-      console.error('[SidebarPanel] failed to clear logs:', err)
+      console.error('[DebugSidebar] failed to clear logs:', err)
     }
     finally {
       setBusy(null)
@@ -217,7 +206,7 @@ export default function SidebarPanel({
       await invoke('reveal_data_dir')
     }
     catch (err) {
-      console.error('[SidebarPanel] failed to reveal data dir:', err)
+      console.error('[DebugSidebar] failed to reveal data dir:', err)
     }
     finally {
       setBusy(null)
@@ -227,34 +216,33 @@ export default function SidebarPanel({
   return (
     <>
       {/* 点击侧边栏外内容时关闭侧边栏；透明遮罩位于内容之上、侧边栏之下 */}
-      {open && <div aria-hidden onClick={onClose} className="fixed inset-0 z-[25]" />}
-      <aside
-        className={`fixed inset-y-0 right-0 z-30 flex w-[300px] flex-col overflow-y-auto border-l border-line bg-panel shadow-2xl transition-transform duration-200 ease-out ${open ? 'translate-x-0' : 'translate-x-full'
-        }`}
-      >
+      {sidebarOpen && <div aria-hidden onClick={setting.closeSidebar} className={overlay()} />}
+      <aside className={drawer({ open: sidebarOpen })}>
         <div className="px-3 pt-4 pb-5">
           <div className="mb-[18px]">
-            <h3 className="mb-2 flex items-center justify-between gap-1.5 text-xs uppercase tracking-[0.06em] text-muted">{t('ui.connection_status')}</h3>
-            <span
-              className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-semibold ${serviceRunning ? 'bg-[rgba(34,197,94,0.15)] text-ok' : 'bg-[rgba(242,90,90,0.15)] text-danger'
-              }`}
-            >
+            <h3 className={sectionTitle()}>{t('ui.connection_status')}</h3>
+            <span className={statusPill({ tone: serviceRunning ? 'running' : 'stopped' })}>
               {serviceRunning ? t('ui.running') : t('ui.stopped')}
             </span>
           </div>
 
           <div className="mb-[18px]">
-            <h3 className="mb-2 flex items-center justify-between gap-1.5 text-xs uppercase tracking-[0.06em] text-muted">{t('ui.service_url')}</h3>
+            <h3 className={sectionTitle()}>{t('ui.service_url')}</h3>
             <div className="flex items-center gap-1.5">
-              <code className="flex-1 truncate rounded-md border border-line bg-panel2 px-2 py-1.5 text-xs">{info?.service_url ?? '-'}</code>
-              <button className={btnGhost} onClick={copyUrl} disabled={busy === 'copy'} title={t('app.copy_url')}>
+              <code className={codeBlock()}>{info?.service_url ?? '-'}</code>
+              <button
+                className={button({ size: 'sm', tone: 'ghost' })}
+                onClick={copyUrl}
+                disabled={busy === 'copy'}
+                title={t('app.copy_url')}
+              >
                 {busy === 'copy' && <Spinner />}
                 {t('buttons.copy')}
               </button>
             </div>
             <button
-              className={`${btnGhost}${btnBlock}`}
-              onClick={onOpenBrowser}
+              className={button({ size: 'sm', tone: 'ghost', block: true })}
+              onClick={harness.openBrowser}
               disabled={busyAction !== null}
             >
               {busyAction === 'openBrowser' && <Spinner />}
@@ -263,28 +251,44 @@ export default function SidebarPanel({
           </div>
 
           <div className="mb-[18px]">
-            <h3 className="mb-2 flex items-center justify-between gap-1.5 text-xs uppercase tracking-[0.06em] text-muted">{t('ui.actions')}</h3>
+            <h3 className={sectionTitle()}>{t('ui.actions')}</h3>
             <div className="flex flex-wrap gap-1.5">
               {serviceRunning
                 ? (
                     <>
-                      <button className={btnGhost} onClick={onRestart} disabled={busyAction !== null}>
+                      <button
+                        className={button({ size: 'sm', tone: 'ghost' })}
+                        onClick={harness.restart}
+                        disabled={busyAction !== null}
+                      >
                         {busyAction === 'restart' && <Spinner />}
                         {t('app.restart')}
                       </button>
-                      <button className={btnDanger} onClick={onShutdown} disabled={busyAction !== null}>
+                      <button
+                        className={button({ size: 'sm', tone: 'danger' })}
+                        onClick={harness.shutdown}
+                        disabled={busyAction !== null}
+                      >
                         {busyAction === 'shutdown' && <Spinner />}
                         {t('app.shutdown')}
                       </button>
                     </>
                   )
                 : (
-                    <button className={btnPrimary} onClick={onStart} disabled={busyAction !== null}>
+                    <button
+                      className={button({ size: 'sm', tone: 'primary' })}
+                      onClick={harness.start}
+                      disabled={busyAction !== null}
+                    >
                       {busyAction === 'start' && <Spinner />}
                       {t('app.retry')}
                     </button>
                   )}
-              <button className={btnGhost} onClick={refreshInfo} disabled={busy === 'refreshInfo'}>
+              <button
+                className={button({ size: 'sm', tone: 'ghost' })}
+                onClick={refreshInfo}
+                disabled={busy === 'refreshInfo'}
+              >
                 {busy === 'refreshInfo' && <Spinner />}
                 {t('app.refresh')}
               </button>
@@ -292,28 +296,32 @@ export default function SidebarPanel({
           </div>
 
           <div className="mb-[18px]">
-            <h3 className="mb-2 flex items-center justify-between gap-1.5 text-xs uppercase tracking-[0.06em] text-muted">{t('ui.app_info')}</h3>
+            <h3 className={sectionTitle()}>{t('ui.app_info')}</h3>
             <dl className="m-0 text-xs">
-              <dt className="mt-1.5 text-muted">{t('ui.current_version')}</dt>
-              <dd className="mt-0.5 break-all">{info?.app_version ?? '-'}</dd>
-              <dt className="mt-1.5 text-muted">{t('ui.dsh_version')}</dt>
-              <dd className="mt-0.5 break-all">{info?.dsh_version ?? '-'}</dd>
-              <dt className="mt-1.5 text-muted">{t('ui.node_version')}</dt>
-              <dd className="mt-0.5 break-all">
+              <dt className={dataTerm()}>{t('ui.current_version')}</dt>
+              <dd className={dataDesc()}>{info?.app_version ?? '-'}</dd>
+              <dt className={dataTerm()}>{t('ui.dsh_version')}</dt>
+              <dd className={dataDesc()}>{info?.dsh_version ?? '-'}</dd>
+              <dt className={dataTerm()}>{t('ui.node_version')}</dt>
+              <dd className={dataDesc()}>
                 v
                 {info?.node_version ?? '-'}
               </dd>
-              <dt className="mt-1.5 text-muted">Platform</dt>
-              <dd className="mt-0.5 break-all">
+              <dt className={dataTerm()}>Platform</dt>
+              <dd className={dataDesc()}>
                 {info?.platform ?? '-'}
                 {' '}
                 /
                 {info?.arch ?? '-'}
               </dd>
-              <dt className="mt-1.5 text-muted">{t('ui.data_dir')}</dt>
+              <dt className={dataTerm()}>{t('ui.data_dir')}</dt>
               <dd className="mt-0.5 flex items-center justify-center gap-2" title={info?.data_dir}>
                 <div className="break-all truncate">{info?.data_dir ?? '-'}</div>
-                <button className={`${btnGhost} flex-shrink-0 text-[10px]`} onClick={revealDataDir} disabled={busy === 'revealDataDir'}>
+                <button
+                  className={button({ size: 'sm', tone: 'ghost' })}
+                  onClick={revealDataDir}
+                  disabled={busy === 'revealDataDir'}
+                >
                   {busy === 'revealDataDir' && <Spinner />}
                   {t('app.reveal_dir')}
                 </button>
@@ -322,23 +330,19 @@ export default function SidebarPanel({
           </div>
 
           <div className="mb-[18px]">
-            <h3 className="mb-2 flex items-center justify-between gap-1.5 text-xs uppercase tracking-[0.06em] text-muted">{t('ui.settings')}</h3>
+            <h3 className={sectionTitle()}>{t('ui.settings')}</h3>
             <label className="mb-2 flex items-center gap-2">
               <span>{t('ui.port')}</span>
               <input
-                className="flex-1 rounded-md border border-line bg-panel2 px-2 py-1.5 text-[13px] text-ink outline-none focus:border-accent/60"
+                className={input()}
                 value={port}
                 onChange={e => setPort(e.target.value)}
                 inputMode="numeric"
               />
             </label>
-            {/* <label className="mb-2 flex cursor-pointer items-center gap-2">
-              <input type="checkbox" checked={autoStart} onChange={(e) => setAutoStart(e.target.checked)} />
-              <span>{t("ui.auto_start")}</span>
-            </label> */}
 
             <p className="mb-1 mt-2 text-[11px] font-semibold text-muted">{t('ui.cli_link')}</p>
-            <label className="flex cursor-pointer items-center gap-2 mb-1">
+            <label className="mb-1 flex cursor-pointer items-center gap-2">
               <input
                 type="checkbox"
                 checked={cliLinkEnabled}
@@ -350,15 +354,13 @@ export default function SidebarPanel({
               <span>{t('ui.cli_link_enabled')}</span>
             </label>
             <div className="mb-2 rounded-md border border-line bg-panel2 px-2 py-1.5">
-              <p className="mt-1 text-[11px] leading-[1.5] text-muted">
-                {cliStatus && (
-                  <code className="mt-1 block break-all text-[10px] text-muted truncate">{cliStatus.bin_dir}</code>
-                )}
-              </p>
+              {cliStatus && (
+                <code className="mt-1 block truncate break-all text-[10px] text-muted">{cliStatus.bin_dir}</code>
+              )}
               <p className="mt-1 text-[11px] text-muted">{t('ui.cli_link_hint')}</p>
             </div>
 
-            <button className={`${btnPrimary}${btnBlock}`} onClick={saveConfig} disabled={saving}>
+            <button className={button({ size: 'sm', tone: 'primary', block: true })} onClick={saveConfig} disabled={saving}>
               {saving
                 ? (
                     <>
@@ -376,7 +378,7 @@ export default function SidebarPanel({
                 :
               </span>
               <select
-                className="flex-1 rounded-md border border-line bg-panel2 px-2 py-1 text-[13px] text-ink outline-none"
+                className={select()}
                 value={language}
                 onChange={e => setLanguage(e.target.value as 'en' | 'zh')}
               >
@@ -387,22 +389,31 @@ export default function SidebarPanel({
           </div>
 
           <div className="flex flex-col gap-1.5">
-            <h3 className="mb-2 flex items-center justify-between gap-1.5 text-xs uppercase tracking-[0.06em] text-muted">
+            <h3 className={sectionTitle()}>
               {t('ui.logs')}
-              <button className={btnGhost} onClick={refreshLogs} disabled={busy === 'refreshLogs'} title={t('buttons.refresh_logs')}>
+              <button
+                className={button({ size: 'sm', tone: 'ghost' })}
+                onClick={refreshLogs}
+                disabled={busy === 'refreshLogs'}
+                title={t('buttons.refresh_logs')}
+              >
                 {busy === 'refreshLogs' ? <Spinner /> : '↻'}
               </button>
             </h3>
-            <pre className="m-0 max-h-[200px] overflow-auto whitespace-pre-wrap break-all rounded-md border border-line bg-log-bg px-2 py-2 text-[11px] leading-[1.45] text-log-ink">{logs || t('ui.no_logs')}</pre>
-            <button className={btnGhost} onClick={clearLogs} disabled={busy === 'clearLogs'}>
+            <pre className={logPanel()}>{logs || t('ui.no_logs')}</pre>
+            <button
+              className={button({ size: 'sm', tone: 'ghost' })}
+              onClick={clearLogs}
+              disabled={busy === 'clearLogs'}
+            >
               {busy === 'clearLogs' && <Spinner />}
               {t('buttons.clear_logs')}
             </button>
           </div>
 
-          {notice && (
-            <div className="fixed bottom-[18px] left-1/2 z-10 -translate-x-1/2 rounded-lg border border-line bg-panel2 px-3.5 py-2 text-[13px] shadow-[0_8px_24px_rgba(0,0,0,0.45)]">
-              {notice}
+          {noticeMsg && (
+            <div className={notice()}>
+              {noticeMsg}
             </div>
           )}
         </div>

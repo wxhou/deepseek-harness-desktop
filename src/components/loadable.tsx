@@ -1,6 +1,7 @@
 import type { LucideIcon } from 'lucide-react'
 import type { ReactNode } from 'react'
-import { useI18n } from '../i18n/i18n-context'
+import { useI18n } from '../store/modules/setting'
+import { button } from './primitives'
 
 const LOG_LIMIT = 5
 
@@ -26,7 +27,7 @@ export interface LoadableProps {
   /** 进度百分比（0-100），传入则显示进度条 */
   percentage?: number
   /** 安装日志行，传入则显示日志面板（空数组显示"等待日志"占位） */
-  logs?: string[]
+  logs?: readonly string[]
   /** 错误信息，传入则切换为失败态（隐藏 spinner） */
   errorMsg?: string
   /** 失败态时的重试按钮回调 */
@@ -74,7 +75,7 @@ export default function Loadable({
 
         {onRetry && (
           <button
-            className="inline-flex h-9 cursor-pointer items-center justify-center gap-1 rounded-[18px] bg-btn-fill px-3.5 text-sm leading-[22px] text-btn-ink transition-colors hover:bg-btn-fill-hover disabled:cursor-not-allowed disabled:opacity-40"
+            className={button({ tone: 'primary' })}
             onClick={onRetry}
           >
             {t('app.retry')}
