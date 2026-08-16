@@ -8,3 +8,4 @@ src-tauri/resources/node
 .idea
 .vscode
 *.local
+.tmp
