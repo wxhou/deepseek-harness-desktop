@@ -3,6 +3,7 @@ import type { Translations } from './types'
 export const zh: Translations = {
   app: {
     title: 'DeepSeek Harness 桌面版',
+    wordmark: 'HARNESS',
     retry: '重试',
     ready: 'DeepSeek Harness 已就绪！',
     open_editor: '打开 DeepSeek Harness',
@@ -24,12 +25,20 @@ export const zh: Translations = {
     starting: '正在启动 DeepSeek Harness 服务...',
     ready: '服务已就绪',
     error: '启动失败',
-    loading: '正在加载界面...',
+    loading: 'Loading plugins…',
+    loading_plugins: 'Loading plugins…',
   },
   update: {
     available: '发现新版本 {{tag}}，是否立即更新？',
     now: '立即更新',
     later: '稍后',
+  },
+  download: {
+    saved: 'Session 日志已保存',
+    saved_to: '已保存到',
+    failed: 'Session 日志下载失败',
+    show_in_folder: '打开',
+    close: '关闭',
   },
   errors: {
     service_start_timeout: 'DeepSeek Harness 启动超时，请检查端口 {{port}} 是否被占用或启动过慢。',

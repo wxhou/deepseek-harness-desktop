@@ -20,6 +20,11 @@
   --color-ok: #46a758;
   --color-log-bg: #0a0a0c;
   --color-log-ink: #b8b8c0;
+  /* 加载页 token：取值与官方 web shell boot 页（dsw alias token）逐项一致 */
+  --color-load-bg: #151517;
+  --color-load-ink: #f9fafb;
+  --color-load-muted: #adb2b8;
+  --color-load-ring: rgba(255, 255, 255, 0.12);
 }
 
 html[data-theme="light"] {
@@ -37,6 +42,11 @@ html[data-theme="light"] {
   --color-ok: #2f9e44;
   --color-log-bg: #fafbfc;
   --color-log-ink: #40454d;
+  /* 加载页 token：light 主题对应官方 alias 值 */
+  --color-load-bg: #ffffff;
+  --color-load-ink: #0f1115;
+  --color-load-muted: #81858c;
+  --color-load-ring: rgba(0, 0, 0, 0.1);
 }
 
 @layer base {
@@ -49,7 +59,8 @@ html[data-theme="light"] {
 
   body {
     @apply overflow-hidden bg-canvas text-ink;
-    font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
+    /* 字体栈与官方 web shell（--dsw-font-family）保持一致 */
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", Helvetica, Arial, sans-serif;
     font-size: 14px;
   }
 }

@@ -22,15 +22,32 @@ export default {
         'log-ink': 'var(--color-log-ink)',
       },
       fontFamily: {
+        // 与官方 --dsw-font-family 保持一致
         sans: [
+          '-apple-system',
+          'BlinkMacSystemFont',
           '"Segoe UI"',
           '"PingFang SC"',
+          '"Hiragino Sans GB"',
           '"Microsoft YaHei"',
-          'system-ui',
-          '-apple-system',
+          '"Helvetica Neue"',
+          'Helvetica',
+          'Arial',
           'sans-serif',
         ],
-        mono: ['"Cascadia Code"', '"SF Mono"', 'Consolas', '"Courier New"', 'monospace'],
+        // 与官方 --ds-font-family-code 保持一致（刻意省略裸 monospace，
+        // 避免 Windows 中文字体回退到 SimSun）
+        mono: [
+          '"SF Mono"',
+          '"JetBrains Mono"',
+          '"Fira Code"',
+          'Consolas',
+          '"Liberation Mono"',
+          'Menlo',
+          'Courier',
+          '"PingFang SC"',
+          '"Microsoft YaHei"',
+        ],
       },
     },
   },

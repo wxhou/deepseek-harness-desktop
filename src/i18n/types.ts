@@ -3,6 +3,7 @@ export type Language = 'en' | 'zh'
 export interface Translations {
   app: {
     title: string
+    wordmark: string
     retry: string
     ready: string
     open_editor: string
@@ -25,11 +26,19 @@ export interface Translations {
     ready: string
     error: string
     loading: string
+    loading_plugins: string
   }
   update: {
     available: string
     now: string
     later: string
+  }
+  download: {
+    saved: string
+    saved_to: string
+    failed: string
+    show_in_folder: string
+    close: string
   }
   errors: {
     service_start_timeout: string

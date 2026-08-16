@@ -3,6 +3,7 @@ import type { Translations } from './types'
 export const en: Translations = {
   app: {
     title: 'DeepSeek Harness Desktop',
+    wordmark: 'HARNESS',
     retry: 'Retry',
     ready: 'DeepSeek Harness is ready!',
     open_editor: 'Open DeepSeek Harness',
@@ -24,12 +25,20 @@ export const en: Translations = {
     starting: 'Starting DeepSeek Harness service...',
     ready: 'Service is ready',
     error: 'Startup failed',
-    loading: 'Loading interface...',
+    loading: 'Loading plugins…',
+    loading_plugins: 'Loading plugins…',
   },
   update: {
     available: 'A new version {{tag}} is available. Update now?',
     now: 'Update Now',
     later: 'Later',
+  },
+  download: {
+    saved: 'Session log saved',
+    saved_to: 'Saved to',
+    failed: 'Session log download failed',
+    show_in_folder: 'Open',
+    close: 'Close',
   },
   errors: {
     service_start_timeout: 'DeepSeek Harness startup timeout. Please check whether port {{port}} is occupied or the startup is too slow.',
