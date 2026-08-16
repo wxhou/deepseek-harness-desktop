@@ -42,6 +42,12 @@ export interface Translations {
     service_url: string;
     port: string;
     auto_start: string;
+    cli_link: string;
+    cli_link_enabled: string;
+    cli_link_status_ok: string;
+    cli_link_status_partial: string;
+    cli_link_status_unknown: string;
+    cli_link_hint: string;
     app_info: string;
     current_version: string;
     dsh_version: string;
@@ -80,6 +86,8 @@ export interface Translations {
     copy_failed: string;
     config_saved: string;
     save_failed: string;
+    cli_link_enabled: string;
+    cli_link_disabled: string;
     start_failed: string;
     stop_failed: string;
     restarting: string;

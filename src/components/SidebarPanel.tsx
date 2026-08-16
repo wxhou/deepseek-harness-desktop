@@ -16,6 +16,15 @@ export interface RuntimeInfo {
 export interface AppConfig {
   port: number;
   auto_start: boolean;
+  cli_link_enabled: boolean;
+}
+
+export interface CliLinkStatus {
+  enabled: boolean;
+  shim_exists: boolean;
+  path_registered: boolean;
+  bin_dir: string;
+  shim_path: string;
 }
 
 export type SidebarBusyAction = "restart" | "shutdown" | "start" | "openBrowser" | null;
@@ -57,6 +66,9 @@ export default function SidebarPanel({
   const [info, setInfo] = useState<RuntimeInfo | null>(null);
   const [port, setPort] = useState("3080");
   const [autoStart, setAutoStart] = useState(true);
+  const [cliLinkEnabled, setCliLinkEnabled] = useState(true);
+  const [cliToggled, setCliToggled] = useState(false);
+  const [cliStatus, setCliStatus] = useState<CliLinkStatus | null>(null);
   const [logs, setLogs] = useState("");
   const [notice, setNotice] = useState("");
   const [saving, setSaving] = useState(false);
@@ -80,8 +92,17 @@ export default function SidebarPanel({
       const nextConfig = await invoke<AppConfig>("get_app_config");
       setPort(String(nextConfig.port));
       setAutoStart(nextConfig.auto_start);
+      setCliLinkEnabled(nextConfig.cli_link_enabled);
     } catch (err) {
       console.error("[SidebarPanel] failed to load config:", err);
+    }
+  };
+
+  const refreshCliStatus = async () => {
+    try {
+      setCliStatus(await invoke<CliLinkStatus>("get_cli_link_status"));
+    } catch (err) {
+      console.error("[SidebarPanel] failed to load cli link status:", err);
     }
   };
 
@@ -100,6 +121,7 @@ export default function SidebarPanel({
   useEffect(() => {
     refreshInfo();
     refreshConfig();
+    refreshCliStatus();
     refreshLogs();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -117,9 +139,18 @@ export default function SidebarPanel({
       const nextConfig = await invoke<AppConfig>("update_app_config", {
         port: Number.isInteger(nextPort) && nextPort > 0 ? nextPort : null,
         autoStart,
+        cliLinkEnabled,
       });
       setPort(String(nextConfig.port));
-      setNotice(t("messages.config_saved"));
+      setNotice(
+        cliToggled
+          ? cliLinkEnabled
+            ? t("messages.cli_link_enabled")
+            : t("messages.cli_link_disabled")
+          : t("messages.config_saved"),
+      );
+      setCliToggled(false);
+      await refreshCliStatus();
     } catch (err) {
       console.error("[SidebarPanel] failed to save config:", err);
       setNotice(t("messages.save_failed"));
@@ -169,154 +200,174 @@ export default function SidebarPanel({
 
   return (
     <>
-      {/* 点击侧边栏外内容时关闭侧边栏；透明遮罩位于内容之上、侧边栏(以及窗口控制)之下 */}
+      {/* 点击侧边栏外内容时关闭侧边栏；透明遮罩位于内容之上、侧边栏之下 */}
       {open && <div aria-hidden onClick={onClose} className="fixed inset-0 z-[25]" />}
       <aside
-        className={`fixed top-14.5 right-0 bottom-0 z-30 flex w-[300px] flex-col overflow-y-auto border-l border-t rounded-md border-line bg-panel shadow-2xl transition-transform duration-200 ease-out ${
-          open ? "translate-x-0" : "translate-x-full"
-        }`}
+        className={`fixed inset-y-0 right-0 z-30 flex w-[300px] flex-col overflow-y-auto border-l border-line bg-panel shadow-2xl transition-transform duration-200 ease-out ${open ? "translate-x-0" : "translate-x-full"
+          }`}
       >
-      <div className="px-3 pt-4 pb-5">
-        <div className="mb-[18px]">
-          <h3 className="mb-2 flex items-center justify-between gap-1.5 text-xs uppercase tracking-[0.06em] text-muted">{t("ui.connection_status")}</h3>
-          <span
-            className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-semibold ${
-              serviceRunning ? "bg-[rgba(70,167,88,0.15)] text-ok" : "bg-[rgba(229,72,77,0.15)] text-danger"
-            }`}
-          >
-            {serviceRunning ? t("ui.running") : t("ui.stopped")}
-          </span>
-        </div>
-
-        <div className="mb-[18px]">
-          <h3 className="mb-2 flex items-center justify-between gap-1.5 text-xs uppercase tracking-[0.06em] text-muted">{t("ui.service_url")}</h3>
-          <div className="flex items-center gap-1.5">
-            <code className="flex-1 truncate rounded-md border border-line bg-panel2 px-2 py-1.5 text-xs">{info?.service_url ?? "-"}</code>
-            <button className={btnBase} onClick={copyUrl} disabled={busy === "copy"} title={t("app.copy_url")}>
-              {busy === "copy" && <Spinner />}
-              {t("buttons.copy")}
-            </button>
-          </div>
-          <button
-            className={`${btnBase}${btnBlock}`}
-            onClick={onOpenBrowser}
-            disabled={busyAction !== null}
-          >
-            {busyAction === "openBrowser" && <Spinner />}
-            {t("app.open_browser")}
-          </button>
-        </div>
-
-        <div className="mb-[18px]">
-          <h3 className="mb-2 flex items-center justify-between gap-1.5 text-xs uppercase tracking-[0.06em] text-muted">{t("ui.actions")}</h3>
-          <div className="flex flex-wrap gap-1.5">
-            {serviceRunning ? (
-              <>
-                <button className={btnBase} onClick={onRestart} disabled={busyAction !== null}>
-                  {busyAction === "restart" && <Spinner />}
-                  {t("app.restart")}
-                </button>
-                <button className={btnDanger} onClick={onShutdown} disabled={busyAction !== null}>
-                  {busyAction === "shutdown" && <Spinner />}
-                  {t("app.shutdown")}
-                </button>
-              </>
-            ) : (
-              <button className={btnPrimary} onClick={onStart} disabled={busyAction !== null}>
-                {busyAction === "start" && <Spinner />}
-                {t("app.retry")}
-              </button>
-            )}
-            <button className={btnBase} onClick={refreshInfo} disabled={busy === "refreshInfo"}>
-              {busy === "refreshInfo" && <Spinner />}
-              {t("app.refresh")}
-            </button>
-          </div>
-        </div>
-
-        <div className="mb-[18px]">
-          <h3 className="mb-2 flex items-center justify-between gap-1.5 text-xs uppercase tracking-[0.06em] text-muted">{t("ui.app_info")}</h3>
-          <dl className="m-0 text-xs">
-            <dt className="mt-1.5 text-muted">{t("ui.current_version")}</dt>
-            <dd className="mt-0.5 break-all">{info?.app_version ?? "-"}</dd>
-            <dt className="mt-1.5 text-muted">{t("ui.dsh_version")}</dt>
-            <dd className="mt-0.5 break-all">{info?.dsh_version ?? "-"}</dd>
-            <dt className="mt-1.5 text-muted">{t("ui.node_version")}</dt>
-            <dd className="mt-0.5 break-all">v{info?.node_version ?? "-"}</dd>
-            <dt className="mt-1.5 text-muted">Platform</dt>
-            <dd className="mt-0.5 break-all">
-              {info?.platform ?? "-"} / {info?.arch ?? "-"}
-            </dd>
-            <dt className="mt-1.5 text-muted">{t("ui.data_dir")}</dt>
-            <dd className="mt-0.5 flex items-center justify-center gap-2" title={info?.data_dir}>
-              <div className="break-all truncate">{info?.data_dir ?? "-"}</div>
-              <button className={`${btnBase} flex-shrink-0 text-[10px]`} onClick={revealDataDir} disabled={busy === "revealDataDir"}>
-                {busy === "revealDataDir" && <Spinner />}
-                {t("app.reveal_dir")}
-              </button>
-            </dd>
-          </dl>
-        </div>
-
-        <div className="mb-[18px]">
-          <h3 className="mb-2 flex items-center justify-between gap-1.5 text-xs uppercase tracking-[0.06em] text-muted">{t("ui.settings")}</h3>
-          <label className="mb-2 flex items-center gap-2">
-            <span>{t("ui.port")}</span>
-            <input
-              className="flex-1 rounded-md border border-line bg-panel2 px-2 py-1.5 text-[13px] text-ink outline-none focus:border-accent/60"
-              value={port}
-              onChange={(e) => setPort(e.target.value)}
-              inputMode="numeric"
-            />
-          </label>
-          <label className="mb-2 flex cursor-pointer items-center gap-2">
-            <input type="checkbox" checked={autoStart} onChange={(e) => setAutoStart(e.target.checked)} />
-            <span>{t("ui.auto_start")}</span>
-          </label>
-          <button className={`${btnBase}${btnBlock}`} onClick={saveConfig} disabled={saving}>
-            {saving ? (
-              <>
-                <Spinner />
-                {t("ui.saved")}
-              </>
-            ) : (
-              t("ui.save")
-            )}
-          </button>
-          <div className="mt-2.5 flex items-center gap-2 text-[13px]">
-            <span>{t("ui.language")}:</span>
-            <select
-              className="flex-1 rounded-md border border-line bg-panel2 px-2 py-1 text-[13px] text-ink outline-none"
-              value={language}
-              onChange={(e) => setLanguage(e.target.value as "en" | "zh")}
+        <div className="px-3 pt-4 pb-5">
+          <div className="mb-[18px]">
+            <h3 className="mb-2 flex items-center justify-between gap-1.5 text-xs uppercase tracking-[0.06em] text-muted">{t("ui.connection_status")}</h3>
+            <span
+              className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-semibold ${serviceRunning ? "bg-[rgba(70,167,88,0.15)] text-ok" : "bg-[rgba(229,72,77,0.15)] text-danger"
+                }`}
             >
-              <option value="zh">中文</option>
-              <option value="en">English</option>
-            </select>
+              {serviceRunning ? t("ui.running") : t("ui.stopped")}
+            </span>
           </div>
-        </div>
 
-        <div className="flex flex-col gap-1.5">
-          <h3 className="mb-2 flex items-center justify-between gap-1.5 text-xs uppercase tracking-[0.06em] text-muted">
-            {t("ui.logs")}
-            <button className={btnBase} onClick={refreshLogs} disabled={busy === "refreshLogs"} title={t("buttons.refresh_logs")}>
-              {busy === "refreshLogs" ? <Spinner /> : "↻"}
+          <div className="mb-[18px]">
+            <h3 className="mb-2 flex items-center justify-between gap-1.5 text-xs uppercase tracking-[0.06em] text-muted">{t("ui.service_url")}</h3>
+            <div className="flex items-center gap-1.5">
+              <code className="flex-1 truncate rounded-md border border-line bg-panel2 px-2 py-1.5 text-xs">{info?.service_url ?? "-"}</code>
+              <button className={btnBase} onClick={copyUrl} disabled={busy === "copy"} title={t("app.copy_url")}>
+                {busy === "copy" && <Spinner />}
+                {t("buttons.copy")}
+              </button>
+            </div>
+            <button
+              className={`${btnBase}${btnBlock}`}
+              onClick={onOpenBrowser}
+              disabled={busyAction !== null}
+            >
+              {busyAction === "openBrowser" && <Spinner />}
+              {t("app.open_browser")}
             </button>
-          </h3>
-          <pre className="m-0 max-h-[200px] overflow-auto whitespace-pre-wrap break-all rounded-md border border-line bg-log-bg px-2 py-2 text-[11px] leading-[1.45] text-log-ink">{logs || t("ui.no_logs")}</pre>
-          <button className={btnBase} onClick={clearLogs} disabled={busy === "clearLogs"}>
-            {busy === "clearLogs" && <Spinner />}
-            {t("buttons.clear_logs")}
-          </button>
-        </div>
-
-        {notice && (
-          <div className="fixed bottom-[18px] left-1/2 z-10 -translate-x-1/2 rounded-lg border border-line bg-panel2 px-3.5 py-2 text-[13px] shadow-[0_8px_24px_rgba(0,0,0,0.45)]">
-            {notice}
           </div>
-        )}
-      </div>
-    </aside>
+
+          <div className="mb-[18px]">
+            <h3 className="mb-2 flex items-center justify-between gap-1.5 text-xs uppercase tracking-[0.06em] text-muted">{t("ui.actions")}</h3>
+            <div className="flex flex-wrap gap-1.5">
+              {serviceRunning ? (
+                <>
+                  <button className={btnBase} onClick={onRestart} disabled={busyAction !== null}>
+                    {busyAction === "restart" && <Spinner />}
+                    {t("app.restart")}
+                  </button>
+                  <button className={btnDanger} onClick={onShutdown} disabled={busyAction !== null}>
+                    {busyAction === "shutdown" && <Spinner />}
+                    {t("app.shutdown")}
+                  </button>
+                </>
+              ) : (
+                <button className={btnPrimary} onClick={onStart} disabled={busyAction !== null}>
+                  {busyAction === "start" && <Spinner />}
+                  {t("app.retry")}
+                </button>
+              )}
+              <button className={btnBase} onClick={refreshInfo} disabled={busy === "refreshInfo"}>
+                {busy === "refreshInfo" && <Spinner />}
+                {t("app.refresh")}
+              </button>
+            </div>
+          </div>
+
+          <div className="mb-[18px]">
+            <h3 className="mb-2 flex items-center justify-between gap-1.5 text-xs uppercase tracking-[0.06em] text-muted">{t("ui.app_info")}</h3>
+            <dl className="m-0 text-xs">
+              <dt className="mt-1.5 text-muted">{t("ui.current_version")}</dt>
+              <dd className="mt-0.5 break-all">{info?.app_version ?? "-"}</dd>
+              <dt className="mt-1.5 text-muted">{t("ui.dsh_version")}</dt>
+              <dd className="mt-0.5 break-all">{info?.dsh_version ?? "-"}</dd>
+              <dt className="mt-1.5 text-muted">{t("ui.node_version")}</dt>
+              <dd className="mt-0.5 break-all">v{info?.node_version ?? "-"}</dd>
+              <dt className="mt-1.5 text-muted">Platform</dt>
+              <dd className="mt-0.5 break-all">
+                {info?.platform ?? "-"} / {info?.arch ?? "-"}
+              </dd>
+              <dt className="mt-1.5 text-muted">{t("ui.data_dir")}</dt>
+              <dd className="mt-0.5 flex items-center justify-center gap-2" title={info?.data_dir}>
+                <div className="break-all truncate">{info?.data_dir ?? "-"}</div>
+                <button className={`${btnBase} flex-shrink-0 text-[10px]`} onClick={revealDataDir} disabled={busy === "revealDataDir"}>
+                  {busy === "revealDataDir" && <Spinner />}
+                  {t("app.reveal_dir")}
+                </button>
+              </dd>
+            </dl>
+          </div>
+
+          <div className="mb-[18px]">
+            <h3 className="mb-2 flex items-center justify-between gap-1.5 text-xs uppercase tracking-[0.06em] text-muted">{t("ui.settings")}</h3>
+            <label className="mb-2 flex items-center gap-2">
+              <span>{t("ui.port")}</span>
+              <input
+                className="flex-1 rounded-md border border-line bg-panel2 px-2 py-1.5 text-[13px] text-ink outline-none focus:border-accent/60"
+                value={port}
+                onChange={(e) => setPort(e.target.value)}
+                inputMode="numeric"
+              />
+            </label>
+            {/* <label className="mb-2 flex cursor-pointer items-center gap-2">
+              <input type="checkbox" checked={autoStart} onChange={(e) => setAutoStart(e.target.checked)} />
+              <span>{t("ui.auto_start")}</span>
+            </label> */}
+
+            <p className="mb-1 mt-2 text-[11px] font-semibold text-muted">{t("ui.cli_link")}</p>
+            <label className="flex cursor-pointer items-center gap-2 mb-1">
+              <input
+                type="checkbox"
+                checked={cliLinkEnabled}
+                onChange={(e) => {
+                  setCliLinkEnabled(e.target.checked);
+                  setCliToggled(true);
+                }}
+              />
+              <span>{t("ui.cli_link_enabled")}</span>
+            </label>
+            <div className="mb-2 rounded-md border border-line bg-panel2 px-2 py-1.5">
+              <p className="mt-1 text-[11px] leading-[1.5] text-muted">
+                {cliStatus && (
+                  <code className="mt-1 block break-all text-[10px] text-muted truncate">{cliStatus.bin_dir}</code>
+                )}
+              </p>
+              <p className="mt-1 text-[11px] text-muted">{t("ui.cli_link_hint")}</p>
+            </div>
+
+            <button className={`${btnBase}${btnBlock}`} onClick={saveConfig} disabled={saving}>
+              {saving ? (
+                <>
+                  <Spinner />
+                  {t("ui.saved")}
+                </>
+              ) : (
+                t("ui.save")
+              )}
+            </button>
+            <div className="mt-2.5 flex items-center gap-2 text-[13px]">
+              <span>{t("ui.language")}:</span>
+              <select
+                className="flex-1 rounded-md border border-line bg-panel2 px-2 py-1 text-[13px] text-ink outline-none"
+                value={language}
+                onChange={(e) => setLanguage(e.target.value as "en" | "zh")}
+              >
+                <option value="zh">中文</option>
+                <option value="en">English</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <h3 className="mb-2 flex items-center justify-between gap-1.5 text-xs uppercase tracking-[0.06em] text-muted">
+              {t("ui.logs")}
+              <button className={btnBase} onClick={refreshLogs} disabled={busy === "refreshLogs"} title={t("buttons.refresh_logs")}>
+                {busy === "refreshLogs" ? <Spinner /> : "↻"}
+              </button>
+            </h3>
+            <pre className="m-0 max-h-[200px] overflow-auto whitespace-pre-wrap break-all rounded-md border border-line bg-log-bg px-2 py-2 text-[11px] leading-[1.45] text-log-ink">{logs || t("ui.no_logs")}</pre>
+            <button className={btnBase} onClick={clearLogs} disabled={busy === "clearLogs"}>
+              {busy === "clearLogs" && <Spinner />}
+              {t("buttons.clear_logs")}
+            </button>
+          </div>
+
+          {notice && (
+            <div className="fixed bottom-[18px] left-1/2 z-10 -translate-x-1/2 rounded-lg border border-line bg-panel2 px-3.5 py-2 text-[13px] shadow-[0_8px_24px_rgba(0,0,0,0.45)]">
+              {notice}
+            </div>
+          )}
+        </div>
+      </aside>
     </>
   );
 }
