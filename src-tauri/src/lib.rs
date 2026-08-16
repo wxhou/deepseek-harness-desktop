@@ -19,14 +19,27 @@ fn setup(app_handle: tauri::AppHandle) {
     service::scheduler::start(&app_handle);
 
     // 开机自启动：已安装且开启 auto_start 时拉起服务
+    let app_for_start = app_handle.clone();
     tauri::async_runtime::spawn(async move {
-        let setting = config::get_store_dat_setting(&app_handle);
+        let setting = config::get_store_dat_setting(&app_for_start);
         if !setting.auto_start {
             log::debug!("auto_start disabled, skipping startup");
             return;
         }
-        if let Err(e) = service::workflow::start(app_handle).await {
+        if let Err(e) = service::workflow::start(app_for_start).await {
             log::error!("start failed: {}", e);
+        }
+    });
+
+    // 命令行集成自愈：已安装且开启时，确保 shim 与 PATH 注册完整
+    // （shim 被删除、PATH 条目丢失等情况下自动重建）
+    tauri::async_runtime::spawn(async move {
+        let setting = config::get_store_dat_setting(&app_handle);
+        if !setting.installed || !setting.cli_link_enabled {
+            return;
+        }
+        if let Err(e) = service::cli::ensure(&app_handle) {
+            log::warn!("cli link self-heal failed: {e}");
         }
     });
 }
@@ -100,6 +113,7 @@ fn handler() -> impl Fn(Invoke<Wry>) -> bool + Send + Sync + 'static {
         bridge::cmd::get_runtime_info,
         bridge::cmd::get_app_config,
         bridge::cmd::update_app_config,
+        bridge::cmd::get_cli_link_status,
         bridge::cmd::open_in_browser,
         bridge::cmd::copy_service_url,
         bridge::cmd::reveal_data_dir,

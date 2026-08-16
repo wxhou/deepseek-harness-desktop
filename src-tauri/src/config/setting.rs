@@ -12,6 +12,14 @@ pub struct Setting {
     pub language: String,
     #[serde(default)]
     pub dsh_pkg_commit: Option<String>,
+    /// 命令行集成开关：安装后在用户 PATH 中注册 `dsh` 命令
+    #[serde(default = "default_cli_link_enabled")]
+    pub cli_link_enabled: bool,
+}
+
+/// 命令行集成默认开启（开发者工具场景，安装完成即可用）
+fn default_cli_link_enabled() -> bool {
+    true
 }
 
 impl Default for Setting {
@@ -22,6 +30,7 @@ impl Default for Setting {
             auto_start: true,
             language: "zh-CN".to_string(),
             dsh_pkg_commit: None,
+            cli_link_enabled: default_cli_link_enabled(),
         }
     }
 }

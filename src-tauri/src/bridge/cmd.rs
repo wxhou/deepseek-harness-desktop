@@ -1,9 +1,25 @@
 use crate::config;
+use crate::service::cli;
 use crate::service::download::{self, Installable};
 use crate::service::workflow;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_clipboard_manager::ClipboardExt;
 use tauri_plugin_opener::OpenerExt;
+
+/// 按当前设置同步命令行集成（shim + PATH 注册）。
+///
+/// 安装/更新流程的收尾步骤，失败只记日志、不阻断主流程。
+fn sync_cli_link(app_handle: &AppHandle) {
+    let setting = config::get_store_dat_setting(app_handle);
+    let result = if setting.cli_link_enabled {
+        cli::ensure(app_handle)
+    } else {
+        cli::remove(app_handle)
+    };
+    if let Err(e) = result {
+        log::warn!("cli link sync failed: {e}");
+    }
+}
 
 /// 一键安装依赖（Node.js 运行时 + 打包的 Harness 发行版）
 ///
@@ -43,6 +59,7 @@ pub async fn install_dependencies(app_handle: AppHandle) -> Result<(), String> {
             setting.installed = true;
             config::set_store_dat_setting(&app_handle, setting);
         }
+        sync_cli_link(&app_handle);
         return Ok(());
     }
 
@@ -54,6 +71,7 @@ pub async fn install_dependencies(app_handle: AppHandle) -> Result<(), String> {
     let mut setting = config::get_store_dat_setting(&app_handle);
     setting.installed = true;
     config::set_store_dat_setting(&app_handle, setting);
+    sync_cli_link(&app_handle);
     Ok(())
 }
 
@@ -127,6 +145,7 @@ pub async fn update_app_config(
     app_handle: AppHandle,
     port: Option<u16>,
     auto_start: Option<bool>,
+    cli_link_enabled: Option<bool>,
 ) -> Result<config::Setting, String> {
     let mut setting = config::get_store_dat_setting(&app_handle);
     if let Some(port) = port {
@@ -138,8 +157,24 @@ pub async fn update_app_config(
     if let Some(auto_start) = auto_start {
         setting.auto_start = auto_start;
     }
+    // 命令行集成：先执行文件系统/PATH 操作，成功后再持久化开关，
+    // 失败时配置保持不变，避免"开关已开但 shim 未生成"的不一致状态。
+    if let Some(enabled) = cli_link_enabled {
+        if enabled {
+            cli::ensure(&app_handle)?;
+        } else {
+            cli::remove(&app_handle)?;
+        }
+        setting.cli_link_enabled = enabled;
+    }
     config::set_store_dat_setting(&app_handle, setting.clone());
     Ok(setting)
+}
+
+/// 命令行集成状态（shim 文件与 PATH 注册情况）
+#[tauri::command]
+pub fn get_cli_link_status(app_handle: AppHandle) -> Result<cli::CliLinkStatus, String> {
+    Ok(cli::get_status(&app_handle))
 }
 
 /// 在系统浏览器中打开 Harness 界面
