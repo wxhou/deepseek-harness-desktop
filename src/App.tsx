@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
-// 暂时改用 Tauri 原生标题栏，自定义顶部导航（WindowControls）隐藏
-// import WindowControls from "./components/WindowControls";
+import { Wrench } from "lucide-react";
 import SetupScreen, { InstallProgress, SetupStatus } from "./components/SetupScreen";
 import SidebarPanel, { SidebarBusyAction } from "./components/SidebarPanel";
 import { useI18n } from "./i18n/context";
@@ -58,13 +57,14 @@ export default function App() {
 
   const iframeSrc = useMemo(() => generateTimestampedUrl(serviceUrl), [serviceUrl]);
 
-  // 暂时隐藏自定义顶部导航，改用 Tauri 原生标题栏，以下逻辑暂未使用
-  // const handleToggleSidebar = () => {
-  //   setSidebarOpen((prev) => {
-  //     localStorage.setItem("sidebarOpen", String(!prev));
-  //     return !prev;
-  //   });
-  // };
+  // 右下角触发点：展开/收起侧边栏
+  const handleToggleSidebar = () => {
+    setSidebarOpen((prev) => {
+      const next = !prev;
+      localStorage.setItem("sidebarOpen", String(next));
+      return next;
+    });
+  };
 
   // 点击侧边栏外内容（遮罩）时收起侧边栏
   const handleCloseSidebar = () => {
@@ -326,8 +326,15 @@ export default function App() {
             onRetry={boot}
           />
         </main>
-        {/* 暂时隐藏自定义顶部导航，使用 Tauri 原生标题栏
-        <WindowControls sidebarOpen={sidebarOpen} onToggleSidebar={handleToggleSidebar} /> */}
+        {!sidebarOpen && (
+          <button
+            onClick={handleToggleSidebar}
+            title={t("app.expand_sidebar")}
+            className="fixed right-4 bottom-4 z-20 flex h-9 w-9 cursor-pointer items-center justify-center rounded-full border border-line bg-panel/80 text-ink shadow-lg backdrop-blur-md transition-colors hover:bg-panel-hover"
+          >
+            <Wrench className="size-4" />
+          </button>
+        )}
         <SidebarPanel
           open={sidebarOpen}
           serviceRunning={serviceRunning}
@@ -356,8 +363,6 @@ export default function App() {
             onRetry={boot}
           />
         </main>
-        {/* 暂时隐藏自定义顶部导航，使用 Tauri 原生标题栏
-        <WindowControls sidebarOpen={sidebarOpen} onToggleSidebar={handleToggleSidebar} /> */}
       </div>
     );
   }
@@ -414,8 +419,17 @@ export default function App() {
           </button>
         </div>
       )}
-      {/* 暂时隐藏自定义顶部导航，使用 Tauri 原生标题栏
-      <WindowControls sidebarOpen={sidebarOpen} onToggleSidebar={handleToggleSidebar} /> */}
+      {!sidebarOpen && (
+        <button
+          onClick={handleToggleSidebar}
+          title={t("app.expand_sidebar")}
+          className={`fixed right-4 z-20 flex h-9 w-9 cursor-pointer items-center justify-center rounded-full border border-line bg-panel/80 text-ink shadow-lg backdrop-blur-md transition-colors hover:bg-panel-hover ${
+            updateInfo && !updating ? "bottom-[84px]" : "bottom-4"
+          }`}
+        >
+          <Wrench className="size-4" />
+        </button>
+      )}
       <SidebarPanel
         open={sidebarOpen}
         serviceRunning={serviceRunning}

@@ -7,7 +7,6 @@ export interface Translations {
     ready: string;
     open_editor: string;
     expand_sidebar: string;
-    collapse_sidebar: string;
     restart: string;
     shutdown: string;
     open_browser: string;
@@ -66,11 +65,6 @@ export interface Translations {
     running: string;
     stopped: string;
     settings: string;
-    minimize: string;
-    maximize: string;
-    restore: string;
-    close: string;
-    drag_window: string;
     waiting_logs: string;
     install_log: string;
   };
