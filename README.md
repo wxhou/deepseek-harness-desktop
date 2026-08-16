@@ -33,7 +33,7 @@
 - **Self-healing core** — Every launch syncs with the latest upstream Harness release, so upstream fixes reach you without reinstalling.
 - **Local & private by default** — Runs on `127.0.0.1:3080`. Profiles, sessions and settings stay on your machine; telemetry is off by default.
 - **Native & lightweight** — A Tauri 2 shell (not Electron): smaller installers, lower memory, native windows. Windows / macOS / Linux, bilingual UI.
-- **CLI ready** — Registers `dsh` / `pnpm` commands (`*/bin`) after install, ready in a new terminal.
+- **CLI ready** — Registers `dsh` commands (`*/bin`) after install, ready in a new terminal.
 
 ## Quick Start
 
