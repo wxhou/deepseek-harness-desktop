@@ -152,6 +152,13 @@ fn builder() -> tauri::Builder<tauri::Wry> {
                 .min_inner_size(860.0, 620.0)
                 .resizable(true)
                 .decorations(true)
+                // 恢复 iframe 内 HTML5 拖拽（拖入图片/拖动元素）：
+                // Tauri 默认注册 wry drag_drop_handler → WebView2 SetAllowExternalDrop(false)
+                // 并注入 IDropTarget 接管拖放，iframe 内拖拽被禁用。
+                // 注意不能用 .drag_and_drop(false)：它只设置 tao 窗口层的拖放开关
+                // （tauri issue #13761），不影响 webview 层，拖拽依旧失效；
+                // disable_drag_drop_handler 才能关掉 wry 的接管（等价于旧配置 dragDropEnabled: false）。
+                .disable_drag_drop_handler()
                 .on_download(|webview, event| match event {
                     DownloadEvent::Requested { url, destination } => {
                         // 接管下载：保存到系统下载目录，重名时自动加 " (n)" 后缀
