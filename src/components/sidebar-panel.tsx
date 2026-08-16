@@ -236,7 +236,7 @@ export default function SidebarPanel({
           <div className="mb-[18px]">
             <h3 className="mb-2 flex items-center justify-between gap-1.5 text-xs uppercase tracking-[0.06em] text-muted">{t('ui.connection_status')}</h3>
             <span
-              className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-semibold ${serviceRunning ? 'bg-[rgba(70,167,88,0.15)] text-ok' : 'bg-[rgba(229,72,77,0.15)] text-danger'
+              className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-semibold ${serviceRunning ? 'bg-[rgba(34,197,94,0.15)] text-ok' : 'bg-[rgba(242,90,90,0.15)] text-danger'
               }`}
             >
               {serviceRunning ? t('ui.running') : t('ui.stopped')}
