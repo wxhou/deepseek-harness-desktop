@@ -1,5 +1,6 @@
-import { useEffect } from "react";
-import { listen, UnlistenFn } from "@tauri-apps/api/event";
+import type { UnlistenFn } from '@tauri-apps/api/event'
+import { listen } from '@tauri-apps/api/event'
+import { useEffect } from 'react'
 
 /**
  * Listen for the `app://sync-state` event and run a callback when it fires.
@@ -8,26 +9,27 @@ import { listen, UnlistenFn } from "@tauri-apps/api/event";
  */
 export function useAutoSync(onSync: () => void) {
   useEffect(() => {
-    let unlisten: UnlistenFn | null = null;
+    let unlisten: UnlistenFn | null = null
 
     const setupListener = async () => {
       try {
-        unlisten = await listen<string>("app://sync-state", () => onSync());
-      } catch (error) {
-        console.error("[useAutoSync] failed to register listener:", error);
+        unlisten = await listen<string>('app://sync-state', () => onSync())
       }
-    };
+      catch (error) {
+        console.error('[useAutoSync] failed to register listener:', error)
+      }
+    }
 
-    setupListener();
+    setupListener()
     return () => {
-      unlisten?.();
-    };
-  }, [onSync]);
+      unlisten?.()
+    }
+  }, [onSync])
 }
 
 /** Build a cache-busting URL for the harness iframe. */
 export function generateTimestampedUrl(baseUrl: string): string {
-  const timestamp = Date.now();
-  const separator = baseUrl.includes("?") ? "&" : "?";
-  return `${baseUrl}${separator}t=${timestamp}`;
+  const timestamp = Date.now()
+  const separator = baseUrl.includes('?') ? '&' : '?'
+  return `${baseUrl}${separator}t=${timestamp}`
 }

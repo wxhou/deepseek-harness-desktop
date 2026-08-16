@@ -2,7 +2,7 @@
 name = "deepseek-harness-desktop"
 version = "0.2.0"
 description = "Desktop application for DeepSeek Harness (dsh)"
-authors = ["deepseek-harness-desktop contributors"]
+authors = [ "deepseek-harness-desktop contributors" ]
 edition = "2021"
 
 [lib]
@@ -29,17 +29,20 @@ tauri-plugin-opener = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-store = "2"
 tauri-plugin-clipboard-manager = "2"
-serde = { version = "1", features = ["derive"] }
+serde = { version = "1", features = [ "derive" ] }
 serde_json = "1"
 log = "0.4"
-reqwest = { version = "0.12", features = ["json", "stream"] }
+reqwest = { version = "0.12", features = [
+  "json",
+  "stream"
+] }
 zip = "0.6"
 futures-util = "0.3"
 flate2 = "1"
 tar = "0.4"
 sha2 = "0.10"
 async-trait = "0.1"
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = [ "full" ] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [

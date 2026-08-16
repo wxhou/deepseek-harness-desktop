@@ -1,27 +1,27 @@
-import { useI18n } from "../i18n/context";
+import { useI18n } from '../i18n/context'
 
-export type SetupStatus = "checking" | "installing" | "starting" | "ready" | "error";
+export type SetupStatus = 'checking' | 'installing' | 'starting' | 'ready' | 'error'
 
 export interface InstallProgress {
-  title: string;
-  detail: string;
-  log: string;
-  type: string;
-  percentage: number;
-  progress: number;
+  title: string
+  detail: string
+  log: string
+  type: string
+  percentage: number
+  progress: number
 }
 
 interface SetupScreenProps {
-  status: SetupStatus;
-  title: string;
-  detail: string;
-  percentage: number;
-  logs: string[];
-  errorMsg: string;
-  onRetry: () => void;
+  status: SetupStatus
+  title: string
+  detail: string
+  percentage: number
+  logs: string[]
+  errorMsg: string
+  onRetry: () => void
 }
 
-const LOG_LIMIT = 5;
+const LOG_LIMIT = 5
 
 /**
  * Installer/download page, modeled on the early n8n-based
@@ -38,12 +38,12 @@ export default function SetupScreen({
   errorMsg,
   onRetry,
 }: SetupScreenProps) {
-  const { t } = useI18n();
-  const error = status === "error";
-  const installing = status === "installing";
-  const heading = error ? t("status.error") : title || t("status.installing");
-  const description = error ? "" : detail || t("status.installing");
-  const visibleLogs = logs.length ? logs : [t("ui.waiting_logs")];
+  const { t } = useI18n()
+  const error = status === 'error'
+  const installing = status === 'installing'
+  const heading = error ? t('status.error') : title || t('status.installing')
+  const description = error ? '' : detail || t('status.installing')
+  const visibleLogs = logs.length ? logs : [t('ui.waiting_logs')]
 
   return (
     <div className="flex h-full items-center justify-center">
@@ -67,11 +67,16 @@ export default function SetupScreen({
               <div className="h-2 flex-1 overflow-hidden rounded-full bg-panel2" role="progressbar" aria-valuenow={Math.round(percentage)}>
                 <div className="h-full bg-gradient-to-r from-accent to-accent2 transition-[width] duration-150" style={{ width: `${Math.min(percentage, 100)}%` }} />
               </div>
-              <span className="min-w-[44px] text-right text-[13px] font-semibold tabular-nums text-accent2">{Math.round(percentage)}%</span>
+              <span className="min-w-[44px] text-right text-[13px] font-semibold tabular-nums text-accent2">
+                {Math.round(percentage)}
+                %
+              </span>
             </div>
 
-            <div className="mb-5 min-h-[112px] max-h-[184px] overflow-y-auto rounded-lg border border-line bg-log-bg px-3.5 py-2.5 text-left font-mono text-xs leading-[1.7]" aria-label={t("ui.install_log")}>
+            <div className="mb-5 min-h-[112px] max-h-[184px] overflow-y-auto rounded-lg border border-line bg-log-bg px-3.5 py-2.5 text-left font-mono text-xs leading-[1.7]" aria-label={t('ui.install_log')}>
               {visibleLogs.slice(-LOG_LIMIT).map((line, index) => (
+                // 日志行内容可能重复，需以 index 区分 key
+                // eslint-disable-next-line react/no-array-index-key
                 <p key={`${line}-${index}`} className="m-0 flex gap-2 overflow-hidden text-ellipsis whitespace-nowrap text-log-ink">
                   <span className="shrink-0 text-accent select-none">›</span>
                   <span className="min-w-0 overflow-hidden text-ellipsis">{line}</span>
@@ -93,10 +98,10 @@ export default function SetupScreen({
             className="inline-flex cursor-pointer items-center justify-center rounded-md border border-accent bg-accent px-3 py-1.5 text-[13px] text-white transition-colors hover:bg-accent2 disabled:cursor-not-allowed disabled:opacity-55"
             onClick={onRetry}
           >
-            {t("app.retry")}
+            {t('app.retry')}
           </button>
         )}
       </div>
     </div>
-  );
+  )
 }

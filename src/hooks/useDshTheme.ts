@@ -1,17 +1,18 @@
-import { useEffect, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { listen, UnlistenFn } from "@tauri-apps/api/event";
+import type { UnlistenFn } from '@tauri-apps/api/event'
+import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
+import { useEffect, useRef, useState } from 'react'
 
-export type DshThemePreference = "dark" | "light" | "system";
-export type ResolvedTheme = "dark" | "light";
+export type DshThemePreference = 'dark' | 'light' | 'system'
+export type ResolvedTheme = 'dark' | 'light'
 
-const DARK_QUERY = "(prefers-color-scheme: dark)";
+const DARK_QUERY = '(prefers-color-scheme: dark)'
 
 function resolveTheme(preference: DshThemePreference): ResolvedTheme {
-  if (preference === "system") {
-    return window.matchMedia(DARK_QUERY).matches ? "dark" : "light";
+  if (preference === 'system') {
+    return window.matchMedia(DARK_QUERY).matches ? 'dark' : 'light'
   }
-  return preference;
+  return preference
 }
 
 /**
@@ -22,52 +23,53 @@ function resolveTheme(preference: DshThemePreference): ResolvedTheme {
  * 这里解析为最终主题并写到 `<html data-theme="...">`，由 CSS 变量切换配色。
  */
 export function useDshTheme(): ResolvedTheme {
-  const [theme, setTheme] = useState<ResolvedTheme>("dark");
-  const preferenceRef = useRef<DshThemePreference>("dark");
+  const [theme, setTheme] = useState<ResolvedTheme>('dark')
+  const preferenceRef = useRef<DshThemePreference>('dark')
 
   useEffect(() => {
-    let unlisten: UnlistenFn | null = null;
-    let disposed = false;
+    let unlisten: UnlistenFn | null = null
+    let disposed = false
 
     const apply = (preference: DshThemePreference) => {
-      preferenceRef.current = preference;
+      preferenceRef.current = preference
       if (!disposed) {
-        setTheme(resolveTheme(preference));
+        setTheme(resolveTheme(preference))
       }
-    };
+    }
 
-    invoke<DshThemePreference>("get_dsh_theme")
-      .then((preference) => apply(preference))
-      .catch((err) => console.error("[useDshTheme] failed to load theme:", err));
+    invoke<DshThemePreference>('get_dsh_theme')
+      .then(preference => apply(preference))
+      .catch(err => console.error('[useDshTheme] failed to load theme:', err))
 
-    listen<DshThemePreference>("dsh-theme-updated", (event) => {
-      apply(event.payload);
+    listen<DshThemePreference>('dsh-theme-updated', (event) => {
+      apply(event.payload)
     }).then((fn) => {
       if (disposed) {
-        fn();
-      } else {
-        unlisten = fn;
+        fn()
       }
-    });
+      else {
+        unlisten = fn
+      }
+    })
 
-    const mediaQuery = window.matchMedia(DARK_QUERY);
+    const mediaQuery = window.matchMedia(DARK_QUERY)
     const onSystemThemeChange = () => {
-      if (preferenceRef.current === "system") {
-        setTheme(resolveTheme("system"));
+      if (preferenceRef.current === 'system') {
+        setTheme(resolveTheme('system'))
       }
-    };
-    mediaQuery.addEventListener("change", onSystemThemeChange);
+    }
+    mediaQuery.addEventListener('change', onSystemThemeChange)
 
     return () => {
-      disposed = true;
-      mediaQuery.removeEventListener("change", onSystemThemeChange);
-      unlisten?.();
-    };
-  }, []);
+      disposed = true
+      mediaQuery.removeEventListener('change', onSystemThemeChange)
+      unlisten?.()
+    }
+  }, [])
 
   useEffect(() => {
-    document.documentElement.dataset.theme = theme;
-  }, [theme]);
+    document.documentElement.dataset.theme = theme
+  }, [theme])
 
-  return theme;
+  return theme
 }
