@@ -36,17 +36,18 @@ pub async fn install_dependencies(app_handle: AppHandle) -> Result<(), String> {
     // 不一致时，说明上游 pkg 有更新/修复，需要自动重新下载。
     let node_ok = download::Nodejs.check_installed(&app_handle);
     let dsh_files_ok = download::Dsh.check_installed(&app_handle);
-    let dsh_latest = download::fetch_latest_dsh_pkg_commit().await;
+    let dsh_latest = download::fetch_latest_dsh_pkg_info().await;
 
     let dsh_ok = match &dsh_latest {
-        Ok(commit) => {
+        Ok(latest) => {
             dsh_files_ok
-                && config::get_dsh_pkg_commit(&app_handle).as_deref() == Some(commit.as_str())
+                && config::get_dsh_pkg_commit(&app_handle).as_deref()
+                    == Some(latest.commit.as_str())
         }
         Err(e) => {
             // 网络不可用或 GitHub API 限流时保留本地安装，不阻塞启动
             log::warn!(
-                "Failed to check latest dsh release commit, keeping local install: {}",
+                "Failed to check latest dsh release info, keeping local install: {}",
                 e
             );
             dsh_files_ok
@@ -82,6 +83,10 @@ pub async fn install_dependencies(app_handle: AppHandle) -> Result<(), String> {
 }
 
 /// 静默检查是否有新版 Harness 可用（只查不装，供进入页面后后台调用）
+///
+/// 以“实际安装文件”为准核对，而不是只看本地记录：记录可能因安装时 API
+/// 失败或外围途径更新而滞后于文件，此时修正记录并免打扰；同版本热修
+/// （版本相同但 commit 不同）仍正常提示。
 #[tauri::command]
 pub async fn check_dsh_update(
     app_handle: AppHandle,
@@ -93,11 +98,39 @@ pub async fn check_dsh_update(
     }
 
     let latest = download::fetch_latest_dsh_pkg_info().await?;
-    let current = config::get_dsh_pkg_commit(&app_handle);
-    if current.as_deref() == Some(latest.commit.as_str()) {
-        Ok(None)
+    let record_commit = config::get_dsh_pkg_commit(&app_handle);
+    let record_tag = config::get_dsh_pkg_tag(&app_handle);
+    let installed_version = config::get_dsh_version(&app_handle);
+
+    // 老记录没有 tag，反查 pkg 仓库 tags 列表确认记录对应的发布版本；
+    // 反查失败时由 resolve_update 回退到“以实际文件为准”的保守分支
+    let legacy_tags = if record_tag.is_none() {
+        download::fetch_dsh_pkg_tags().await.unwrap_or_default()
     } else {
-        Ok(Some(latest))
+        Vec::new()
+    };
+
+    match download::resolve_update(
+        record_commit.as_deref(),
+        record_tag.as_deref(),
+        installed_version.as_deref(),
+        &latest,
+        &legacy_tags,
+    ) {
+        download::UpdateCheck::UpToDate => Ok(None),
+        download::UpdateCheck::UpdateAvailable => Ok(Some(latest)),
+        download::UpdateCheck::HealUpToDate => {
+            // 安装文件已是最新 release，只是记录滞后：修正记录后下次启动
+            // 直接走 commit 比对快速路径，不再误报
+            log::info!(
+                "Installed Harness files already at latest release, healing stale record: {} ({})",
+                latest.tag,
+                latest.commit
+            );
+            config::set_dsh_pkg_commit(&app_handle, latest.commit.clone());
+            config::set_dsh_pkg_tag(&app_handle, latest.tag.clone());
+            Ok(None)
+        }
     }
 }
 

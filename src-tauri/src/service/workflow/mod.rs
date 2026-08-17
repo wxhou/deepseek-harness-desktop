@@ -354,7 +354,7 @@ pub fn stop_on_exit(app_handle: tauri::AppHandle, port: u16) {
 /// 安装环境（Node.js 运行时 + 打包的 Harness 发行版）
 pub async fn install(
     app_handle: &tauri::AppHandle,
-    dsh_latest_commit: Option<String>,
+    dsh_latest: Option<download::LatestDshPkg>,
 ) -> Result<(), String> {
     log::info!("Starting installation process");
 
@@ -388,8 +388,9 @@ pub async fn install(
         log::debug!("Processing task {}/{}", index + 1, tasks.len());
         // 已安装但 commit 与最新 release 不一致时强制重新下载
         let outdated = index == 1
-            && dsh_latest_commit.is_some()
-            && config::get_dsh_pkg_commit(app_handle).as_deref() != dsh_latest_commit.as_deref();
+            && dsh_latest.as_ref().is_some_and(|info| {
+                config::get_dsh_pkg_commit(app_handle).as_deref() != Some(info.commit.as_str())
+            });
         if task.check_installed(app_handle) && !outdated {
             log::debug!(
                 "Task {} already installed and up to date, skipping",
@@ -419,10 +420,11 @@ pub async fn install(
         log::info!("Extraction completed");
         tracker.end_phase();
 
-        // 记录本次安装对应的 release commit，供下次启动比对
+        // 记录本次安装对应的 release tag 与 commit，供下次启动比对
         if index == 1 {
-            if let Some(commit) = &dsh_latest_commit {
-                config::set_dsh_pkg_commit(app_handle, commit.clone());
+            if let Some(info) = &dsh_latest {
+                config::set_dsh_pkg_commit(app_handle, info.commit.clone());
+                config::set_dsh_pkg_tag(app_handle, info.tag.clone());
             }
         }
     }
