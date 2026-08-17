@@ -1,24 +1,22 @@
+import type { ReactNode } from 'react'
+import { ArrowRotateRight, ArrowsRotateRight, ArrowUpRightFromSquare, Copy, Folder, Power } from '@gravity-ui/icons'
+import {
+  Button,
+  Chip,
+  Drawer,
+  Input,
+  ListBox,
+  Select,
+  Spinner,
+  Switch,
+  TextArea,
+} from '@heroui/react'
 import { invoke } from '@tauri-apps/api/core'
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useStore } from 'valtio-define'
 import { harness } from '../store/modules/harness'
 import { setting } from '../store/modules/setting'
-import {
-  button,
-  codeBlock,
-  dataDesc,
-  dataTerm,
-  drawer,
-  input,
-  logPanel,
-  notice,
-  overlay,
-  sectionTitle,
-  select,
-  spinner,
-  statusPill,
-} from './primitives'
 
 export interface RuntimeInfo {
   app_version: string
@@ -46,16 +44,35 @@ export interface CliLinkStatus {
   shim_path: string
 }
 
-/** 按钮内的小型加载指示器：边框旋转动画，颜色跟随当前文字 */
-function Spinner() {
-  return <span className={spinner()} />
+/** 分组卡片容器 */
+function SectionCard({ children, className = '' }: { children: ReactNode, className?: string }) {
+  return (
+    <div className={`space-y-3 ${className}`}>
+      {children}
+    </div>
+  )
 }
 
-/**
- * 右侧调试侧边栏：运行时信息、服务操作、设置与日志。
- * 展开状态来自 setting store；服务状态与操作（重启/停止/启动/打开浏览器）
- * 直接引用 harness store 的方法，不再接收 onClose/onRestart 等回调 props。
- */
+/** 分组小节标题 */
+function SectionTitle({ children, action }: { children: ReactNode, action?: ReactNode }) {
+  return (
+    <div className="flex items-center justify-between text-xs font-semibold uppercase tracking-wider text-muted/80 border-b border-line/40 pb-2">
+      <span>{children}</span>
+      {action && <div>{action}</div>}
+    </div>
+  )
+}
+
+/** 信息列表的一行 */
+function InfoRow({ term, children }: { term: string, children: ReactNode }) {
+  return (
+    <div className="flex items-center justify-between gap-2 text-xs py-0.5">
+      <dt className="shrink-0 text-muted font-medium">{term}</dt>
+      <dd className="min-w-0 break-all text-ink text-right font-mono">{children}</dd>
+    </div>
+  )
+}
+
 export default function DebugSidebar() {
   const { t, i18n } = useTranslation()
   const { sidebarOpen } = useStore(setting)
@@ -76,8 +93,7 @@ export default function DebugSidebar() {
       return
     setBusy('refreshInfo')
     try {
-      const nextInfo = await invoke<RuntimeInfo>('get_runtime_info')
-      setInfo(nextInfo)
+      setInfo(await invoke<RuntimeInfo>('get_runtime_info'))
     }
     catch (err) {
       console.error('[DebugSidebar] failed to load runtime info:', err)
@@ -216,213 +232,283 @@ export default function DebugSidebar() {
   }
 
   return (
-    <>
-      {/* 点击侧边栏外内容时关闭侧边栏；透明遮罩位于内容之上、侧边栏之下 */}
-      {sidebarOpen && <div aria-hidden onClick={setting.closeSidebar} className={overlay()} />}
-      <aside className={drawer({ open: sidebarOpen })}>
-        <div className="px-3 pt-4 pb-5">
-          <div className="mb-[18px]">
-            <h3 className={sectionTitle()}>{t('ui.connection_status')}</h3>
-            <span className={statusPill({ tone: serviceRunning ? 'running' : 'stopped' })}>
-              {serviceRunning ? t('ui.running') : t('ui.stopped')}
-            </span>
-          </div>
+    <Drawer.Root>
+      <Drawer.Backdrop
+        isOpen={sidebarOpen}
+        onOpenChange={open => (open ? setting.toggleSidebar() : setting.closeSidebar())}
+      >
+        <Drawer.Content placement="right">
+          <Drawer.Dialog>
+            <Drawer.Body className="space-y-4 relative">
 
-          <div className="mb-[18px]">
-            <h3 className={sectionTitle()}>{t('ui.service_url')}</h3>
-            <div className="flex items-center gap-1.5">
-              <code className={codeBlock()}>{info?.service_url ?? '-'}</code>
-              <button
-                className={button({ size: 'sm', tone: 'ghost' })}
-                onClick={copyUrl}
-                disabled={busy === 'copy'}
-                title={t('app.copy_url')}
-              >
-                {busy === 'copy' && <Spinner />}
-                {t('buttons.copy')}
-              </button>
-            </div>
-            <button
-              className={button({ size: 'sm', tone: 'ghost', block: true })}
-              onClick={harness.openBrowser}
-              disabled={busyAction !== null}
-            >
-              {busyAction === 'openBrowser' && <Spinner />}
-              {t('app.open_browser')}
-            </button>
-          </div>
+              {/* 核心服务与地址状态 */}
+              <SectionCard>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold uppercase tracking-wider text-muted">
+                    {t('ui.connection_status')}
+                  </span>
+                  <Chip
+                    size="sm"
+                    variant="soft"
+                    color={serviceRunning ? 'success' : 'danger'}
+                    className="font-medium"
+                  >
+                    {serviceRunning ? t('ui.running') : t('ui.stopped')}
+                  </Chip>
+                </div>
 
-          <div className="mb-[18px]">
-            <h3 className={sectionTitle()}>{t('ui.actions')}</h3>
-            <div className="flex flex-wrap gap-1.5">
-              {serviceRunning
-                ? (
-                    <>
-                      <button
-                        className={button({ size: 'sm', tone: 'ghost' })}
-                        onClick={harness.restart}
-                        disabled={busyAction !== null}
-                      >
-                        {busyAction === 'restart' && <Spinner />}
-                        {t('app.restart')}
-                      </button>
-                      <button
-                        className={button({ size: 'sm', tone: 'danger' })}
-                        onClick={harness.shutdown}
-                        disabled={busyAction !== null}
-                      >
-                        {busyAction === 'shutdown' && <Spinner />}
-                        {t('app.shutdown')}
-                      </button>
-                    </>
-                  )
-                : (
-                    <button
-                      className={button({ size: 'sm', tone: 'primary' })}
-                      onClick={harness.start}
-                      disabled={busyAction !== null}
+                <div className="space-y-1.5">
+                  <div className="flex gap-1.5">
+                    <Input
+                      readOnly
+                      variant="secondary"
+                      value={info?.service_url ?? '-'}
+                      aria-label={t('ui.service_url')}
+                      className="font-mono text-xs flex-1 rounded-md"
+                    />
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      isIconOnly
+                      className="rounded-md"
+
+                      onPress={copyUrl}
+                      isDisabled={busy === 'copy'}
+                      aria-label={t('buttons.copy')}
                     >
-                      {busyAction === 'start' && <Spinner />}
-                      {t('app.retry')}
-                    </button>
-                  )}
-              <button
-                className={button({ size: 'sm', tone: 'ghost' })}
-                onClick={refreshInfo}
-                disabled={busy === 'refreshInfo'}
-              >
-                {busy === 'refreshInfo' && <Spinner />}
-                {t('app.refresh')}
-              </button>
-            </div>
-          </div>
+                      {busy === 'copy' ? <Spinner size="sm" color="current" /> : <Copy className="size-3.5" />}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="rounded-md"
+                      isIconOnly
+                      onPress={harness.openBrowser}
+                      isDisabled={busyAction !== null}
+                      aria-label={t('app.open_browser')}
+                    >
+                      {busyAction === 'openBrowser' ? <Spinner size="sm" color="current" /> : <ArrowUpRightFromSquare className="size-3.5" />}
+                    </Button>
+                  </div>
+                </div>
 
-          <div className="mb-[18px]">
-            <h3 className={sectionTitle()}>{t('ui.app_info')}</h3>
-            <dl className="m-0 text-xs">
-              <dt className={dataTerm()}>{t('ui.current_version')}</dt>
-              <dd className={dataDesc()}>{info?.app_version ?? '-'}</dd>
-              <dt className={dataTerm()}>{t('ui.dsh_version')}</dt>
-              <dd className={dataDesc()}>{info?.dsh_version ?? '-'}</dd>
-              <dt className={dataTerm()}>{t('ui.node_version')}</dt>
-              <dd className={dataDesc()}>
-                v
-                {info?.node_version ?? '-'}
-              </dd>
-              <dt className={dataTerm()}>Platform</dt>
-              <dd className={dataDesc()}>
-                {info?.platform ?? '-'}
-                {' '}
-                /
-                {info?.arch ?? '-'}
-              </dd>
-              <dt className={dataTerm()}>{t('ui.data_dir')}</dt>
-              <dd className="mt-0.5 flex items-center justify-center gap-2" title={info?.data_dir}>
-                <div className="break-all truncate">{info?.data_dir ?? '-'}</div>
-                <button
-                  className={button({ size: 'sm', tone: 'ghost' })}
-                  onClick={revealDataDir}
-                  disabled={busy === 'revealDataDir'}
+                {/* 服务操作 */}
+                <div className="pt-2 border-t border-line/40 flex items-center gap-2">
+                  {serviceRunning
+                    ? (
+                        <>
+                          <Button
+                            size="sm"
+                            variant="tertiary"
+                            className="flex-1 rounded-md"
+                            onPress={harness.restart}
+                            isDisabled={busyAction !== null}
+                          >
+                            {busyAction === 'restart' ? <Spinner size="sm" color="current" /> : <ArrowRotateRight className="size-3.5" />}
+                            {t('app.restart')}
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="danger"
+                            className="flex-1 rounded-md"
+                            onPress={harness.shutdown}
+                            isDisabled={busyAction !== null}
+                          >
+                            {busyAction === 'shutdown' ? <Spinner size="sm" color="current" /> : <Power className="size-3.5" />}
+                            {t('app.shutdown')}
+                          </Button>
+                        </>
+                      )
+                    : (
+                        <Button
+                          size="sm"
+                          variant="primary"
+                          className="flex-1 rounded-md"
+                          onPress={harness.start}
+                          isDisabled={busyAction !== null}
+                        >
+                          {busyAction === 'start' && <Spinner size="sm" color="current" />}
+                          {t('app.retry')}
+                        </Button>
+                      )}
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="rounded-md"
+                    isIconOnly
+                    onPress={refreshInfo}
+                    isDisabled={busy === 'refreshInfo'}
+                    aria-label={t('app.refresh')}
+                  >
+                    {busy === 'refreshInfo' ? <Spinner size="sm" color="current" /> : <ArrowsRotateRight className="size-3.5" />}
+                  </Button>
+                </div>
+              </SectionCard>
+
+              {/* 应用信息 */}
+              <SectionCard>
+                <SectionTitle>{t('ui.app_info')}</SectionTitle>
+                <dl className="space-y-1">
+                  <InfoRow term={t('ui.current_version')}>{info?.app_version ?? '-'}</InfoRow>
+                  <InfoRow term={t('ui.dsh_version')}>{info?.dsh_version ?? '-'}</InfoRow>
+                  <InfoRow term={t('ui.node_version')}>{info?.node_version ? `v${info.node_version}` : '-'}</InfoRow>
+                  <InfoRow term="Platform">
+                    {info ? `${info.platform} / ${info.arch}` : '-'}
+                  </InfoRow>
+                  <div className="flex items-center justify-between gap-2 text-xs pt-1 border-t border-line/30">
+                    <dt className="shrink-0 text-muted font-medium">{t('ui.data_dir')}</dt>
+                    <dd className="min-w-0 flex items-center gap-1">
+                      <span className="truncate max-w-[160px] font-mono text-[11px] text-muted/80" title={info?.data_dir ?? '-'}>
+                        {info?.data_dir ?? '-'}
+                      </span>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        isIconOnly
+                        className="size-6 min-w-6 rounded-md"
+                        aria-label={t('app.reveal_dir')}
+                        onPress={revealDataDir}
+                        isDisabled={busy === 'revealDataDir'}
+                      >
+                        {busy === 'revealDataDir' ? <Spinner size="sm" color="current" /> : <Folder className="size-3.5" />}
+                      </Button>
+                    </dd>
+                  </div>
+                </dl>
+              </SectionCard>
+
+              {/* 设置 */}
+              <SectionCard>
+                <SectionTitle>{t('ui.settings')}</SectionTitle>
+
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between gap-4">
+                    <span className="text-xs font-medium text-ink">{t('ui.port')}</span>
+                    <Input
+                      variant="secondary"
+                      aria-label={t('ui.port')}
+                      value={port}
+                      onChange={e => setPort(e.target.value)}
+                      inputMode="numeric"
+                      className="w-18 text-right h-5 rounded-md px-2 text-xs"
+                    />
+                  </div>
+
+                  <div className="flex items-center justify-between gap-4">
+                    <span className="text-xs font-medium text-ink">{t('ui.cli_link_enabled')}</span>
+                    <Switch
+                      isSelected={cliLinkEnabled}
+                      onChange={(e) => {
+                        setCliLinkEnabled(e)
+                        setCliToggled(true)
+                      }}
+                    >
+                      <Switch.Content>
+                        <Switch.Control>
+                          <Switch.Thumb />
+                        </Switch.Control>
+                      </Switch.Content>
+                    </Switch>
+
+                  </div>
+
+                  {cliStatus && (
+                    <div className="rounded-lg border border-line/50 bg-background/50 p-2 text-[11px] space-y-1 text-muted">
+                      <code className="block truncate font-mono text-[10px] text-muted/70">{cliStatus.bin_dir}</code>
+                      <p>{t('ui.cli_link_hint')}</p>
+                      {cliStatus.user_dsh_preserved && (
+                        <p className="font-medium text-ink">{t('ui.cli_link_user_dsh_preserved')}</p>
+                      )}
+                    </div>
+                  )}
+
+                  <div className="flex items-center justify-between gap-4 pt-1 border-t border-line/30">
+                    <span className="text-xs font-medium text-ink">{t('ui.language')}</span>
+                    <Select
+                      variant="secondary"
+                      selectedKey={i18n.language}
+                      onSelectionChange={key => i18n.changeLanguage(String(key))}
+                      className="w-32 rounded-md"
+                    >
+                      <Select.Trigger>
+                        <Select.Value />
+                        <Select.Indicator />
+                      </Select.Trigger>
+                      <Select.Popover className="rounded-md">
+                        <ListBox>
+                          <ListBox.Item id="zh-CN" textValue="中文">中文</ListBox.Item>
+                          <ListBox.Item id="en-US" textValue="English">English</ListBox.Item>
+                        </ListBox>
+                      </Select.Popover>
+                    </Select>
+                  </div>
+
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    fullWidth
+                    onPress={saveConfig}
+                    isDisabled={saving}
+                    className="mt-2 rounded-md"
+                  >
+                    {saving && <Spinner size="sm" color="current" />}
+                    {saving ? t('ui.saved') : t('ui.save')}
+                  </Button>
+                </div>
+              </SectionCard>
+
+              {/* 日志 */}
+              <SectionCard>
+                <SectionTitle
+                  action={(
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      isIconOnly
+                      className="size-6 min-w-6"
+                      aria-label={t('buttons.refresh_logs')}
+                      onPress={refreshLogs}
+                      isDisabled={busy === 'refreshLogs'}
+                    >
+                      {busy === 'refreshLogs' ? <Spinner size="sm" color="current" /> : <ArrowRotateRight className="size-3.5" />}
+                    </Button>
+                  )}
                 >
-                  {busy === 'revealDataDir' && <Spinner />}
-                  {t('app.reveal_dir')}
-                </button>
-              </dd>
-            </dl>
-          </div>
+                  {t('ui.logs')}
+                </SectionTitle>
 
-          <div className="mb-[18px]">
-            <h3 className={sectionTitle()}>{t('ui.settings')}</h3>
-            <label className="mb-2 flex items-center gap-2">
-              <span>{t('ui.port')}</span>
-              <input
-                className={input()}
-                value={port}
-                onChange={e => setPort(e.target.value)}
-                inputMode="numeric"
-              />
-            </label>
+                <TextArea
+                  readOnly
+                  variant="secondary"
+                  value={logs || t('ui.no_logs')}
+                  aria-label={t('ui.logs')}
+                  className="min-h-[140px] max-h-[180px] font-mono text-[11px] w-full leading-relaxed"
+                />
 
-            <p className="mb-1 mt-2 text-[11px] font-semibold text-muted">{t('ui.cli_link')}</p>
-            <label className="mb-1 flex cursor-pointer items-center gap-2">
-              <input
-                type="checkbox"
-                checked={cliLinkEnabled}
-                onChange={(e) => {
-                  setCliLinkEnabled(e.target.checked)
-                  setCliToggled(true)
-                }}
-              />
-              <span>{t('ui.cli_link_enabled')}</span>
-            </label>
-            <div className="mb-2 rounded-md border border-line bg-panel2 px-2 py-1.5">
-              {cliStatus && (
-                <code className="mt-1 block truncate break-all text-[10px] text-muted">{cliStatus.bin_dir}</code>
+                <Button
+                  size="sm"
+                  variant="tertiary"
+                  fullWidth
+                  className="rounded-md"
+                  onPress={clearLogs}
+                  isDisabled={busy === 'clearLogs'}
+                >
+                  {busy === 'clearLogs' && <Spinner size="sm" color="current" />}
+                  {t('buttons.clear_logs')}
+                </Button>
+              </SectionCard>
+
+              {/* Toast 提示浮层 */}
+              {noticeMsg && (
+                <div className="sticky bottom-2 left-0 right-0 z-50 rounded-lg border border-line bg-panel2/95 px-3.5 py-2 text-xs text-center text-ink shadow-lg backdrop-blur transition-all">
+                  {noticeMsg}
+                </div>
               )}
-              <p className="mt-1 text-[11px] text-muted">{t('ui.cli_link_hint')}</p>
-              {cliStatus?.user_dsh_preserved && (
-                <p className="mt-1 text-[11px] font-medium text-ink">{t('ui.cli_link_user_dsh_preserved')}</p>
-              )}
-            </div>
 
-            <button className={button({ size: 'sm', tone: 'primary', block: true })} onClick={saveConfig} disabled={saving}>
-              {saving
-                ? (
-                    <>
-                      <Spinner />
-                      {t('ui.saved')}
-                    </>
-                  )
-                : (
-                    t('ui.save')
-                  )}
-            </button>
-            <div className="mt-2.5 flex items-center gap-2 text-[13px]">
-              <span>
-                {t('ui.language')}
-                :
-              </span>
-              <select
-                className={select()}
-                value={i18n.language}
-                onChange={e => i18n.changeLanguage(e.target.value)}
-              >
-                <option value="zh-CN">中文</option>
-                <option value="en-US">English</option>
-              </select>
-            </div>
-          </div>
-
-          <div className="flex flex-col gap-1.5">
-            <h3 className={sectionTitle()}>
-              {t('ui.logs')}
-              <button
-                className={button({ size: 'sm', tone: 'ghost' })}
-                onClick={refreshLogs}
-                disabled={busy === 'refreshLogs'}
-                title={t('buttons.refresh_logs')}
-              >
-                {busy === 'refreshLogs' ? <Spinner /> : '↻'}
-              </button>
-            </h3>
-            <pre className={logPanel()}>{logs || t('ui.no_logs')}</pre>
-            <button
-              className={button({ size: 'sm', tone: 'ghost' })}
-              onClick={clearLogs}
-              disabled={busy === 'clearLogs'}
-            >
-              {busy === 'clearLogs' && <Spinner />}
-              {t('buttons.clear_logs')}
-            </button>
-          </div>
-
-          {noticeMsg && (
-            <div className={notice()}>
-              {noticeMsg}
-            </div>
-          )}
-        </div>
-      </aside>
-    </>
+            </Drawer.Body>
+          </Drawer.Dialog>
+        </Drawer.Content>
+      </Drawer.Backdrop>
+    </Drawer.Root>
   )
 }
