@@ -25,11 +25,20 @@ fn default_cli_link_enabled() -> bool {
     true
 }
 
+/// 默认服务端口：debug 构建与生产隔离，避免开发时与已运行的桌面端争用 3080。
+fn default_port() -> u16 {
+    if cfg!(debug_assertions) {
+        DSH_DEV_PORT
+    } else {
+        DSH_PORT
+    }
+}
+
 impl Default for Setting {
     fn default() -> Self {
         Self {
             installed: false,
-            port: DSH_PORT,
+            port: default_port(),
             auto_start: true,
             language: "zh-CN".to_string(),
             dsh_pkg_commit: None,

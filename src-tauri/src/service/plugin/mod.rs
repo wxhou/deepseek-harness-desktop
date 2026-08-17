@@ -165,7 +165,7 @@ pub async fn install(app_handle: &AppHandle, ids: &[String]) -> Result<(), Strin
 
     // 新增/变更 bundle 需要服务重启才会加载：安装前先停掉正在运行的服务，
     // 后续 launch 会以全新进程加载新插件（首次安装场景服务尚未启动，跳过）。
-    if workflow::utils::is_dsh_running().await {
+    if workflow::utils::is_dsh_running(config::get_store_dat_setting(app_handle).port).await {
         log::info!("Stopping running harness service before installing preinstall plugins");
         if let Err(e) = workflow::stop(app_handle.clone()).await {
             log::warn!("failed to stop harness before preinstall: {e}");

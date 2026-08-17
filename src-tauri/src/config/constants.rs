@@ -18,7 +18,11 @@ pub const PNPM_BASE_URL: &str = "https://registry.npmjs.org/pnpm/-/";
 
 /// Harness 服务地址与默认端口
 pub const DSH_HOST: &str = "http://127.0.0.1";
+/// 生产（release）默认端口
 pub const DSH_PORT: u16 = 3080;
+/// 开发（debug）默认端口：与生产隔离，避免 `pnpm tauri dev` 与已安装桌面端
+/// 争用同一个 3080 端口冲突。
+pub const DSH_DEV_PORT: u16 = 3081;
 
 /// 安装目录与 CLI 入口（相对安装目录）
 pub const DSH_CORE_DIR: &str = "dsh";

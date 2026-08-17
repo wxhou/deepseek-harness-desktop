@@ -4,8 +4,8 @@ use std::path::PathBuf;
 use std::thread;
 use std::time::Duration;
 
-/// 检查 Harness 是否真正在运行
-pub async fn is_dsh_running() -> bool {
+/// 检查 Harness 是否真正在运行（探测指定端口，随配置端口联动）
+pub async fn is_dsh_running(port: u16) -> bool {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(2))
         .build()
@@ -17,8 +17,7 @@ pub async fn is_dsh_running() -> bool {
         None => return false,
     };
 
-    use crate::config::get_dsh_base_url;
-    let url = format!("{}/", get_dsh_base_url());
+    let url = format!("{}/", crate::config::get_dsh_service_url(port));
 
     // 发送请求并判断是否就绪
     let check_status = async {
