@@ -2,8 +2,8 @@ import type { UnlistenFn } from '@tauri-apps/api/event'
 import type { InstallerState, InstallProgress, SetupStatus, SidebarBusyAction } from './types'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
+import i18next from 'i18next'
 import { defineStore } from 'valtio-define'
-import { setting } from '../setting'
 import { updater } from '../updater'
 
 const MAX_RETRIES = 8
@@ -153,7 +153,7 @@ export const harness = defineStore({
       }
       if (!healthy) {
         throw new Error(
-          setting.t('errors.service_start_timeout', { port: new URL(this.serviceUrl).port || '3080' }),
+          i18next.t('errors.service_start_timeout', { port: new URL(this.serviceUrl).port || '3080' }),
         )
       }
       this.serviceHealthy = true
@@ -187,7 +187,7 @@ export const harness = defineStore({
         // 仅首次使用需要检测环境/安装依赖；之后直接进入页面
         if (!config.installed) {
           this.status = 'installing'
-          this.installer = { ...initialInstaller, title: setting.t('status.installing') }
+          this.installer = { ...initialInstaller, title: i18next.t('status.installing') }
           await invoke('install_dependencies')
         }
 
@@ -261,7 +261,7 @@ export const harness = defineStore({
       }
       this.serviceRunning = false
       this.status = 'error'
-      this.errorMsg = setting.t('ui.stopped')
+      this.errorMsg = i18next.t('ui.stopped')
     },
 
     /** 服务未运行时点击"重试"：重新拉起服务并等待健康检查 */
