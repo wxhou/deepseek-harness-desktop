@@ -1,5 +1,12 @@
 import type { UnlistenFn } from '@tauri-apps/api/event'
-import type { InstallerState, InstallProgress, SetupStatus, SidebarBusyAction } from './types'
+import type {
+  InstallerState,
+  InstallProgress,
+  PreinstallLogPayload,
+  PreinstallPlugin,
+  SetupStatus,
+  SidebarBusyAction,
+} from './types'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import i18next from 'i18next'
@@ -76,6 +83,14 @@ export const harness = defineStore({
     status: 'ready' as SetupStatus,
     installer: initialInstaller,
     errorMsg: '',
+    /** 预装插件引导状态：列表/安装进度/日志/错误 */
+    preinstall: {
+      plugins: [] as PreinstallPlugin[],
+      loading: false,
+      installing: false,
+      logs: [] as string[],
+      error: '',
+    },
     serviceUrl: 'http://127.0.0.1:3080',
     /** 带时间戳的 iframe 地址（boot 时生成一次，避免缓存） */
     iframeSrc: '',
@@ -182,13 +197,25 @@ export const harness = defineStore({
         this.iframeSrc = generateTimestampedUrl(runtimeInfo.service_url)
 
         // 已安装过则跳过安装界面，避免每次启动都闪现"正在安装依赖..."
-        const config = await invoke<{ installed: boolean }>('get_app_config')
+        const config = await invoke<{
+          installed: boolean
+          preinstall_done: boolean
+        }>('get_app_config')
 
         // 仅首次使用需要检测环境/安装依赖；之后直接进入页面
         if (!config.installed) {
           this.status = 'installing'
           this.installer = { ...initialInstaller, title: i18next.t('status.installing') }
           await invoke('install_dependencies')
+        }
+
+        // 预装插件引导：首次安装完成或老版本升级后出现（装完/跳过后才拉起服务）。
+        // 注意：老用户升级后 installed 已为 true，但 preinstall_done 未置位，
+        // 此时也能看到新增的预装插件列表。
+        if (!config.preinstall_done) {
+          this.status = 'preinstall'
+          await this.loadPreinstallPlugins()
+          return
         }
 
         await this.launchAndWait()
@@ -291,6 +318,86 @@ export const harness = defineStore({
       finally {
         this.busyAction = null
       }
+    },
+
+    /** 拉取预装插件列表（含已安装检测），供首次启动引导界面渲染 */
+    async loadPreinstallPlugins(): Promise<PreinstallPlugin[]> {
+      if (this.preinstall.loading)
+        return this.preinstall.plugins
+      this.preinstall.loading = true
+      try {
+        this.preinstall.plugins = await invoke<PreinstallPlugin[]>('get_preinstall_plugins')
+      }
+      catch (err) {
+        console.error('[Harness] failed to load preinstall plugins:', err)
+      }
+      finally {
+        this.preinstall.loading = false
+      }
+      return this.preinstall.plugins
+    },
+
+    /** 预装安装日志流：dsh plugin 进程输出逐行追加 */
+    async listenPreinstallLog(): Promise<UnlistenFn> {
+      return listen<PreinstallLogPayload>('preinstall-log', (e) => {
+        this.preinstall.logs = [...this.preinstall.logs, e.payload.line].slice(-200)
+      })
+    },
+
+    /** 确认安装选中的预装插件：流式日志，完成后继续启动服务 */
+    async confirmPreinstall(ids: string[]) {
+      if (this.preinstall.installing || ids.length === 0)
+        return
+      this.preinstall.installing = true
+      this.preinstall.error = ''
+      this.preinstall.logs = []
+      let unlisten: UnlistenFn | null = null
+      try {
+        unlisten = await this.listenPreinstallLog()
+        await invoke('install_preinstall_plugins', { ids })
+        await this.continueAfterPreinstall()
+      }
+      catch (err) {
+        console.error('[Harness] preinstall failed:', err)
+        this.preinstall.error = String(err)
+      }
+      finally {
+        unlisten?.()
+        this.preinstall.installing = false
+      }
+    },
+
+    /** 跳过预装插件引导：记录状态后继续启动服务 */
+    async skipPreinstall() {
+      if (this.preinstall.installing)
+        return
+      try {
+        await invoke('skip_preinstall_plugins')
+        await this.continueAfterPreinstall()
+      }
+      catch (err) {
+        console.error('[Harness] skip preinstall failed:', err)
+        this.preinstall.error = String(err)
+      }
+    },
+
+    /** 预装引导结束后的收尾：拉起服务等待就绪，并静默检查更新 */
+    async continueAfterPreinstall() {
+      await this.launchAndWait()
+      void updater.checkForUpdate()
+    },
+
+    /**
+     * 从侧边栏重新打开预装插件引导：可重新选择/安装推荐插件。
+     * 关闭引导（确定/跳过）后回到正常启动流程，服务若在运行则保持原状态。
+     */
+    async openPreinstall() {
+      if (this.preinstall.installing)
+        return
+      this.preinstall.error = ''
+      this.preinstall.logs = []
+      this.status = 'preinstall'
+      await this.loadPreinstallPlugins()
     },
   },
 })

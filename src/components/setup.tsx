@@ -1,6 +1,6 @@
 import type { SetupStatus } from '../store/modules/harness'
 import type { IconComponent } from './loadable'
-import { ArrowDownToLine, CircleCheck, CircleExclamation, Magnifier, Rocket } from '@gravity-ui/icons'
+import { ArrowDownToLine, CircleCheck, CircleExclamation, CircleInfo, Magnifier, Rocket } from '@gravity-ui/icons'
 import { useTranslation } from 'react-i18next'
 import { useStore } from 'valtio-define'
 import { harness } from '../store/modules/harness'
@@ -11,6 +11,7 @@ const STATUS_ICONS: Record<SetupStatus, IconComponent> = {
   checking: Magnifier,
   installing: ArrowDownToLine,
   starting: Rocket,
+  preinstall: CircleInfo,
   ready: CircleCheck,
   error: CircleExclamation,
 }

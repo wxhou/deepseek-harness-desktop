@@ -77,7 +77,7 @@ function InfoRow({ term, children }: { term: string, children: ReactNode }) {
 export default function DebugSidebar() {
   const { t, i18n } = useTranslation()
   const { sidebarOpen } = useStore(setting)
-  const { serviceRunning, busyAction } = useStore(harness)
+  const { serviceRunning, busyAction, preinstall } = useStore(harness)
   const [info, setInfo] = useState<RuntimeInfo | null>(null)
   const [cliLinkEnabled, setCliLinkEnabled] = useState(true)
   const [port, setPort] = useState(3080)
@@ -464,6 +464,21 @@ export default function DebugSidebar() {
                     </Select>
                   </div>
                 </div>
+              </SectionCard>
+
+              {/* 预装插件（重新打开预设引导） */}
+              <SectionCard>
+                <SectionTitle>{t('preinstall.settings_title')}</SectionTitle>
+                <p className="text-xs leading-relaxed text-muted">{t('preinstall.settings_hint')}</p>
+                <Button
+                  size="sm"
+                  variant="primary"
+                  className="rounded-md"
+                  onPress={harness.openPreinstall}
+                  isDisabled={busyAction !== null || preinstall.installing}
+                >
+                  {t('preinstall.open_preset')}
+                </Button>
               </SectionCard>
 
               {/* 日志 */}

@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next'
 import { useStore } from 'valtio-define'
 import { harness } from '../store/modules/harness'
 import Loadable from './loadable'
+import PreinstallSetup from './preinstall-setup'
 import Setup from './setup'
 
 /**
@@ -26,6 +27,15 @@ export default function HarnessWebview() {
     return (
       <main className="relative flex-1 bg-canvas">
         <Setup />
+      </main>
+    )
+  }
+
+  // 预装插件引导：独立于安装/加载界面，渲染推荐插件列表与安装控制台
+  if (status === 'preinstall') {
+    return (
+      <main className="relative w-full bg-canvas">
+        <PreinstallSetup />
       </main>
     )
   }

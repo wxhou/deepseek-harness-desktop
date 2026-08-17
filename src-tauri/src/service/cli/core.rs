@@ -58,6 +58,17 @@ pub fn ensure(app_handle: &AppHandle) -> Result<CliLinkStatus, String> {
     Ok(get_status(app_handle))
 }
 
+/// 仅确保 shim 文件存在（写入 bin 目录，不注册用户 PATH）。
+///
+/// 供预装插件等应用内部流程使用：需要 `pnpm`/`dsh` 可被子进程解析，
+/// 但不希望改动用户的 PATH 注册（避免与"命令行集成"开关状态不一致）。
+pub fn ensure_shims(app_handle: &AppHandle) -> Result<(), String> {
+    let bin_dir = get_bin_dir(app_handle);
+    write_shims(app_handle, &bin_dir)?;
+    log::info!("dsh/pnpm shims ensured at {}", bin_dir.display());
+    Ok(())
+}
+
 /// 禁用并清理命令行集成（删除 shim + 移除 PATH 注册）
 pub fn remove(app_handle: &AppHandle) -> Result<CliLinkStatus, String> {
     let bin_dir = get_bin_dir(app_handle);

@@ -15,6 +15,9 @@ pub struct Setting {
     /// 命令行集成开关：安装后在用户 PATH 中注册 `dsh` 命令
     #[serde(default = "default_cli_link_enabled")]
     pub cli_link_enabled: bool,
+    /// 预装插件引导是否已完成（确认安装或跳过都算完成，之后不再弹出）
+    #[serde(default)]
+    pub preinstall_done: bool,
 }
 
 /// 命令行集成默认开启（开发者工具场景，安装完成即可用）
@@ -31,6 +34,7 @@ impl Default for Setting {
             language: "zh-CN".to_string(),
             dsh_pkg_commit: None,
             cli_link_enabled: default_cli_link_enabled(),
+            preinstall_done: false,
         }
     }
 }

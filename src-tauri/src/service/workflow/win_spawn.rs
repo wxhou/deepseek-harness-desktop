@@ -7,8 +7,7 @@
 //!
 //! 这里改用 `CREATE_NEW_CONSOLE` + `STARTF_USESHOWWINDOW`/`SW_HIDE` 给 node
 //! 分配一个隐藏的控制台：node 及其所有后代进程共享这个隐藏控制台，不再弹窗。
-
-#![cfg(windows)]
+//! 模块声明处已按 `#[cfg(windows)]` 门控，仅在 Windows 构建中编译。
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -42,6 +41,22 @@ pub fn spawn_with_hidden_console(
     current_dir: Option<&Path>,
     envs: &HashMap<String, String>,
 ) -> io::Result<(File, File)> {
+    let (stdout, stderr, handle) =
+        spawn_with_hidden_console_tracked(program, args, current_dir, envs)?;
+    unsafe {
+        CloseHandle(handle);
+    }
+    Ok((stdout, stderr))
+}
+
+/// 同 [`spawn_with_hidden_console`]，但额外返回进程句柄，供调用方等待进程
+/// 结束并读取退出码（预装插件安装等需要判断成败的场景）。
+pub fn spawn_with_hidden_console_tracked(
+    program: &Path,
+    args: &[OsString],
+    current_dir: Option<&Path>,
+    envs: &HashMap<String, String>,
+) -> io::Result<(File, File, HANDLE)> {
     unsafe {
         // 1. 创建 stdout / stderr 匿名管道（写端可继承，交给子进程）
         let pipe_attrs = SECURITY_ATTRIBUTES {
@@ -142,13 +157,13 @@ pub fn spawn_with_hidden_console(
             return Err(io::Error::last_os_error());
         }
 
-        // 进程句柄不再需要（停止服务时按端口清理），关闭避免泄漏
+        // 进程句柄不再需要时由调用方负责关闭（tracked 调用方等待退出后关闭；
+        // 非 tracked 由包装函数立即关闭）。关闭线程句柄避免泄漏
         CloseHandle(process_info.hThread);
-        CloseHandle(process_info.hProcess);
 
         let stdout = File::from_raw_handle(stdout_read as RawHandle);
         let stderr = File::from_raw_handle(stderr_read as RawHandle);
-        Ok((stdout, stderr))
+        Ok((stdout, stderr, process_info.hProcess))
     }
 }
 

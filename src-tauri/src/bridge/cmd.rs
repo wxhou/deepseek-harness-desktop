@@ -1,6 +1,7 @@
 use crate::config;
 use crate::service::cli;
 use crate::service::download::{self, Installable};
+use crate::service::plugin;
 use crate::service::workflow;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_clipboard_manager::ClipboardExt;
@@ -117,6 +118,47 @@ pub async fn restart_harness(app_handle: AppHandle) -> Result<(), String> {
 #[tauri::command]
 pub fn get_dsh_status() -> workflow::status::Status {
     workflow::status::get_status()
+}
+
+/// 获取预装插件列表（含已安装检测结果），首次启动引导界面渲染用
+#[tauri::command]
+pub async fn get_preinstall_plugins(
+    app_handle: AppHandle,
+) -> Result<Vec<plugin::PreinstallPlugin>, String> {
+    Ok(plugin::list(&app_handle))
+}
+
+/// 安装选中的预装插件（`dsh plugin --profile web add <ids...>`），
+/// 进程输出实时通过 `preinstall-log` 事件推送；成功后标记引导完成。
+#[tauri::command]
+pub async fn install_preinstall_plugins(
+    app_handle: AppHandle,
+    ids: Vec<String>,
+) -> Result<(), String> {
+    plugin::install(&app_handle, &ids).await?;
+    let mut setting = config::get_store_dat_setting(&app_handle);
+    setting.preinstall_done = true;
+    config::set_store_dat_setting(&app_handle, setting);
+    Ok(())
+}
+
+/// 跳过预装插件引导：仅记录状态，不再弹出
+#[tauri::command]
+pub async fn skip_preinstall_plugins(app_handle: AppHandle) -> Result<(), String> {
+    let mut setting = config::get_store_dat_setting(&app_handle);
+    setting.preinstall_done = true;
+    config::set_store_dat_setting(&app_handle, setting);
+    Ok(())
+}
+
+/// 在系统浏览器中打开预装插件的仓库地址（仅允许预装清单内的 id）
+#[tauri::command]
+pub async fn open_preinstall_repo(app_handle: AppHandle, id: String) -> Result<(), String> {
+    let url = plugin::repo_url_of(&id).ok_or_else(|| format!("PREINSTALL_INVALID_ID: {id}"))?;
+    app_handle
+        .opener()
+        .open_url(url, None::<&str>)
+        .map_err(|e| e.to_string())
 }
 
 /// 健康检查（通过 Rust 代理，避免 WebView CORS 问题）

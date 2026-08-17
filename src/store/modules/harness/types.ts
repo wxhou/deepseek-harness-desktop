@@ -1,8 +1,24 @@
 /** 安装/启动流程阶段状态 */
-export type SetupStatus = 'checking' | 'installing' | 'starting' | 'ready' | 'error'
+export type SetupStatus = 'checking' | 'installing' | 'starting' | 'preinstall' | 'ready' | 'error'
 
 /** 侧边栏忙碌标记：标识当前正在执行的服务操作 */
 export type SidebarBusyAction = 'restart' | 'shutdown' | 'start' | 'openBrowser' | null
+
+/** 预装插件列表项（与 Rust service::plugin::PreinstallPlugin 对齐） */
+export interface PreinstallPlugin {
+  id: string
+  name: string
+  description: string
+  repo_url: string
+  recommended: boolean
+  installed: boolean
+  default: boolean
+}
+
+/** Rust 侧 preinstall-log 事件载荷（dsh plugin 进程输出行） */
+export interface PreinstallLogPayload {
+  line: string
+}
 
 /** 安装器展示状态 */
 export interface InstallerState {

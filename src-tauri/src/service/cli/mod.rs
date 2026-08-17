@@ -24,5 +24,5 @@ mod core;
 mod path;
 mod shim;
 
-pub use core::{ensure, get_status, remove, CliLinkStatus};
-pub use path::find_user_pnpm;
+pub use core::{ensure, ensure_shims, get_status, remove, CliLinkStatus};
+pub use path::{find_user_pnpm, get_bin_dir};
