@@ -172,7 +172,13 @@ fn build_env_block(extra: &HashMap<String, String>) -> Vec<u16> {
     let mut vars: Vec<(OsString, OsString)> = std::env::vars_os().collect();
     for (key, value) in extra {
         let key_os = OsString::from(key);
-        if let Some(entry) = vars.iter_mut().find(|(existing, _)| *existing == key_os) {
+        // Windows 环境变量大小写不敏感：用户/系统环境里的键通常是 `Path` 而非
+        // `PATH`，若按大小写敏感匹配会追加重复键，子进程（CreateProcessW 环境块）
+        // 取到旧值。必须大小写不敏感匹配再替换。
+        if let Some(entry) = vars
+            .iter_mut()
+            .find(|(existing, _)| existing.eq_ignore_ascii_case(&key_os))
+        {
             entry.1 = OsString::from(value);
         } else {
             vars.push((key_os, OsString::from(value)));
@@ -244,6 +250,31 @@ fn quote_arg(arg: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+        #[test]
+    fn env_key_match_is_case_insensitive() {
+        // Windows 用户环境里的键通常是 `Path`：用 `PATH` 覆盖必须替换而不是追加
+        let mut vars: Vec<(OsString, OsString)> = vec![
+            (OsString::from("Path"), OsString::from("OLD")),
+            (OsString::from("DSH_HOME"), OsString::from("x")),
+        ];
+        let key = OsString::from("PATH");
+        let found = vars
+            .iter_mut()
+            .find(|(existing, _)| existing.eq_ignore_ascii_case(&key));
+        assert!(found.is_some());
+        if let Some(entry) = found {
+            entry.1 = OsString::from("NEW");
+        }
+        // 替换后仍是单个 Path 条目且取新值
+        let path_entries: Vec<String> = vars
+            .iter()
+            .filter(|(k, _)| k.to_string_lossy().eq_ignore_ascii_case("path"))
+            .map(|(_, v)| v.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(path_entries.len(), 1);
+        assert_eq!(path_entries[0], "NEW");
+    }
 
     #[test]
     fn spawn_captures_stdout_with_env_and_workdir() {
