@@ -10,9 +10,10 @@ use tauri::{
     ipc::Invoke,
     menu::{Menu, MenuEvent, MenuItem},
     tray::{MouseButton, TrayIconBuilder, TrayIconEvent},
-    webview::DownloadEvent,
+    webview::{DownloadEvent, NewWindowResponse},
     Emitter, Manager, Runtime, WebviewUrl, WebviewWindowBuilder, Wry,
 };
+use tauri_plugin_opener::OpenerExt;
 
 /// 下载完成事件载荷：`on_download` 的 Finished 分支向前端 emit，
 /// 由桌面外壳展示"已保存 + 打开文件夹"提示（iframe 内的下载对用户不可见）。
@@ -148,6 +149,7 @@ fn builder() -> tauri::Builder<tauri::Wry> {
         // config 声明的窗口无法挂载 on_download，而内嵌 iframe 的 dsh 页面
         // 触发下载时 WebView2 静默保存、用户零感知，需要接管下载以给出反馈。
         .setup(|app| {
+            let app_handle = app.handle().clone();
             WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
                 .title("Deepseek Harness Desktop")
                 .inner_size(1280.0, 840.0)
@@ -161,6 +163,21 @@ fn builder() -> tauri::Builder<tauri::Wry> {
                 // （tauri issue #13761），不影响 webview 层，拖拽依旧失效；
                 // disable_drag_drop_handler 才能关掉 wry 的接管（等价于旧配置 dragDropEnabled: false）。
                 .disable_drag_drop_handler()
+                // 接管内嵌 iframe 的 window.open() / target=_blank 新窗口请求：
+                // WebView2 里这类请求走 NewWindowRequested，wry 在没有 handler 时
+                // 直接 SetHandled(true) 吞掉（点了没反应）——dshmarket 等预设插件的
+                // “源码”按钮在桌面端因此无法跳转（浏览器里正常）。
+                // 这里把 http(s) 链接交给系统浏览器打开，其余协议一律拒绝。
+                .on_new_window(move |url, _features| {
+                    if matches!(url.scheme(), "http" | "https") {
+                        if let Err(e) = app_handle.opener().open_url(url.to_string(), None::<&str>) {
+                            log::warn!("[new-window] open in browser failed {e}");
+                        }
+                    } else {
+                        log::debug!("[new-window] denied {url}");
+                    }
+                    NewWindowResponse::Deny
+                })
                 .on_download(|webview, event| match event {
                     DownloadEvent::Requested { url, destination } => {
                         // 接管下载：保存到系统下载目录，重名时自动加 " (n)" 后缀
