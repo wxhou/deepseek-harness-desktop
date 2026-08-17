@@ -44,7 +44,11 @@ mod imp {
     const PLUGIN_DEP_NAME: &str = "dsh-win-terminal-inspector";
 
     /// cordis.patch.yml 追加的挂载行（顶层数组的一个 `- insert:` 元素）。
-    /// name 用裸包名：经 profile 目录的 node_modules 父级解析到安装的插件。
+    ///
+    /// name 必须用相对 profile 目录的路径（`./node_modules/...`），不能用裸包名：
+    /// dsh loader 对 profile patch 条目的模块解析以 harness 安装为 baseUrl，
+    /// 裸插件名无法可靠解析；而相对路径经 `new URL(name, baseUrl)` 基于 profile
+    /// 目录解析，稳定指向 `dsh plugin add` 装入的 node_modules。
     const PATCH_ENTRY: &str = concat!(
         "- insert:\n",
         "    - id: win-terminal-inspector\n",
@@ -129,6 +133,107 @@ mod imp {
         write_file(&patch_path, &out).map_err(|e| format!("PATCH_WRITE_FAILED: {e}"))
     }
 
+    /// 幂等地从 `cordis.patch.yml` 移除本插件对应的 `- insert:` 块。
+    ///
+    /// 场景：插件经 `dsh plugin remove` 卸载后，我们写入的挂载行不会随依赖被清掉，
+    /// loader 会去挂载一个不存在的包（`Cannot find package`）导致 harness 启动/热加载
+    /// 报错。因此在「插件未装入」时把对应的顶层 `- insert:` 条目整块删掉，其余条目
+    /// 与注释原样保留。无该行时无操作。
+    ///
+    /// 自愈保证：若删掉的块是文件里唯一的实际内容（剩下只有注释/空行），补写 `[]`——
+    /// 纯注释的 YAML 解析为 `null`，`parsePatchList` 会抛「必须是顶层数组」直接崩掉
+    /// 启动；prune 必须保证输出始终是 loader 可加载的顶层数组。
+    fn prune_patch_if_uninstalled(profile: &Path) -> Result<(), String> {
+        let patch_path = profile.join("cordis.patch.yml");
+        let existing = match fs::read_to_string(&patch_path) {
+            Ok(s) => s,
+            Err(_) => return Ok(()), // 无 patch 文件则无需清理
+        };
+
+        if !existing.contains(PATCH_MARKER) {
+            return Ok(());
+        }
+
+        // 逐行扫描，删掉「顶层 `- insert:` 且其缩进子块内含 PATCH_MARKER」的那一段。
+        // 顶层条目以行首（无缩进）的 `- ` 开头为界；其后续缩进行归属同一块。
+        let mut lines: Vec<&str> = existing.lines().collect();
+        let mut i = 0usize;
+        while i < lines.len() {
+            let is_top_level = !lines[i].starts_with(char::is_whitespace)
+                && lines[i].trim_start().starts_with("- ");
+            if !is_top_level {
+                i += 1;
+                continue;
+            }
+            // 收集该顶层条目的块（自身 + 后续缩进行）
+            let block: Vec<&str> = {
+                let mut b = vec![lines[i]];
+                let mut j = i + 1;
+                while j < lines.len() {
+                    let is_indent = lines[j].starts_with(' ') || lines[j].starts_with('\t');
+                    let is_comment = lines[j].trim_start().starts_with('#');
+                    if is_indent && !is_comment {
+                        b.push(lines[j]);
+                        j += 1;
+                    } else {
+                        break;
+                    }
+                }
+                b
+            };
+            // 是否为我们的 install 块
+            let is_ours = block.iter().any(|l| l.contains(PATCH_MARKER));
+            if is_ours {
+                // 删除块（含尾部空行），保持其余内容与注释完整
+                let remove_start = i;
+                let remove_end = i + block.len();
+                lines.drain(remove_start..remove_end);
+                // 若块后紧跟空行，一并去掉，避免粘连出异常空行
+                if remove_start < lines.len() && lines[remove_start].trim().is_empty() {
+                    lines.remove(remove_start);
+                }
+                break;
+            }
+            i += block.len();
+        }
+
+        let out = lines.join("\n");
+        let out = out.trim_end_matches('\n');
+        let mut out = format!("{out}\n");
+        // 自愈：清理后若只剩注释/空内容，补 `[]` 保证是合法顶层数组
+        let has_content = out
+            .lines()
+            .any(|line| !line.trim().is_empty() && !line.trim().starts_with('#'));
+        if !has_content {
+            out.push_str("[]\n");
+        }
+        write_file(&patch_path, &out).map_err(|e| format!("PATCH_PRUNE_FAILED: {e}"))
+    }
+
+    /// 修复 dsh 可能留下的“仅注释”patch scaffold：YAML 解析为 `null` 而非
+    /// 顶层数组，加载器（`parsePatchList`）会直接抛错导致 harness 启动失败。
+    ///
+    /// 幂等：文件不存在或已有实际内容（条目或 `[]`）时不动；仅注释/空则补 `[]`。
+    fn ensure_patch_scaffold(profile: &Path) -> Result<(), String> {
+        let patch_path = profile.join("cordis.patch.yml");
+        let Ok(existing) = fs::read_to_string(&patch_path) else {
+            return Ok(());
+        };
+        let has_content = existing
+            .lines()
+            .any(|line| !line.trim().is_empty() && !line.trim().starts_with('#'));
+        if has_content {
+            return Ok(());
+        }
+
+        let mut out = existing;
+        if !out.is_empty() && !out.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push_str("[]\n");
+        write_file(&patch_path, &out).map_err(|e| format!("PATCH_WRITE_FAILED: {e}"))
+    }
+
     /// 在本机查找 Git Bash 可执行文件（环境变量优先，其次常见安装路径）。
     fn find_git_bash() -> Option<PathBuf> {
         if let Ok(p) = std::env::var("DSH_GIT_BASH_PATH") {
@@ -141,6 +246,29 @@ mod imp {
             .iter()
             .map(PathBuf::from)
             .find(|p| p.is_file())
+    }
+
+    /// 本机 Git Bash 的 bin 目录：bash.exe 所在目录（`<git>\bin`）与
+    /// `<git>\usr\bin`（coreutils 所在，`ls`/`sed`/`find` 等）。两者都存在才会
+    /// 加入结果；未找到 Git Bash 时返回空。
+    pub fn git_bash_bin_dirs() -> Vec<PathBuf> {
+        let Some(bash) = find_git_bash() else {
+            return Vec::new();
+        };
+        let mut dirs = Vec::new();
+        if let Some(bin_dir) = bash.parent() {
+            dirs.push(bin_dir.to_path_buf());
+        }
+        // `<git>\usr\bin`：bash 在 `<git>\bin` 下，其父级即 Git 根目录
+        if let Some(usr_bin) = bash
+            .parent()
+            .and_then(Path::parent)
+            .map(|git_root| git_root.join("usr").join("bin"))
+            .filter(|p| p.is_dir())
+        {
+            dirs.push(usr_bin);
+        }
+        dirs
     }
 
     /// 渲染 Windows 版极简 preset 的元数据（preset.yml）。
@@ -265,14 +393,20 @@ mod imp {
 
     /// 应用 Windows 极简模式修复的落盘部分：挂载 patch 行 + 创作用户 preset。
     ///
-    /// 仅在插件已装入 profile 时写 patch（避免挂载不存在的包）；preset 仅在
-    /// Git Bash 存在时创作。均为幂等，失败只返回错误、由调用方决定是否告警。
+    /// 仅在插件已装入 profile 时写 patch（避免挂载不存在的包）；插件未装入时
+    /// 清理可能残留的挂载行（`dsh plugin remove` 后避免 loader 报错）；preset
+    /// 仅在 Git Bash 存在时创作。均为幂等，失败只返回错误、由调用方决定是否告警。
     pub fn apply(app_handle: &tauri::AppHandle) -> Result<(), String> {
         let profile = profile_dir(app_handle);
+        // 无论插件是否装入，先确保 patch 文件是 dsh 可加载的顶层数组：
+        // dsh 初始化留下的“仅注释”scaffold 会让加载器启动崩溃。
+        ensure_patch_scaffold(&profile)?;
         if !is_plugin_installed(&profile) {
-            log::debug!(
-                "win terminal inspector not installed in profile, skipping patch/preset apply"
-            );
+            // 插件已卸载（如 `dsh plugin remove`）：清掉之前写入的挂载行，
+            // 避免 loader 去挂载一个不存在的包导致 harness 启动/热加载报错。
+            // 其余用户条目与注释原样保留；无该行时无操作。
+            prune_patch_if_uninstalled(&profile)?;
+            log::debug!("win terminal inspector not installed in profile, patch pruned if present");
             return Ok(());
         }
 
@@ -329,12 +463,108 @@ mod imp {
         }
 
         #[test]
-        fn patch_uses_bare_package_name() {
+        fn patch_prune_removes_only_our_insert_block() {
+            let dir = temp_dir("i");
+            std::fs::create_dir_all(&dir).unwrap();
+            let patch = dir.join("cordis.patch.yml");
+            // 我们的 insert 块与其他用户条目、注释共存
+            std::fs::write(
+                &patch,
+                "# user comments\n- insert:\n    - id: win-terminal-inspector\n      name: dsh-win-terminal-inspector\n- id: some-row\n  config:\n    a: 1\n",
+            )
+            .unwrap();
+
+            prune_patch_if_uninstalled(&dir).unwrap();
+            let out = std::fs::read_to_string(&patch).unwrap();
+            // 只删我们的块：其余条目与注释原样保留
+            assert!(!out.contains("win-terminal-inspector"));
+            assert!(!out.contains("insert:"));
+            assert!(out.contains("some-row"));
+            assert!(out.contains("# user comments"));
+
+            // 幂等：再次调用内容不变
+            prune_patch_if_uninstalled(&dir).unwrap();
+            let again = std::fs::read_to_string(&patch).unwrap();
+            assert_eq!(out, again);
+
+            std::fs::remove_dir_all(&dir).ok();
+        }
+
+        #[test]
+        fn patch_prune_self_repairs_comment_only_remainder() {
+            let dir = temp_dir("j");
+            std::fs::create_dir_all(&dir).unwrap();
+            let patch = dir.join("cordis.patch.yml");
+            // 我们的块是唯一的实际内容：删掉后只剩注释，必须补 `[]`，
+            // 否则纯注释 YAML 解析为 null，下一次启动会崩溃（顶层数组错误）
+            std::fs::write(
+                &patch,
+                "# Your patch layer for this dsh profile\n- insert:\n    - id: win-terminal-inspector\n      name: dsh-win-terminal-inspector\n",
+            )
+            .unwrap();
+
+            prune_patch_if_uninstalled(&dir).unwrap();
+            let out = std::fs::read_to_string(&patch).unwrap();
+            // 标记行被删、注释保留、并补回可加载的 `[]`
+            assert!(!out.contains("win-terminal-inspector"));
+            assert!(out.contains("# Your patch layer"));
+            assert!(out.contains("[]\n"));
+
+            // 幂等：再次调用内容不变
+            prune_patch_if_uninstalled(&dir).unwrap();
+            let again = std::fs::read_to_string(&patch).unwrap();
+            assert_eq!(out, again);
+
+            std::fs::remove_dir_all(&dir).ok();
+        }
+
+        #[test]
+        fn patch_scaffold_repairs_comment_only_file() {
+            let dir = temp_dir("f");
+            std::fs::create_dir_all(&dir).unwrap();
+            let patch = dir.join("cordis.patch.yml");
+            // dsh 可能留下“仅注释”的 scaffold：YAML 解析为 null，加载器会崩溃
+            std::fs::write(
+                &patch,
+                "# Your patch layer for this dsh profile\n# comments only, no entries\n",
+            )
+            .unwrap();
+
+            ensure_patch_scaffold(&dir).unwrap();
+            let out = std::fs::read_to_string(&patch).unwrap();
+            assert!(out.contains("[]"));
+            assert!(!out.contains("win-terminal-inspector"));
+
+            // 幂等：再次调用内容不变
+            ensure_patch_scaffold(&dir).unwrap();
+            let again = std::fs::read_to_string(&patch).unwrap();
+            assert_eq!(out, again);
+
+            std::fs::remove_dir_all(&dir).ok();
+        }
+
+        #[test]
+        fn patch_scaffold_leaves_valid_arrays_untouched() {
+            let dir = temp_dir("g");
+            std::fs::create_dir_all(&dir).unwrap();
+            let patch = dir.join("cordis.patch.yml");
+            // 已有条目或 `[]` 都是合法数组，不应被改动
+            for content in ["- id: some-row\n  config:\n    a: 1\n", "# header\n[]\n"] {
+                std::fs::write(&patch, content).unwrap();
+                ensure_patch_scaffold(&dir).unwrap();
+                assert_eq!(std::fs::read_to_string(&patch).unwrap(), content);
+            }
+
+            std::fs::remove_dir_all(&dir).ok();
+        }
+
+        #[test]
+        fn patch_uses_profile_relative_node_modules_path() {
             let dir = temp_dir("c");
             std::fs::create_dir_all(&dir).unwrap();
             ensure_patch(&dir).unwrap();
             let out = std::fs::read_to_string(dir.join("cordis.patch.yml")).unwrap();
-            assert!(out.contains("name: dsh-win-terminal-inspector"));
+            assert!(out.contains("dsh-win-terminal-inspector"));
             std::fs::remove_dir_all(&dir).ok();
         }
 
@@ -347,6 +577,18 @@ mod imp {
             assert!(yaml.contains("--noprofile"));
             assert!(yaml.contains("dsh-tool-bash-persistent"));
             assert!(yaml.contains("dsh-terminal-bash"));
+        }
+
+        #[test]
+        fn git_bash_dirs_follow_finder() {
+            // 不变量：找到 Git Bash 则 bin 目录必含其父目录；未找到则返回空
+            match find_git_bash() {
+                Some(bash) => {
+                    let dirs = git_bash_bin_dirs();
+                    assert!(dirs.contains(&bash.parent().unwrap().to_path_buf()));
+                }
+                None => assert!(git_bash_bin_dirs().is_empty()),
+            }
         }
 
         #[test]
@@ -377,6 +619,11 @@ mod imp {
     pub fn apply(_app_handle: &tauri::AppHandle) -> Result<(), String> {
         Ok(())
     }
+
+    /// 非 Windows 无 Git Bash bin 目录。
+    pub fn git_bash_bin_dirs() -> Vec<std::path::PathBuf> {
+        Vec::new()
+    }
 }
 
 /// 应用 Windows 极简模式修复的落盘部分（仅 Windows 生效，幂等）。
@@ -385,4 +632,15 @@ mod imp {
 /// 时无操作。
 pub fn apply(app_handle: &tauri::AppHandle) -> Result<(), String> {
     imp::apply(app_handle)
+}
+
+/// 本机 Git Bash 的 bin 目录（供服务 PATH 注入）。
+///
+/// 返回 bash.exe 所在目录（`<git>\bin`）与 `<git>\usr\bin`（`ls`/`sed`/`find` 等
+/// coreutils 所在）。原因：persistent bash 跑在 `--noprofile --norc` 下不执行
+/// profile 脚本，PATH 完全继承服务进程；若服务 PATH 不含 Git 目录，会话内只有
+/// 内建命令、外部命令全部 `command not found`（MSYS 运行时在部分环境下不会自动
+/// 补 `/usr/bin`）。仅 Windows 且找到 Git Bash 时返回非空；非 Windows 返回空。
+pub fn git_bash_bin_dirs() -> Vec<std::path::PathBuf> {
+    imp::git_bash_bin_dirs()
 }
