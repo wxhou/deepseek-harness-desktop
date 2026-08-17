@@ -9,3 +9,4 @@ src-tauri/resources/node
 .vscode
 *.local
 .tmp
+skills

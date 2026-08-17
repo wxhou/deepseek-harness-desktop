@@ -1,6 +1,7 @@
 @import "tailwindcss";
 
 @config "../../tailwind.config.js";
+@import "@heroui/styles"; 
 
 @import "./components/scrollbar.css";
 
