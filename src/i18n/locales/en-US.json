@@ -48,6 +48,7 @@
   "ui.cli_link_status_partial": "Enabled but PATH registration incomplete — try saving again",
   "ui.cli_link_status_unknown": "Status unknown",
   "ui.cli_link_hint": "Run dsh --help in a new terminal",
+  "ui.cli_link_user_dsh_preserved": "A dsh you installed yourself was detected and preserved — the dsh command still points to your own install and config",
   "ui.app_info": "App Information",
   "ui.current_version": "Current Version",
   "ui.dsh_version": "Harness Version",

@@ -6,7 +6,7 @@ use std::fs;
 use tauri::AppHandle;
 
 use super::path::{get_bin_dir, get_shim_path, path_registered, register_path, unregister_path};
-use super::shim::write_shims;
+use super::shim::{user_dsh_preserved, write_shims};
 
 /// 命令行集成状态（设置页展示）
 #[derive(Debug, Clone, Serialize)]
@@ -17,6 +17,8 @@ pub struct CliLinkStatus {
     pub shim_exists: bool,
     /// bin 目录是否已在用户 PATH 中注册
     pub path_registered: bool,
+    /// 检测到用户自行安装的同名 `dsh`（未被覆盖，已保留）
+    pub user_dsh_preserved: bool,
     /// bin 目录绝对路径
     pub bin_dir: String,
     /// 主 shim 文件绝对路径
@@ -27,11 +29,14 @@ pub struct CliLinkStatus {
 pub fn get_status(app_handle: &AppHandle) -> CliLinkStatus {
     let setting = config::get_store_dat_setting(app_handle);
     let shim_path = get_shim_path(app_handle);
+    let bin_dir = get_bin_dir(app_handle);
     CliLinkStatus {
         enabled: setting.cli_link_enabled,
         shim_exists: shim_path.is_file(),
         path_registered: path_registered(app_handle),
-        bin_dir: get_bin_dir(app_handle).to_string_lossy().into_owned(),
+        // 安装集成时若在 shim 路径检测到用户自装的同名 dsh，则已被保留、未被覆盖
+        user_dsh_preserved: user_dsh_preserved(&bin_dir),
+        bin_dir: bin_dir.to_string_lossy().into_owned(),
         shim_path: shim_path.to_string_lossy().into_owned(),
     }
 }

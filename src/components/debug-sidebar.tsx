@@ -41,6 +41,7 @@ export interface CliLinkStatus {
   enabled: boolean
   shim_exists: boolean
   path_registered: boolean
+  user_dsh_preserved: boolean
   bin_dir: string
   shim_path: string
 }
@@ -359,6 +360,9 @@ export default function DebugSidebar() {
                 <code className="mt-1 block truncate break-all text-[10px] text-muted">{cliStatus.bin_dir}</code>
               )}
               <p className="mt-1 text-[11px] text-muted">{t('ui.cli_link_hint')}</p>
+              {cliStatus?.user_dsh_preserved && (
+                <p className="mt-1 text-[11px] font-medium text-ink">{t('ui.cli_link_user_dsh_preserved')}</p>
+              )}
             </div>
 
             <button className={button({ size: 'sm', tone: 'primary', block: true })} onClick={saveConfig} disabled={saving}>
