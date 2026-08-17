@@ -24,7 +24,7 @@ export default function HarnessUpdater() {
       description: updateInfo.commit.slice(0, 7),
       variant: 'default',
     })
-  })
+  }, { immediate: true })
 
   return null
 }
