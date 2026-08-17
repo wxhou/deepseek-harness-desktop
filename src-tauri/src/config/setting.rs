@@ -12,6 +12,10 @@ pub struct Setting {
     pub language: String,
     #[serde(default)]
     pub dsh_pkg_commit: Option<String>,
+    /// 已安装 Harness 发行版对应的 GitHub release tag（与 dsh_pkg_commit 配套，
+    /// 用于甄别“记录滞后于文件”与“同版本热修”两种不一致）
+    #[serde(default)]
+    pub dsh_pkg_tag: Option<String>,
     /// 命令行集成开关：安装后在用户 PATH 中注册 `dsh` 命令
     #[serde(default = "default_cli_link_enabled")]
     pub cli_link_enabled: bool,
@@ -42,6 +46,7 @@ impl Default for Setting {
             auto_start: true,
             language: "zh-CN".to_string(),
             dsh_pkg_commit: None,
+            dsh_pkg_tag: None,
             cli_link_enabled: default_cli_link_enabled(),
             preinstall_done: false,
         }
@@ -83,5 +88,17 @@ pub fn get_dsh_pkg_commit(app_handle: &AppHandle) -> Option<String> {
 pub fn set_dsh_pkg_commit(app_handle: &AppHandle, commit: String) {
     let mut setting = get_store_dat_setting(app_handle);
     setting.dsh_pkg_commit = Some(commit);
+    set_store_dat_setting(app_handle, setting);
+}
+
+/// 已安装 Harness 发行版对应的 GitHub release tag
+pub fn get_dsh_pkg_tag(app_handle: &AppHandle) -> Option<String> {
+    get_store_dat_setting(app_handle).dsh_pkg_tag
+}
+
+/// 记录已安装 Harness 发行版的 GitHub release tag
+pub fn set_dsh_pkg_tag(app_handle: &AppHandle, tag: String) {
+    let mut setting = get_store_dat_setting(app_handle);
+    setting.dsh_pkg_tag = Some(tag);
     set_store_dat_setting(app_handle, setting);
 }
