@@ -90,6 +90,7 @@ Harness 发行版由 [deepseek-harness-pkg](https://github.com/hairyf/deepseek-h
 
 - [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) — 上游 `dsh` agent 平台
 - [deepseek-harness-pkg](https://github.com/hairyf/deepseek-harness-pkg) — 打包好的 Harness 发行版（本应用下载源）
+- [dsh-market](https://github.com/dsh-market/dsh-market) — 插件市场，首次启动时作为推荐预装插件提供
 - [n8n-desktop](https://github.com/tangtao646/n8n-desktop) — 参考实现
 
 ## License

@@ -90,6 +90,7 @@ The prebuilt Harness bundle is published by [deepseek-harness-pkg](https://githu
 
 - [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) — the upstream `dsh` agent platform
 - [deepseek-harness-pkg](https://github.com/hairyf/deepseek-harness-pkg) — prebuilt Harness bundles consumed by this app
+- [dsh-market](https://github.com/dsh-market/dsh-market) — the plugin market offered as a recommended preinstall on first run
 - [n8n-desktop](https://github.com/tangtao646/n8n-desktop) — reference implementation
 
 ## License
