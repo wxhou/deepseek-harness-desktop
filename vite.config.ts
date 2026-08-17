@@ -9,6 +9,12 @@ const host = process.env.TAURI_DEV_HOST
 export default defineConfig(async () => ({
   plugins: [react(), tailwindcss()],
 
+  resolve: {
+    alias: {
+      '@': '/src',
+    },
+  },
+
   // Vite options tailored for Tauri development.
   // 1. prevent vite from obscuring rust errors
   clearScreen: false,
