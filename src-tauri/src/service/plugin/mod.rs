@@ -17,6 +17,8 @@ use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
 #[cfg(not(windows))]
 use std::process::{Command, Stdio};
+#[cfg(windows)]
+use std::process::{Command, Stdio};
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 
 /// Windows 进程句柄包装：原始句柄是 `*mut c_void`（非 Send），
@@ -35,23 +37,53 @@ const PREINSTALL_PROFILE: &str = "web";
 const PREINSTALL_LOG_EVENT: &str = "preinstall-log";
 
 /// 预装插件静态清单：以后新增预装插件在此追加，界面与安装逻辑自动渲染。
-/// `id` 为传给 `dsh plugin add` 的包名（npm 包名或 git 依赖形式）。
-const PREINSTALL: &[PreinstallPluginInfo] = &[PreinstallPluginInfo {
-    id: "dshmarket",
-    name: "DSH Market",
-    description:
-        "Visual plugin market inside DeepSeek Harness — browse, search, and one-click install community plugins. · DSH 可视化插件市场：逛一逛，点一下，装好。",
-    repo_url: "https://github.com/dsh-market/dsh-market",
-    recommended: true,
-}];
+/// `spec` 为传给 `dsh plugin add` 的包名/依赖形式（npm 包名或 git 依赖形式）；
+/// `id` 是前端主键与仓库跳转查找用（与 spec 不同：id 必须是合法的 npm 依赖名，
+/// 而 git 依赖的主键是包内的 name 字段，二者可能不一致）。
+const PREINSTALL: &[PreinstallPluginInfo] = &[
+     // Windows 极简模式修复（issue #12）：注入 win32 terminal inspector。
+    // 仅 Windows 用户可见；chip 显示为黄色「修复」并默认勾选；确认后走
+    // `dsh plugin add` 从 GitHub 安装（插件代码不随桌面端仓库内置），随后由
+    // win_inspector::apply 写入 profile patch 行并创作 minimal-win 用户 preset。
+    PreinstallPluginInfo {
+        id: "dsh-win-terminal-inspector",
+        spec: "github:clearkurt/dsh-win-terminal-inspector",
+        name: "Windows Terminal Inspector",
+        description:
+            "Fix Minimal mode on Windows: injects the win32 ProcessInspector that persistent shells require (upstream throws `terminal inspection is unsupported on platform win32`). · 修复 Windows 极简模式：注入 persistent shell 必需的 win32 进程监视（上游在 win32 上直接抛错）。",
+        repo_url: "https://github.com/clearkurt/dsh-win-terminal-inspector",
+        recommended: false,
+        fix: true,
+        win_only: true,
+    },
+    PreinstallPluginInfo {
+        id: "dshmarket",
+        spec: "dshmarket",
+        name: "DSH Market",
+        description:
+            "Visual plugin market inside DeepSeek Harness — browse, search, and one-click install community plugins. · DSH 可视化插件市场：逛一逛，点一下，装好。",
+        repo_url: "https://github.com/dsh-market/dsh-market",
+        recommended: true,
+        fix: false,
+        win_only: false,
+    },
+];
 
 /// 预装插件静态信息（不含运行时检测的 installed 状态）
 struct PreinstallPluginInfo {
+    /// 前端主键 / 仓库跳转查找键
     id: &'static str,
+    /// 传给 `dsh plugin add` 的依赖形式（npm 包名或 git 依赖形式）
+    spec: &'static str,
     name: &'static str,
     description: &'static str,
     repo_url: &'static str,
+    /// 绿色「推荐」chip，默认勾选（普通推荐插件）
     recommended: bool,
+    /// 黄色「修复」chip，默认勾选（Windows 极简模式修复项）
+    fix: bool,
+    /// 仅 Windows 平台列出
+    win_only: bool,
 }
 
 /// 预装插件列表项（含已安装检测结果），序列化给前端
@@ -63,6 +95,8 @@ pub struct PreinstallPlugin {
     pub description: String,
     pub repo_url: String,
     pub recommended: bool,
+    /// 是否为「修复」类项（前端渲染黄色 chip，默认勾选）
+    pub fix: bool,
     pub installed: bool,
 }
 
@@ -81,6 +115,11 @@ pub fn is_known_id(id: &str) -> bool {
 /// 预装清单中某 id 对应的仓库地址
 pub fn repo_url_of(id: &str) -> Option<&'static str> {
     PREINSTALL.iter().find(|p| p.id == id).map(|p| p.repo_url)
+}
+
+/// 预装清单中某 id 对应的安装依赖形式（npm 包名或 git 依赖形式）
+fn spec_of(id: &str) -> Option<&'static str> {
+    PREINSTALL.iter().find(|p| p.id == id).map(|p| p.spec)
 }
 
 /// 预装插件所在的 profile 目录（$DSH_HOME/profiles/web）
@@ -122,17 +161,21 @@ fn list_installed(app_handle: &AppHandle) -> HashSet<String> {
     set
 }
 
-/// 预装插件列表（含 installed 状态），前端渲染用
+/// 预装插件列表（含 installed 状态），前端渲染用。
+/// `win_only` 项仅在 Windows 平台列出（如 Windows 极简模式修复）。
 pub fn list(app_handle: &AppHandle) -> Vec<PreinstallPlugin> {
     let installed = list_installed(app_handle);
+    let is_windows = cfg!(windows);
     PREINSTALL
         .iter()
+        .filter(|p| !p.win_only || is_windows)
         .map(|p| PreinstallPlugin {
             id: p.id.to_string(),
             name: p.name.to_string(),
             description: p.description.to_string(),
             repo_url: p.repo_url.to_string(),
             recommended: p.recommended,
+            fix: p.fix,
             installed: installed.contains(p.id),
         })
         .collect()
@@ -149,7 +192,6 @@ pub async fn install(app_handle: &AppHandle, ids: &[String]) -> Result<(), Strin
             return Err(format!("PREINSTALL_INVALID_ID: {id}"));
         }
     }
-
     // 确保 pnpm/dsh shim 存在（只落盘文件、不注册用户 PATH），
     // 让 dsh plugin 内部转发的 `pnpm` 在子进程 PATH 中可解析。
     cli::ensure_shims(app_handle)?;
@@ -199,9 +241,11 @@ pub async fn install(app_handle: &AppHandle, ids: &[String]) -> Result<(), Strin
         envs.insert("PATH".to_string(), joined.to_string_lossy().into_owned());
     }
 
-    // 命令：`node <dsh_bin.js> plugin --profile web add <ids...>`
+    // 命令：`node <dsh_bin.js> plugin --profile web add <specs...>`
     // 注意脚本路径必须是第一个参数（node 会把首个非选项参数当作脚本加载，
     // 漏掉它会出现 `Cannot find module '.../dependencies/dsh/plugin'`）。
+    // 传给 dsh 的是依赖形式（spec）而非 id：git 依赖形式（github:owner/repo）
+    // 通过 pnpm 安装，主键是包内 name 字段，可能与界面 id 不一致。
     let mut args: Vec<OsString> = vec![dsh_bin.as_os_str().to_os_string()];
     args.extend([
         OsString::from("plugin"),
@@ -209,7 +253,13 @@ pub async fn install(app_handle: &AppHandle, ids: &[String]) -> Result<(), Strin
         OsString::from(PREINSTALL_PROFILE),
         OsString::from("add"),
     ]);
-    args.extend(ids.iter().map(OsString::from));
+    args.extend(
+        ids.iter()
+            .map(|id| spec_of(id).ok_or_else(|| format!("PREINSTALL_INVALID_ID: {id}")))
+            .collect::<Result<Vec<_>, String>>()?
+            .iter()
+            .map(OsString::from),
+    );
 
     let cwd = config::get_dsh_install_path(app_handle);
     log::info!("Running dsh plugin install for {ids:?}");
@@ -222,9 +272,81 @@ pub async fn install(app_handle: &AppHandle, ids: &[String]) -> Result<(), Strin
         ));
     }
 
+    // Windows 极简模式修复：插件已装入 profile 后，写入 patch 行挂载
+    // win32 inspector，并创作 minimal-win 用户 preset（Git Bash）。
+    if ids.iter().any(|id| id == "dsh-win-terminal-inspector") {
+        if let Err(e) = workflow::win_inspector::apply(app_handle) {
+            log::warn!("win inspector apply failed after install: {e}");
+        }
+    }
+
     log::info!("Preinstall plugins installed successfully: {ids:?}");
     Ok(())
 }
+
+/// 取消正在进行的预装插件安装：强制结束 dsh plugin 进程树。
+///
+/// `dsh plugin add` 会经 pnpm 拉取依赖，网络抖动/GitHub 限流（429）时可能长时间
+/// 卡在重试；给用户取消入口，避免一直等待。通过 Windows CIM 匹配“正在跑
+/// `plugin ... add` 的 node 进程”并整树强杀（subprocess 派生的 git / pnpm 会一起
+/// 结束；taskkill /T 也能避免 DLL 驻留）。仅在 Windows 有意义，非 Windows 无操作。
+pub async fn cancel(app_handle: &AppHandle) {
+    // 仅预装场景需要取消；非 Windows 直接返回
+    if !cfg!(windows) {
+        return;
+    }
+
+    let window = match app_handle.get_webview_window("main") {
+        Some(w) => w,
+        None => return,
+    };
+
+    #[cfg(windows)]
+    {
+        // 结束占用中/等待中的 dsh plugin add 进程树（匹配命令行里的 add 意图，
+        // 避免误杀无关 node 进程；executable 限定在 dsh 打包目录下）。
+        let base = crate::config::get_dsh_install_path(app_handle)
+            .to_string_lossy()
+            .replace('\\', "\\\\");
+        let ps_cmd = format!(
+            "Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" | Where-Object {{ ($_.CommandLine -like '*plugin*--profile*web*add*') -and ($_.ExecutablePath -like '{base}\\*') }} | ForEach-Object {{ taskkill /PID $_.ProcessId /T /F 2>$null }}"
+        );
+
+        let mut cmd = Command::new("powershell");
+        cmd.args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-WindowStyle",
+            "Hidden",
+            "-Command",
+            &ps_cmd,
+        ]);
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        cmd.stdout(Stdio::null());
+        cmd.stderr(Stdio::null());
+
+        if let Err(e) = cmd.output() {
+            log::warn!("failed to run preinstall cancel: {e}");
+        }
+    }
+
+    // 通知前端安装已被取消，回到可重试的选择态
+    let _ = window.emit(
+        preinstall_cancel_event(),
+        PreinstallCancelPayload {},
+    );
+}
+
+/// 前端监听“安装已取消”事件名
+fn preinstall_cancel_event() -> &'static str {
+    "preinstall-cancelled"
+}
+
+/// 取消事件载荷（预留扩展字段）
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PreinstallCancelPayload {}
 
 /// 启动 `dsh plugin` 进程并等待结束，返回退出码；输出实时转发事件。
 async fn run_plugin_process(

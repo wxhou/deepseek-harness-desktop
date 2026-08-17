@@ -123,6 +123,7 @@ fn handler() -> impl Fn(Invoke<Wry>) -> bool + Send + Sync + 'static {
         bridge::cmd::get_dsh_status,
         bridge::cmd::get_preinstall_plugins,
         bridge::cmd::install_preinstall_plugins,
+        bridge::cmd::cancel_preinstall_plugins,
         bridge::cmd::skip_preinstall_plugins,
         bridge::cmd::open_preinstall_repo,
         bridge::cmd::proxy_health_check,

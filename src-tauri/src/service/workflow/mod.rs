@@ -1,5 +1,6 @@
 pub mod status;
 pub mod utils;
+pub(crate) mod win_inspector;
 #[cfg(windows)]
 pub(crate) mod win_spawn;
 
@@ -119,7 +120,7 @@ pub async fn start(app_handle: tauri::AppHandle) -> Result<(), String> {
 
     log::debug!("Checking Harness running status");
     let port_in_use = is_port_in_use(setting.port);
-    let dsh_running = is_dsh_running().await;
+    let dsh_running = is_dsh_running(setting.port).await;
 
     if port_in_use && !dsh_running {
         log::info!("Harness is not running, but port is in use, stopping harness");
@@ -174,7 +175,7 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     }
 
     // 避免重复启动（配合启动守卫，确保并发调用只拉起一个进程）
-    if is_dsh_running().await {
+    if is_dsh_running(setting.port).await {
         log::info!("Harness is already running, skipping launch");
         return Ok(());
     }
@@ -201,6 +202,12 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     // 构造环境变量：隔离的 $DSH_HOME + 隐私默认（关闭遥测）
     let dsh_home = config::get_dsh_data_path(&app_handle);
     fs::create_dir_all(&dsh_home).map_err(|e| format!("create dsh home failed: {e}"))?;
+
+    // Windows 极简模式修复的自愈：插件已装入 profile 时确保 patch 挂载行与
+    // minimal-win 用户 preset 落盘（幂等）。最佳努力：失败只告警，不阻断启动。
+    if let Err(e) = win_inspector::apply(&app_handle) {
+        log::warn!("win32 terminal support apply failed: {e}");
+    }
     let mut envs: HashMap<String, String> = HashMap::new();
     envs.insert("DSH_HOME".to_string(), dsh_home.to_string_lossy().into_owned());
     envs.insert("DSH_TELEMETRY_DISABLED".to_string(), "1".to_string());
@@ -282,7 +289,7 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
             tauri::async_runtime::spawn(async move {
                 for _ in 0..15 {
                     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                    if is_dsh_running().await {
+                    if is_dsh_running(setting.port).await {
                         break;
                     }
                 }
@@ -347,7 +354,7 @@ pub async fn install(
     // 不停止的话覆盖解压必然失败（Windows os error 32）。
     // 注意不能只依赖 HTTP 探测：服务崩溃/失去响应时探测不到，但 node
     // 进程可能仍存活并持有 DLL，因此探测不到时也要强制清理。
-    if is_dsh_running().await {
+    if is_dsh_running(config::get_store_dat_setting(app_handle).port).await {
         log::info!("Stopping running Harness service before installation");
         stop(app_handle.clone()).await?;
     } else {

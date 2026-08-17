@@ -11,8 +11,9 @@ export interface PreinstallPlugin {
   description: string
   repo_url: string
   recommended: boolean
+  /** “修复”类项（Windows 极简模式修复）：黄色 chip，默认勾选 */
+  fix: boolean
   installed: boolean
-  default: boolean
 }
 
 /** Rust 侧 preinstall-log 事件载荷（dsh plugin 进程输出行） */

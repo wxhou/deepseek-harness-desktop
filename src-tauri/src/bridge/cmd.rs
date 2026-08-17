@@ -142,6 +142,12 @@ pub async fn install_preinstall_plugins(
     Ok(())
 }
 
+/// 取消正在进行的预装插件安装（网络抖动/限流卡住时用户点“取消”）。
+#[tauri::command]
+pub async fn cancel_preinstall_plugins(app_handle: AppHandle) {
+    plugin::cancel(&app_handle).await;
+}
+
 /// 跳过预装插件引导：仅记录状态，不再弹出
 #[tauri::command]
 pub async fn skip_preinstall_plugins(app_handle: AppHandle) -> Result<(), String> {

@@ -88,6 +88,8 @@ export const harness = defineStore({
       plugins: [] as PreinstallPlugin[],
       loading: false,
       installing: false,
+      /** 用户触发了“取消”但仍需等后端结束进程树 */
+      cancelling: false,
       logs: [] as string[],
       error: '',
     },
@@ -364,6 +366,30 @@ export const harness = defineStore({
       finally {
         unlisten?.()
         this.preinstall.installing = false
+        this.preinstall.cancelling = false
+      }
+    },
+
+    /**
+     * 取消正在进行的预装插件安装：网络抖动/拉包限流（429）时可能长时间卡在
+     * pnpm 重试；调用后端强杀插件安装进程树，回到可重试的选择态。
+     */
+    async cancelPreinstall() {
+      if (!this.preinstall.installing || this.preinstall.cancelling)
+        return
+      // 后端结束进程树导致 `install_preinstall_plugins` 提前返回并进入 catch，
+      // 通过 installing=false 让其回到列表态而不是报错态。
+      this.preinstall.cancelling = true
+      try {
+        await invoke('cancel_preinstall_plugins')
+        await listen<unknown>('preinstall-cancelled', () => {
+          this.preinstall.installing = false
+          this.preinstall.cancelling = false
+        })
+      }
+      catch (err) {
+        console.error('[Harness] cancel preinstall failed:', err)
+        this.preinstall.cancelling = false
       }
     },
 

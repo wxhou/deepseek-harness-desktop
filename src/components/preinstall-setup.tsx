@@ -1,5 +1,5 @@
 import type { PreinstallPlugin } from '../store/modules/harness'
-import { CircleInfo } from '@gravity-ui/icons'
+import { CircleInfo, Copy, Xmark } from '@gravity-ui/icons'
 import { Button, Card, Checkbox, Chip } from '@heroui/react'
 import { invoke } from '@tauri-apps/api/core'
 import { useEffect, useState } from 'react'
@@ -7,6 +7,7 @@ import { useTranslation } from 'react-i18next'
 import { If } from 'react-if-lite'
 import { useStore } from 'valtio-define'
 import { harness } from '../store/modules/harness'
+import { toast } from '../utils/toast'
 
 /**
  * 预装插件引导页：首次安装（或老版本升级）后展示推荐插件列表，
@@ -44,6 +45,11 @@ function PluginRow({ plugin, checked, disabled, onToggle, onOpenRepo }: {
                   {t('preinstall.recommend')}
                 </Chip>
               </If>
+              <If cond={plugin.fix && !plugin.installed}>
+                <Chip size="sm" variant="soft" color="warning" className="font-medium">
+                  {t('preinstall.fix')}
+                </Chip>
+              </If>
               <If cond={plugin.installed}>
                 <Chip size="sm" variant="soft" color="success" className="font-medium">
                   {t('preinstall.installed')}
@@ -67,25 +73,51 @@ function PluginRow({ plugin, checked, disabled, onToggle, onOpenRepo }: {
   )
 }
 
-/** 日志控制台：dsh plugin 进程输出，样式与安装/加载页日志面板一致 */
+/** 日志控制台：dsh plugin 进程输出，顶部带复制按钮，样式与安装/加载页日志面板一致 */
 function LogPanel({ logs }: { logs: readonly string[] }) {
   const { t } = useTranslation()
+  const text = logs.join('\n')
+
+  async function copyLogs() {
+    try {
+      await navigator.clipboard.writeText(text || '')
+      toast(t('messages.log_copied'), {})
+    }
+    catch (err) {
+      console.error('[Harness] copy preinstall logs failed:', err)
+    }
+  }
 
   return (
-    <div
-      className="max-h-[240px] min-h-[112px] overflow-y-auto rounded-lg border border-line bg-log-bg px-3.5 py-2.5 text-left font-mono text-xs leading-[1.7]"
-      aria-label={t('ui.install_log')}
-    >
-      <If cond={logs.length > 0} else={<p className="m-0 text-load-muted">{t('ui.waiting_logs')}</p>}>
-        {logs.slice(-100).map((line, index) => (
-          // 日志行内容可能重复，以 index 区分 key
-          // eslint-disable-next-line react/no-array-index-key
-          <p key={`${line}-${index}`} className="m-0 flex gap-2 overflow-hidden text-ellipsis whitespace-nowrap text-log-ink">
-            <span className="shrink-0 text-accent select-none">›</span>
-            <span className="min-w-0 overflow-hidden text-ellipsis">{line}</span>
-          </p>
-        ))}
-      </If>
+    <div className="overflow-hidden rounded-lg border border-line bg-log-bg">
+      {/* 面板头：复制日志（右上角） */}
+      <div className="flex items-center justify-end border-b border-line/40 bg-panel2/60 px-2 py-1">
+        <Button
+          size="sm"
+          variant="ghost"
+          isIconOnly
+          className="size-6 min-w-6 rounded-md"
+          aria-label={t('buttons.copy')}
+          onPress={copyLogs}
+        >
+          <Copy className="size-3.5" />
+        </Button>
+      </div>
+      <div
+        className="max-h-[240px] min-h-[112px] overflow-y-auto px-3.5 py-2.5 text-left font-mono text-xs leading-[1.7]"
+        aria-label={t('ui.install_log')}
+      >
+        <If cond={logs.length > 0} else={<p className="m-0 text-load-muted">{t('ui.waiting_logs')}</p>}>
+          {logs.slice(-100).map((line, index) => (
+            // 日志行内容可能重复，以 index 区分 key
+            // eslint-disable-next-line react/no-array-index-key
+            <p key={`${line}-${index}`} className="m-0 flex gap-2 overflow-hidden text-ellipsis whitespace-nowrap text-log-ink">
+              <span className="shrink-0 text-accent select-none">›</span>
+              <span className="min-w-0 overflow-hidden text-ellipsis">{line}</span>
+            </p>
+          ))}
+        </If>
+      </div>
     </div>
   )
 }
@@ -102,11 +134,11 @@ export default function PreinstallSetup() {
     void harness.loadPreinstallPlugins()
   }, [])
 
-  // 默认勾选：未安装的推荐插件（当前即 DSH Market）。
+  // 默认勾选：未安装的推荐插件 +「修复」类项（当前为 Windows 极简模式修复）。
   // 派生计算而非在加载回调里 setState，避免与 store 的加载去重守卫竞争，
   // 保证插件到位后默认勾选必定生效（用户手动调整后以用户选择为准）。
   const effectiveSelected = !touched
-    ? new Set(preinstall.plugins.filter(p => !p.installed && p.recommended).map(p => p.id))
+    ? new Set(preinstall.plugins.filter(p => !p.installed && (p.recommended || p.fix)).map(p => p.id))
     : selected
 
   function toggle(id: string, checked: boolean) {
@@ -231,6 +263,19 @@ export default function PreinstallSetup() {
               <p className="text-xs leading-[18px] text-load-muted">{t('preinstall.installing')}</p>
             </div>
             <LogPanel logs={preinstall.logs} />
+            {/* 取消安装：网络抖动/限流（429）时可能长时间卡在重试，给用户退出入口 */}
+            <div className="flex items-center justify-center">
+              <Button
+                className="rounded-md"
+                size="sm"
+                variant="tertiary"
+                onPress={harness.cancelPreinstall}
+                isDisabled={preinstall.cancelling}
+              >
+                <Xmark className="size-3.5" />
+                {preinstall.cancelling ? t('preinstall.cancelling') : t('preinstall.cancel')}
+              </Button>
+            </div>
           </div>
         </If>
       </div>
