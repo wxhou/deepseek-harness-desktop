@@ -32,7 +32,6 @@
   "download.saved_to": "已保存到",
   "download.failed": "Session 日志下载失败",
   "download.show_in_folder": "打开",
-  "download.close": "关闭",
 
   "errors.service_start_timeout": "DeepSeek Harness 启动超时，请检查端口 {{port}} 是否被占用或启动过慢。",
   "errors.install_verify_failed": "资源包已下载，但安装校验失败。",

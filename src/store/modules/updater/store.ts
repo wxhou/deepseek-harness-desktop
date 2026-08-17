@@ -1,9 +1,9 @@
 import type { UnlistenFn } from '@tauri-apps/api/event'
 import type { DshUpdateInfo } from './types'
 import { invoke } from '@tauri-apps/api/core'
+import i18next from 'i18next'
 import { defineStore } from 'valtio-define'
 import { harness } from '../harness'
-import { setting } from '../setting'
 
 /**
  * 版本更新模块：后台静默检查 + 手动更新安装。
@@ -39,7 +39,7 @@ export const updater = defineStore({
       let unlistenInstall: UnlistenFn | null = null
       try {
         unlistenInstall = await harness.listenInstallProgress()
-        harness.prepareInstall(setting.t('status.updating'))
+        harness.prepareInstall(i18next.t('status.updating'))
         await invoke('install_dependencies')
         await harness.launchAndWait()
         this.updateInfo = null

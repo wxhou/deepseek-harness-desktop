@@ -1,29 +1,27 @@
+import { useWatch } from '@hairy/react-lib'
 import { useTranslation } from 'react-i18next'
 import { useStore } from 'valtio-define'
+import { toast } from '@/utils'
 import { updater } from '../store/modules/updater'
-import { button, toast } from './primitives'
-
 /** 右下角"发现新版本"提示条：状态与操作直接来自 updater store */
 export default function HarnessUpdater() {
   const { t } = useTranslation()
   const { updateInfo, updating } = useStore(updater)
 
-  if (!updateInfo || updating) {
-    return null
-  }
+  useWatch([updateInfo, updating], () => {
+    if (!updateInfo || updating)
+      return null
+    toast(t('update.available', { tag: updateInfo.tag }), {
+      actionProps: {
+        children: 'Upgrade',
+        onPress: () => toast.clear(),
+        variant: 'tertiary',
+      },
+      placement: 'bottom end',
+      description: updateInfo.commit.slice(0, 7),
+      variant: 'default',
+    })
+  })
 
-  return (
-    <div className={toast()}>
-      <div className="min-w-0 flex-1">
-        <p className="text-[13px] font-semibold text-ink">{t('update.available', { tag: updateInfo.tag })}</p>
-        <p className="mt-0.5 text-xs text-muted">{updateInfo.commit.slice(0, 7)}</p>
-      </div>
-      <button className={button({ tone: 'primary' })} onClick={updater.handleUpdate}>
-        {t('update.now')}
-      </button>
-      <button className={button({ tone: 'ghost' })} onClick={updater.dismissUpdate}>
-        {t('update.later')}
-      </button>
-    </div>
-  )
+  return null
 }
