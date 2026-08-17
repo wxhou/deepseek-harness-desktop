@@ -1,18 +1,18 @@
-import type { LucideIcon } from 'lucide-react'
 import type { SetupStatus } from '../store/modules/harness'
-import { CircleAlert, CircleCheck, Download, Rocket, ScanSearch } from 'lucide-react'
+import type { IconComponent } from './loadable'
+import { ArrowDownToLine, CircleCheck, CircleExclamation, Magnifier, Rocket } from '@gravity-ui/icons'
 import { useTranslation } from 'react-i18next'
 import { useStore } from 'valtio-define'
 import { harness } from '../store/modules/harness'
 import Loadable from './loadable'
 
 // 各阶段对应不同图标，保持与 logo 一致的黑白中性色调
-const STATUS_ICONS: Record<SetupStatus, LucideIcon> = {
-  checking: ScanSearch,
-  installing: Download,
+const STATUS_ICONS: Record<SetupStatus, IconComponent> = {
+  checking: Magnifier,
+  installing: ArrowDownToLine,
   starting: Rocket,
   ready: CircleCheck,
-  error: CircleAlert,
+  error: CircleExclamation,
 }
 
 /**

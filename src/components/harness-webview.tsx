@@ -1,5 +1,5 @@
 /* eslint-disable react/dom-no-unsafe-iframe-sandbox */
-import { CircleAlert } from 'lucide-react'
+import { CircleExclamation } from '@gravity-ui/icons'
 import { useTranslation } from 'react-i18next'
 import { useStore } from 'valtio-define'
 import { harness } from '../store/modules/harness'
@@ -60,7 +60,7 @@ export default function HarnessWebview() {
           )}
       {serviceHealthy && iframeError && (
         <Loadable
-          icon={CircleAlert}
+          icon={CircleExclamation}
           title={t('ui.iframe_error')}
           errorMsg={t('ui.ensure_running', { url: serviceUrl })}
           onRetry={harness.refreshIframe}

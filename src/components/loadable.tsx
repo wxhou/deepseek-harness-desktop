@@ -1,7 +1,9 @@
-import type { LucideIcon } from 'lucide-react'
-import type { ReactNode } from 'react'
+import type { ComponentType, ReactNode, SVGProps } from 'react'
 import { useTranslation } from 'react-i18next'
 import { button } from './primitives'
+
+/** 图标组件类型（@gravity-ui/icons 均为 SVG 组件） */
+export type IconComponent = ComponentType<SVGProps<SVGSVGElement>>
 
 const LOG_LIMIT = 5
 
@@ -18,8 +20,8 @@ const LOG_LIMIT = 5
  * 传入 icon/title/subtitle/percentage/logs/errorMsg/onRetry 后按需扩展。
  */
 export interface LoadableProps {
-  /** 状态图标（lucide 组件），仅失败态显示；加载态已有 spinner，不再叠加图标（官方 boot 页无图标） */
-  icon?: LucideIcon
+  /** 状态图标（@gravity-ui/icons 组件），仅失败态显示；加载态已有 spinner，不再叠加图标（官方 boot 页无图标） */
+  icon?: IconComponent
   /** wordmark 位文案，默认官网的 "HARNESS" */
   title?: string
   /** hint 位文案，默认官网的 "Loading plugins…" */
@@ -57,7 +59,7 @@ export default function Loadable({
     <div className="flex h-full items-center justify-center bg-load-bg -mt-[1px]">
       <div className="flex w-[min(460px,88vw)] flex-col items-center gap-4 text-center">
         {/* 加载态显示 spinner 时隐藏图标（官方 boot 页即无图标），避免与 spinner 重复突兀；仅失败态显示 */}
-        {error && Icon && <Icon className="size-7 text-load-ink" strokeWidth={1.75} />}
+        {error && Icon && <Icon className="size-7 text-load-ink" />}
 
         <span className="text-base leading-6 font-semibold tracking-[0.08em] text-load-ink truncate">{wordmark}</span>
 

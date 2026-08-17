@@ -1,4 +1,4 @@
-import { Wrench } from 'lucide-react'
+import { Wrench } from '@gravity-ui/icons'
 import { useTranslation } from 'react-i18next'
 import { useStore } from 'valtio-define'
 import { setting } from '../store/modules/setting'
