@@ -13,8 +13,11 @@ export default function HarnessUpdater() {
       return null
     toast(t('update.available', { tag: updateInfo.tag }), {
       actionProps: {
-        children: 'Upgrade',
-        onPress: () => toast.clear(),
+        children: t('update.now'),
+        onPress: () => {
+          toast.clear()
+          void updater.handleUpdate()
+        },
         variant: 'tertiary',
       },
       placement: 'bottom end',
