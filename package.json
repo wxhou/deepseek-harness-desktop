@@ -16,12 +16,14 @@
     "icons": "tauri icon public/favicon.svg"
   },
   "dependencies": {
+    "@overlastic/react": "^0.9.0",
     "@tauri-apps/api": "^2.11.1",
     "i18next": "^26.3.6",
     "lucide-react": "^1.31.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-i18next": "^17.0.11",
+    "react-if-lite": "^0.1.0",
     "tailwind-variants": "^3.3.1",
     "valtio-define": "^1.4.1"
   },

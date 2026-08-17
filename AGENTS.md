@@ -1,57 +1,262 @@
-# AGENTS.md — 项目规范
+# Development Specification Document
 
-DeepSeek Harness 桌面版（Tauri 2 + React 18）。内嵌运行 `http://127.0.0.1:3080` 的 Harness 界面。
+DeepSeek Harness desktop (Tauri 2 + React 18), embeds the Harness UI served at `http://127.0.0.1:3080`.
 
-## 技术栈与关键目录
+- Prioritize using customized components from src/components, hero-ui.
+- This will help minimize the need for writing custom classes.
+- If you write new content, you need to handle i18n en keys
+- i18n keys must be flat (no nesting), use dot-notation flat keys only
+- No hardcoded strings; sync `src/i18n/zh.ts`, `en.ts` and `types.ts`
+- If the component you write/modify is too complex, you need to split it into multiple components
+- Repeated logic should be encapsulated into methods/components
 
-- **前端**：React 18 + TS + Tailwind 4（无纯 CSS 文件），Vite 构建 (`src/`)
-- **后端**：Rust / Tauri 2 (`src-tauri/src/`)
-  - `bridge/cmd.rs`：Tauri 命令（定义后须在 `lib.rs` 的 `generate_handler!` 注册）
-  - `config/`：常量、路径 (`runtime.rs`)、设置 (`setting.rs`)、i18n 与主题
-  - `service/download/`：Node.js / Dsh / pnpm 下载解压（`Installable` trait）
-  - `service/workflow/`：进程生命周期管理（Windows 无窗口启动：`win_spawn.rs`）
-  - `service/cli/`：命令行集成（生成 `dsh` / `pnpm` shim 并注册 PATH）。内部划分：`mod.rs` 声明+导出、`shim.rs` 脚本内容生成、`path.rs` 路径计算/PATH 注册/用户 pnpm 探测、`core.rs` 对外接口（状态/启用/清理）
-  - `service/scheduler/` + `task/`：健康检查与轮询
+## Tech Stack
 
-## 开发命令
+- **Frontend**: React 18 + TS + Tailwind 4 (no plain CSS), Vite (`src/`)
+- **Backend**: Rust / Tauri 2 (`src-tauri/src/`)
+  - `bridge/cmd.rs`: Tauri commands (register in `lib.rs` `generate_handler!`)
+  - `config/`: constants, paths (`runtime.rs`), settings (`setting.rs`), i18n & theme
+  - `service/download/`: Node/Dsh/pnpm download & extract (`Installable` trait)
+  - `service/workflow/`: process lifecycle (Windows no-window: `win_spawn.rs`)
+  - `service/cli/`: `dsh`/`pnpm` shims + PATH registration (`mod.rs`/`shim.rs`/`path.rs`/`core.rs`)
+  - `service/scheduler/` + `task/`: health check & polling
+
+## Dev Commands
 
 ```bash
-pnpm install && pnpm dev    # 前端开发
-pnpm typecheck              # 前端 TS 类型检查（改前端必跑）
-pnpm tauri dev              # 桌面端全量调试
-cargo check && cargo test   # Rust 编译检查与单测（src-tauri 下执行）
-
+pnpm install && pnpm dev    # frontend dev
+pnpm typecheck              # frontend TS check (must run after frontend changes)
+pnpm tauri dev              # full desktop debug
+cargo check && cargo test   # Rust check & unit tests (run in src-tauri)
 ```
 
-## 核心规范
+## Basics
 
-1. **i18n**：禁用硬编码。文案需同步修改 `src/i18n/zh.ts`、`en.ts` 及 `types.ts`。
-2. **注释**：统一使用中文。模块头用 `//!`，函数用 `///`（重点说明“为什么”）。
-3. **错误与日志**：`Result<_, String>` 错误须包含大写前缀（如 `"NODE_NOT_FOUND: ..."`）；关键路径打 `log::*` 日志。
-4. **设置持久化**：`Setting` 新增字段必须加 `#[serde(default...)]`，并在 `config/mod.rs` 导出。
-5. **Windows 适配**：
-* 拉子进程须设 `CREATE_NO_WINDOW (0x08000000)` 防止黑窗。
-* 停止服务必须强杀**进程树**（`taskkill /T /F`），避免 DLL 锁死导致更新失败。
-* 写 PATH（`HKCU\Environment\Path`）后需广播 `WM_SETTINGCHANGE`，提示用户新开终端生效。
+- No `useCallback` / `useMemo` — project has `react-compiler` built in
+- Component functions use `function` declaration; inline events/callbacks use arrow functions
 
+## Function Declaration Specification
 
-6. **CLI shim (`service/cli`)**：
-* 脚本位置：Win `%LOCALAPPDATA%\deepseek-harness\bin`，Unix `~/.local/bin`。
-* 优先使用本地兼容 Node (v22.15+ / v23.8+ / v24+)，回退使用捆绑 Node。注意转义字符（`%` → `%%`，`'` → `''` 或 `'\''`）。
-* **shim 文本必须全英文**：cmd/ps1 按系统代码页解析，中文注释会乱码成命令执行。
-* **pnpm shim 用户优先**：先转发用户自装的 pnpm（`where pnpm` 遍历，跳过本 shim 目录、只收 `.cmd/.exe/.bat`），否则用捆绑 node 跑 `dependencies/pnpm/bin/pnpm.cjs`。cmd 里不要用 `findstr` 匹配路径（`\` 会被当正则转义）；块内变量判断用 for 变量（`%%~xp`）而非 `%VAR%`（解析时机陷阱）。
-* 安装策略：`Pnpm::check_installed` = 捆绑已装 **或** PATH 有用户 pnpm（`cli::find_user_pnpm`）→ "有则跳过"，用户后续自装也优先。
+- **Named functions must use `function` declaration, not arrow functions**
+- **Arrow functions can only be used when passed as callback parameters**
 
+```tsx
+// ✅ Correct
+function Component() {
+  function handleClick() {
+    console.log('click');
+  }
+  return <button onClick={handleClick}>Click</button>;
+}
 
-7. **跨平台与测试**：
-* Unix 专属代码加 `#[cfg_attr(windows, allow(dead_code))]`，跨平台测试代码加 `#[cfg_attr(all(not(windows), not(test)), allow(dead_code))]`。
-* 单测写在模块内 `#[cfg(test)] mod tests`，受限环境测试要优雅跳过。
+// ✅ Correct: Arrow functions can be used for callbacks
+useQuery({
+  queryFn: async () => {
+    return fetchData();
+  },
+});
+```
 
+## Data Processing Specification
 
-8. **依赖与文档**：不引入重型依赖，优先用现有的 `windows-sys`；README 保持极简且中英同步。
+### Use directly in pages
 
-## 避坑要点
+**Use case:** When data doesn't need additional processing after fetching
 
-* **dsh 结构**：`dsh` CLI 为 Node 脚本（`dependencies/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js`），命令行集成本质是 **shim + PATH**。pnpm 同样为 JS 发行（`dependencies/pnpm/bin/pnpm.cjs`，npm tarball `.tgz`，下载地址 `registry.npmjs.org/pnpm/-/pnpm-<version>.tgz`）。
-* **AppData 结构**：`runtime/node.exe`、`dependencies/dsh/`、`dependencies/pnpm/`、`data/dsh` (DSH_HOME)、`logs/dsh-web.log`。
-* **服务参数**：`node bin.js --profile web --host 127.0.0.1 --port <setting.port>`。安装完成后会自动调用 `cli::ensure` 初始化 CLI。
+```tsx
+function MyPage() {
+  const { data } = useQuery({
+    queryKey: ['simple-data'],
+    queryFn: () => fetchData(),
+  });
+}
+```
+
+### Create files in services directory
+
+**Use case:** Backend type error handling, parameter processing, composite requests, polling, data caching, etc.
+
+**File naming:** `use-get-{resource}.ts`, `use-post-{resource}.ts`, `use-put-{resource}.ts`, `use-delete-{resource}.ts`
+
+```tsx
+// services/use-get-exchange-rates.ts
+export function useGetExchangeRates(params) {
+  return useQuery({
+    queryKey: [getApiExchangeRatesCurrencyPair.name, params],
+    queryFn: () => getApiExchangeRatesCurrencyPair(params).then(res => res.data?.data),
+  });
+}
+```
+
+## Conditional Rendering Specification
+
+Use `If`, `Then`, `Else` components by `react-if-lite` package instead of ternary operators and `&&` operators
+
+```tsx
+// Basic usage
+<If cond={!isLoading} else={<LoadingSpinner />}>
+  <Content />
+</If>
+
+// Simple condition: use props
+<If cond={isBasic} then={<GrayZuanIcon />} else={<ZuanIcon />} />
+
+// Complex condition: use child components
+<If cond={hasData}>
+  <Then>
+    <DataTable data={data} />
+  </Then>
+  <Else>
+    <Empty />
+  </Else>
+</If>
+
+// Specify render tag
+<If cond={condition} as="div">
+  {content}
+</If>
+```
+
+## State Management Specification
+
+### Single module page shared data: defineScope + useScope
+
+```tsx
+// 1. Create scope
+export const TradingScope = defineScope(() => {
+  const [count, setCount] = useState(0);
+  // any hooks or functions
+  return { count, setCount }; 
+});
+
+// 2. Use Provider
+<TradingScope.Provider>
+  <Page> {/* or ({ count }) => <Page>...</Page> */}
+    <TradingTable />
+  </Page>
+</TradingScope.Provider>;
+
+// 3. Use in child components
+const { filters, setFilters } = useScope(TradingScope);
+```
+
+### Multiple module pages shared data: defineStore
+
+```tsx
+// store/modules/user.ts
+export const user = defineStore({
+  state: () => ({ user: null }),
+  actions: { async fetchUser() { ... } },
+});
+
+// Usage
+import { store } from '@/store';
+const { user } = useStore(store.user);
+```
+
+## Figma → Code
+
+1. **Use theme tokens, not hardcoded colors** — `text-warning` over `text-[#7A5E38]`
+2. **Component rules serve the design** — override styles when defaults don't match
+3. **Structure is style** — map Figma frames directly to component tree, translate gap/padding directly
+4. **Use component APIs** — express states via `value`, `size`, `variant` props instead of hand-writing styles
+
+## tv Usage
+
+Use `tv` when a component has multiple style variants/slots.
+
+- `slots` defines all style areas; `variants` only writes changing styles
+- Derive variant types via `VariantProps<typeof tvConfig>['variant']`
+
+```tsx
+export const dialog = tv({
+  slots: {
+    base: 'relative',
+    icon: 'size-14 items-center justify-center rounded-full',
+    iconContent: 'size-[22px]',
+  },
+  variants: {
+    variant: {
+      success: { icon: 'bg-[#E7EFE3]' },
+      warning: { icon: 'bg-[#F5EAD3]' },
+    },
+  },
+  defaultVariants: { variant: 'default' },
+})
+// Use: const { icon } = dialog({ variant })
+```
+
+## Overlastic Dialog Pattern (`@overlastic/react`)
+
+**Use case:** Imperative dialog (confirm, PIN, KYC).
+
+```
+Hook       → useOverlay(Component) returns an async opener function
+_layout.tsx → mount OverlaysProvider at root
+Component  → render actual UI with useDisclosure
+```
+
+```tsx
+// usage — resolves with the confirm value
+const { foo } = useOverlay(FooComponent)
+const result = await foo(options)
+```
+
+```tsx
+// _layout.tsx — mount once at root
+<OverlaysProvider>
+  <App />
+</OverlaysProvider>
+
+// components/foo.tsx — render actual UI
+import type { PropsWithOverlays } from '@overlastic/react'
+import { useDisclosure } from '@overlastic/react'
+
+export interface FooProps extends PropsWithOverlays, FooOptions { ... }
+
+export function FooComponent(props: FooProps) {
+  const disclosure = useDisclosure({ props, delay: 300 })
+  return (
+    <BottomSheet isOpen={disclosure.visible} onOpenChange={() => disclosure.cancel()}>
+      {/* ... */}
+      <Button onPress={() => disclosure.confirm(value)} />
+    </BottomSheet>
+  )
+}
+```
+
+- Props are flat options; `PropsWithOverlays<Payload, Result>` types the payload and the promise result
+- `disclosure.confirm(value?)` resolves the opener's promise, `disclosure.cancel()` closes without a result
+- Component props/result types live in the component file, the hook imports them from there
+
+## Backend Rules (Rust / Tauri)
+
+1. **Comments**: Chinese only; `//!` for module headers, `///` for functions (focus on "why").
+2. **Errors/Logs**: `Result<_, String>` errors need an uppercase prefix (e.g. `NODE_NOT_FOUND: ...`); log key paths.
+3. **Settings**: new `Setting` fields need `#[serde(default...)]` and export in `config/mod.rs`.
+4. **Windows**:
+   - Spawn children with `CREATE_NO_WINDOW (0x08000000)`.
+   - Kill the process tree when stopping services (`taskkill /T /F`) to avoid DLL lock on update.
+   - Broadcast `WM_SETTINGCHANGE` after writing PATH; tell users to reopen terminals.
+5. **CLI shim (`service/cli`)**:
+   - Scripts at Win `%LOCALAPPDATA%\deepseek-harness\bin`, Unix `~/.local/bin`.
+   - Prefer local Node (v22.15+ / v23.8+ / v24+), fallback to bundled Node; mind escaping (`%`→`%%`, `'`→`'\''`).
+   - Shim text must be English-only (cmd/ps1 parse by code page, Chinese breaks).
+   - pnpm shim: forward user-installed pnpm first, else bundled node `dependencies/pnpm/bin/pnpm.cjs`.
+   - Install skips when bundled installed **or** user pnpm on PATH (`Pnpm::check_installed`).
+6. **Cross-platform/Tests**: Unix-only code gets `#[cfg_attr(windows, allow(dead_code))]`; unit tests in `#[cfg(test)] mod tests`, skip gracefully when restricted.
+7. **Deps/Docs**: no heavy deps, prefer existing `windows-sys`; README minimal, en/zh synced.
+
+## Pitfalls
+
+- `dsh` CLI is a Node script (`dependencies/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js`); CLI integration is **shim + PATH**. pnpm is also JS (`dependencies/pnpm/bin/pnpm.cjs`, npm tarball).
+- AppData layout: `runtime/node.exe`, `dependencies/dsh/`, `dependencies/pnpm/`, `data/dsh` (DSH_HOME), `logs/dsh-web.log`.
+- Service args: `node bin.js --profile web --host 127.0.0.1 --port <setting.port>`; `cli::ensure` runs after install.
+
+## Summary
+
+- **API Import**: Import APIs from `@/apis`, types from `@/apis/index.type`
+- **Function Declaration**: Use `function`, not arrow functions
+- **Conditional Rendering**: Use `If`, `Then`, `Else` components instead of ternary operators and `&&` operators
+- **Data Processing**: Simple scenarios use `useQuery`/`useMutation` directly, complex scenarios create service files
+- **State Management**: Single module use `defineScope + useScope`, multiple modules use `defineStore + useStore`
