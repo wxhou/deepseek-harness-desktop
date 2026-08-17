@@ -220,14 +220,15 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     // `command not found`（MSYS 运行时在部分环境下不会自动补 /usr/bin）。
     if let Some(node_dir) = node_binary_path.parent() {
         if let Some(existing_path) = std::env::var_os("PATH") {
+            let git_dirs = win_inspector::git_bash_bin_dirs();
+            // 只打印注入的前缀目录，完整 PATH 太长会刷屏
+            for dir in &git_dirs {
+                log::debug!("harness service PATH prepend: {}", dir.to_string_lossy());
+            }
             let mut paths = vec![node_dir.to_path_buf()];
-            paths.extend(win_inspector::git_bash_bin_dirs());
+            paths.extend(git_dirs);
             paths.extend(std::env::split_paths(&existing_path));
             if let Ok(new_path) = std::env::join_paths(paths) {
-                log::info!(
-                    "harness service PATH built: {}",
-                    new_path.to_string_lossy()
-                );
                 envs.insert("PATH".to_string(), new_path.to_string_lossy().into_owned());
             }
         }
