@@ -1,6 +1,7 @@
 import { Wrench } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 import { useStore } from 'valtio-define'
-import { setting, useI18n } from '../store/modules/setting'
+import { setting } from '../store/modules/setting'
 import { updater } from '../store/modules/updater'
 import { toggle } from './primitives'
 
@@ -9,7 +10,7 @@ import { toggle } from './primitives'
  * 不再接收 lifted/onClick 等 props。
  */
 export default function SidebarToggle() {
-  const { t } = useI18n()
+  const { t } = useTranslation()
   const { sidebarOpen } = useStore(setting)
   const { updateInfo, updating } = useStore(updater)
 

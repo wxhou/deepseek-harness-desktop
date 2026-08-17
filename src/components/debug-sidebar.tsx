@@ -1,8 +1,9 @@
 import { invoke } from '@tauri-apps/api/core'
 import { useEffect, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useStore } from 'valtio-define'
 import { harness } from '../store/modules/harness'
-import { setting, useI18n } from '../store/modules/setting'
+import { setting } from '../store/modules/setting'
 import {
   button,
   codeBlock,
@@ -55,7 +56,7 @@ function Spinner() {
  * 直接引用 harness store 的方法，不再接收 onClose/onRestart 等回调 props。
  */
 export default function DebugSidebar() {
-  const { t, language, setLanguage } = useI18n()
+  const { t, i18n } = useTranslation()
   const { sidebarOpen } = useStore(setting)
   const { serviceRunning, busyAction } = useStore(harness)
   const [info, setInfo] = useState<RuntimeInfo | null>(null)
@@ -379,11 +380,11 @@ export default function DebugSidebar() {
               </span>
               <select
                 className={select()}
-                value={language}
-                onChange={e => setLanguage(e.target.value as 'en' | 'zh')}
+                value={i18n.language}
+                onChange={e => i18n.changeLanguage(e.target.value)}
               >
-                <option value="zh">中文</option>
-                <option value="en">English</option>
+                <option value="zh-CN">中文</option>
+                <option value="en-US">English</option>
               </select>
             </div>
           </div>

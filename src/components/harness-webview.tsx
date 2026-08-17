@@ -1,8 +1,8 @@
 /* eslint-disable react/dom-no-unsafe-iframe-sandbox */
 import { CircleAlert } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 import { useStore } from 'valtio-define'
 import { harness } from '../store/modules/harness'
-import { useI18n } from '../store/modules/setting'
 import Loadable from './loadable'
 import Setup from './setup'
 
@@ -12,7 +12,7 @@ import Setup from './setup'
  * 状态与方法全部来自 harness store，不再接收 props。
  */
 export default function HarnessWebview() {
-  const { t } = useI18n()
+  const { t } = useTranslation()
   const {
     status,
     serviceHealthy,

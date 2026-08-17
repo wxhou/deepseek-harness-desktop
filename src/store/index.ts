@@ -20,6 +20,6 @@ export type {
   SetupStatus,
   SidebarBusyAction,
 } from './modules/harness'
-export { setting, useI18n } from './modules/setting'
+export { setting } from './modules/setting'
 export { updater } from './modules/updater'
 export type { DshUpdateInfo } from './modules/updater'

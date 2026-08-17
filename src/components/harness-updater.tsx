@@ -1,11 +1,11 @@
+import { useTranslation } from 'react-i18next'
 import { useStore } from 'valtio-define'
-import { useI18n } from '../store/modules/setting'
 import { updater } from '../store/modules/updater'
 import { button, toast } from './primitives'
 
 /** 右下角"发现新版本"提示条：状态与操作直接来自 updater store */
 export default function HarnessUpdater() {
-  const { t } = useI18n()
+  const { t } = useTranslation()
   const { updateInfo, updating } = useStore(updater)
 
   if (!updateInfo || updating) {

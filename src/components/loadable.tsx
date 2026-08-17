@@ -1,6 +1,6 @@
 import type { LucideIcon } from 'lucide-react'
 import type { ReactNode } from 'react'
-import { useI18n } from '../store/modules/setting'
+import { useTranslation } from 'react-i18next'
 import { button } from './primitives'
 
 const LOG_LIMIT = 5
@@ -46,7 +46,7 @@ export default function Loadable({
   onRetry,
   children,
 }: LoadableProps) {
-  const { t } = useI18n()
+  const { t } = useTranslation()
   const error = errorMsg != null
   const wordmark = title ?? t('app.wordmark')
   const hint = error ? errorMsg : subtitle ?? t('status.loading_plugins')

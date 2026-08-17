@@ -1,12 +1,12 @@
 import { invoke } from '@tauri-apps/api/core'
+import { useTranslation } from 'react-i18next'
 import { useStore } from 'valtio-define'
 import { download } from '../store/modules/download'
-import { useI18n } from '../store/modules/setting'
 import { button, toast } from './primitives'
 
 /** 右下角"下载已保存/失败"提示条：状态与关闭操作直接来自 download store */
 export default function DownloadToast() {
-  const { t } = useI18n()
+  const { t } = useTranslation()
   const { notice } = useStore(download)
 
   if (!notice) {

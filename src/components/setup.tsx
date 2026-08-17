@@ -1,9 +1,9 @@
 import type { LucideIcon } from 'lucide-react'
 import type { SetupStatus } from '../store/modules/harness'
 import { CircleAlert, CircleCheck, Download, Rocket, ScanSearch } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 import { useStore } from 'valtio-define'
 import { harness } from '../store/modules/harness'
-import { useI18n } from '../store/modules/setting'
 import Loadable from './loadable'
 
 // 各阶段对应不同图标，保持与 logo 一致的黑白中性色调
@@ -21,7 +21,7 @@ const STATUS_ICONS: Record<SetupStatus, LucideIcon> = {
  * 状态与重试动作直接从 harness store 读取，不再接收 props。
  */
 export default function Setup() {
-  const { t } = useI18n()
+  const { t } = useTranslation()
   const { status, installer, errorMsg } = useStore(harness)
   const error = status === 'error'
   const installing = status === 'installing'

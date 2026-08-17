@@ -7,6 +7,7 @@ import HarnessWebview from './components/harness-webview'
 import SidebarToggle from './components/sidebar-toggle'
 import { useDshTheme } from './hooks/use-dsh-theme'
 import { store } from './store'
+import './i18n'
 
 /**
  * 应用根组件：只负责首次启动与整体布局。
