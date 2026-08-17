@@ -17,6 +17,7 @@ import { useTranslation } from 'react-i18next'
 import { useStore } from 'valtio-define'
 import { harness } from '../store/modules/harness'
 import { setting } from '../store/modules/setting'
+import { toast } from '../utils/toast'
 
 export interface RuntimeInfo {
   app_version: string
@@ -78,14 +79,10 @@ export default function DebugSidebar() {
   const { sidebarOpen } = useStore(setting)
   const { serviceRunning, busyAction } = useStore(harness)
   const [info, setInfo] = useState<RuntimeInfo | null>(null)
-  const [port, setPort] = useState('3080')
-  const [autoStart, setAutoStart] = useState(true)
   const [cliLinkEnabled, setCliLinkEnabled] = useState(true)
-  const [cliToggled, setCliToggled] = useState(false)
+  const [port, setPort] = useState(3080)
   const [cliStatus, setCliStatus] = useState<CliLinkStatus | null>(null)
   const [logs, setLogs] = useState('')
-  const [noticeMsg, setNoticeMsg] = useState('')
-  const [saving, setSaving] = useState(false)
   const [busy, setBusy] = useState<string | null>(null)
 
   async function refreshInfo() {
@@ -106,8 +103,7 @@ export default function DebugSidebar() {
   async function refreshConfig() {
     try {
       const nextConfig = await invoke<AppConfig>('get_app_config')
-      setPort(String(nextConfig.port))
-      setAutoStart(nextConfig.auto_start)
+      setPort(nextConfig.port)
       setCliLinkEnabled(nextConfig.cli_link_enabled)
     }
     catch (err) {
@@ -121,6 +117,58 @@ export default function DebugSidebar() {
     }
     catch (err) {
       console.error('[DebugSidebar] failed to load cli link status:', err)
+    }
+  }
+
+  async function toggleCliLink(enabled: boolean) {
+    if (busy)
+      return
+    const prev = cliLinkEnabled
+    setBusy('cliLink')
+    setCliLinkEnabled(enabled)
+    try {
+      const nextConfig = await invoke<AppConfig>('update_app_config', { cliLinkEnabled: enabled })
+      setCliLinkEnabled(nextConfig.cli_link_enabled)
+      toast(t(nextConfig.cli_link_enabled ? 'messages.cli_link_enabled' : 'messages.cli_link_disabled'), {})
+      await refreshCliStatus()
+    }
+    catch (err) {
+      console.error('[DebugSidebar] failed to update cli link enabled:', err)
+      setCliLinkEnabled(prev)
+      toast(t('messages.save_failed'), { variant: 'danger' })
+    }
+    finally {
+      setBusy(null)
+    }
+  }
+
+  async function savePort() {
+    if (busy)
+      return
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      toast(t('messages.save_failed'), { variant: 'danger' })
+      return
+    }
+    setBusy('savePort')
+    try {
+      const nextConfig = await invoke<AppConfig>('update_app_config', { port })
+      setPort(nextConfig.port)
+      toast(t('messages.port_changed'), {
+        variant: 'accent',
+        description: t('messages.port_restart_hint'),
+        timeout: 10_000,
+        actionProps: {
+          children: t('app.restart'),
+          onPress: () => { void harness.restart() },
+        },
+      })
+    }
+    catch (err) {
+      console.error('[DebugSidebar] failed to save port:', err)
+      toast(t('messages.save_failed'), { variant: 'danger' })
+    }
+    finally {
+      setBusy(null)
     }
   }
 
@@ -147,52 +195,16 @@ export default function DebugSidebar() {
     // eslint-disable-next-line react/exhaustive-deps
   }, [])
 
-  useEffect(() => {
-    if (!noticeMsg)
-      return
-    const timer = setTimeout(setNoticeMsg, 2500, '')
-    return () => clearTimeout(timer)
-  }, [noticeMsg])
-
-  async function saveConfig() {
-    setSaving(true)
-    try {
-      const nextPort = Number(port)
-      const nextConfig = await invoke<AppConfig>('update_app_config', {
-        port: Number.isInteger(nextPort) && nextPort > 0 ? nextPort : null,
-        autoStart,
-        cliLinkEnabled,
-      })
-      setPort(String(nextConfig.port))
-      setNoticeMsg(
-        cliToggled
-          ? cliLinkEnabled
-            ? t('messages.cli_link_enabled')
-            : t('messages.cli_link_disabled')
-          : t('messages.config_saved'),
-      )
-      setCliToggled(false)
-      await refreshCliStatus()
-    }
-    catch (err) {
-      console.error('[DebugSidebar] failed to save config:', err)
-      setNoticeMsg(t('messages.save_failed'))
-    }
-    finally {
-      setSaving(false)
-    }
-  }
-
   async function copyUrl() {
     if (busy)
       return
     setBusy('copy')
     try {
       await invoke('copy_service_url')
-      setNoticeMsg(t('messages.copy_success'))
+      toast(t('messages.copy_success'), {})
     }
     catch {
-      setNoticeMsg(t('messages.copy_failed'))
+      toast(t('messages.copy_failed'), { variant: 'danger' })
     }
     finally {
       setBusy(null)
@@ -206,7 +218,7 @@ export default function DebugSidebar() {
     try {
       await invoke('clear_service_logs')
       setLogs('')
-      setNoticeMsg(t('messages.logs_cleared'))
+      toast(t('messages.logs_cleared'), {})
     }
     catch (err) {
       console.error('[DebugSidebar] failed to clear logs:', err)
@@ -381,27 +393,13 @@ export default function DebugSidebar() {
               <SectionCard>
                 <SectionTitle>{t('ui.settings')}</SectionTitle>
 
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between gap-4">
-                    <span className="text-xs font-medium text-ink">{t('ui.port')}</span>
-                    <Input
-                      variant="secondary"
-                      aria-label={t('ui.port')}
-                      value={port}
-                      onChange={e => setPort(e.target.value)}
-                      inputMode="numeric"
-                      className="w-18 text-right h-5 rounded-md px-2 text-xs"
-                    />
-                  </div>
-
-                  <div className="flex items-center justify-between gap-4">
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
                     <span className="text-xs font-medium text-ink">{t('ui.cli_link_enabled')}</span>
                     <Switch
                       isSelected={cliLinkEnabled}
-                      onChange={(e) => {
-                        setCliLinkEnabled(e)
-                        setCliToggled(true)
-                      }}
+                      isDisabled={busy === 'cliLink'}
+                      onChange={toggleCliLink}
                     >
                       <Switch.Content>
                         <Switch.Control>
@@ -422,7 +420,30 @@ export default function DebugSidebar() {
                     </div>
                   )}
 
-                  <div className="flex items-center justify-between gap-4 pt-1 border-t border-line/30">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-medium text-ink">{t('ui.port')}</span>
+                    <div className="flex items-center gap-1.5">
+                      <Input
+                        type="number"
+                        variant="secondary"
+                        value={String(port)}
+                        onChange={e => setPort(Number(e.target.value))}
+                        className="w-24 rounded-md"
+                        aria-label={t('ui.port')}
+                      />
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        className="rounded-md"
+                        onPress={savePort}
+                        isDisabled={busy === 'savePort'}
+                      >
+                        {busy === 'savePort' ? <Spinner size="sm" color="current" /> : t('buttons.save')}
+                      </Button>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between">
                     <span className="text-xs font-medium text-ink">{t('ui.language')}</span>
                     <Select
                       variant="secondary"
@@ -442,18 +463,6 @@ export default function DebugSidebar() {
                       </Select.Popover>
                     </Select>
                   </div>
-
-                  <Button
-                    size="sm"
-                    variant="primary"
-                    fullWidth
-                    onPress={saveConfig}
-                    isDisabled={saving}
-                    className="mt-2 rounded-md"
-                  >
-                    {saving && <Spinner size="sm" color="current" />}
-                    {saving ? t('ui.saved') : t('ui.save')}
-                  </Button>
                 </div>
               </SectionCard>
 
@@ -497,13 +506,6 @@ export default function DebugSidebar() {
                   {t('buttons.clear_logs')}
                 </Button>
               </SectionCard>
-
-              {/* Toast 提示浮层 */}
-              {noticeMsg && (
-                <div className="sticky bottom-2 left-0 right-0 z-50 rounded-lg border border-line bg-panel2/95 px-3.5 py-2 text-xs text-center text-ink shadow-lg backdrop-blur transition-all">
-                  {noticeMsg}
-                </div>
-              )}
 
             </Drawer.Body>
           </Drawer.Dialog>
