@@ -53,7 +53,12 @@ pub async fn install_dependencies(app_handle: AppHandle) -> Result<(), String> {
         }
     };
 
-    if node_ok && dsh_ok {
+    // pnpm 是 dsh plugin 子命令的运行时依赖（v0.3.0 起随环境安装）；老版本
+    // 升级后 `installed` 已为 true 会跳过环境安装，捆绑 pnpm 可能从未落盘，
+    // 需一并纳入"已就绪"判定，缺失时由 workflow::install 按任务补齐。
+    let pnpm_ok = download::Pnpm.check_installed(&app_handle);
+
+    if node_ok && dsh_ok && pnpm_ok {
         log::debug!("Dependencies already installed and up to date, skipping installation");
         let mut setting = config::get_store_dat_setting(&app_handle);
         if !setting.installed {
