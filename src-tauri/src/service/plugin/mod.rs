@@ -4,11 +4,14 @@
 //! 会在 `$DSH_HOME/profiles/web` 初始化 profile 并执行 `pnpm add`，随后把声明了
 //! `dsh.bundle` 的依赖写入 profile 的 bundles 层，使插件在下次启动时加载。
 //! 进程输出逐行通过 `preinstall-log` 事件实时推送给前端日志面板。
+//! 调用 dsh 前会先按需补齐捆绑 pnpm（老版本升级后可能缺失，见 [`ensure_pnpm`]）。
 //!
 //! 新增预装插件只需往 [`PREINSTALL`] 静态清单追加一项，界面与安装逻辑自动生效。
 
 use crate::config;
 use crate::service::cli;
+use crate::service::download;
+use crate::service::download::Installable;
 use crate::service::workflow;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -205,6 +208,18 @@ pub async fn install(app_handle: &AppHandle, ids: &[String]) -> Result<(), Strin
         return Err("HARNESS_NOT_FOUND: dsh CLI missing".to_string());
     }
 
+    let window = app_handle
+        .get_webview_window("main")
+        .ok_or("WINDOW_NOT_FOUND: main window missing")?;
+
+    // 老版本升级场景自愈（issue #15）：升级后 `installed` 已为 true，首启的
+    // 环境安装流程会被跳过，而 v0.3.0 新增的捆绑 pnpm 从未落盘；`dsh plugin
+    // add` 内部经 pnpm 拉取依赖，缺 pnpm 时预装插件必然失败（pnpm shim 直接
+    // 报 `[pnpm] pnpm not found ...` 并退出码 1）。这里在调用 dsh 前按需补齐
+    // 捆绑 pnpm（用户 PATH 已有 pnpm 时跳过）；node/dsh 缺失时走上方明确报错，
+    // 由正常安装流程自愈。
+    ensure_pnpm(app_handle, &window).await?;
+
     // 新增/变更 bundle 需要服务重启才会加载：安装前先停掉正在运行的服务，
     // 后续 launch 会以全新进程加载新插件（首次安装场景服务尚未启动，跳过）。
     if workflow::utils::is_dsh_running(config::get_store_dat_setting(app_handle).port).await {
@@ -213,10 +228,6 @@ pub async fn install(app_handle: &AppHandle, ids: &[String]) -> Result<(), Strin
             log::warn!("failed to stop harness before preinstall: {e}");
         }
     }
-
-    let window = app_handle
-        .get_webview_window("main")
-        .ok_or("WINDOW_NOT_FOUND: main window missing")?;
 
     // 子进程环境：DSH_HOME 指向应用数据目录，PATH 前置 shim 与 node 目录，
     // 关闭颜色输出让日志面板保持纯文本。
@@ -281,6 +292,46 @@ pub async fn install(app_handle: &AppHandle, ids: &[String]) -> Result<(), Strin
     }
 
     log::info!("Preinstall plugins installed successfully: {ids:?}");
+    Ok(())
+}
+
+/// 确保捆绑 pnpm 已安装：缺失时下载并解压到 `dependencies/pnpm`。
+///
+/// 供 [`install`] 在 `dsh plugin add` 之前调用——dsh 的 plugin 子命令内部会
+/// 转发 pnpm 拉取依赖。`Pnpm::check_installed` 已实现"用户 PATH 已有 pnpm 则
+/// 视为已安装"的语义，与 pnpm shim 的"用户优先"策略保持一致；下载/解压期间
+/// 通过 `preinstall-log` 事件转发提示行，让预装日志面板对用户可见（pnpm 为
+/// 纯 JS 发行包，体积小，正常秒级完成）。
+async fn ensure_pnpm(app_handle: &AppHandle, window: &WebviewWindow) -> Result<(), String> {
+    if download::Pnpm.check_installed(app_handle) {
+        return Ok(());
+    }
+
+    let _ = window.emit(
+        PREINSTALL_LOG_EVENT,
+        PreinstallLogPayload {
+            line: "[pnpm] bundled pnpm not found, downloading before plugin install".to_string(),
+        },
+    );
+
+    // 2 个阶段：下载 + 解压。ProgressTracker 对外发 `install-progress` 事件
+    // （主安装界面监听，预装面板不监听、无害忽略），提示行走 preinstall-log。
+    let tracker = download::ProgressTracker::new(window, 2);
+    let url = download::Pnpm.get_download_url()?;
+    let name = url.split('/').next_back().unwrap_or(&url).to_string();
+    let buffer = download::download_file(&tracker, url)
+        .await
+        .map_err(|e| format!("PNPM_DOWNLOAD_FAILED: {e}"))?;
+    let dest = download::Pnpm.get_install_path(app_handle);
+    download::ensure_extract(&tracker, name, buffer, dest)
+        .map_err(|e| format!("PNPM_EXTRACT_FAILED: {e}"))?;
+
+    let _ = window.emit(
+        PREINSTALL_LOG_EVENT,
+        PreinstallLogPayload {
+            line: "[pnpm] bundled pnpm ready".to_string(),
+        },
+    );
     Ok(())
 }
 
