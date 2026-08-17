@@ -40,10 +40,7 @@ pub fn is_port_in_use(port: u16) -> bool {
         "127.0.0.1:0".parse().unwrap()
     });
 
-    match TcpStream::connect_timeout(&addr, Duration::from_millis(100)) {
-        Ok(_) => true,   // 连接成功，端口被占用（有服务在监听）
-        Err(_) => false, // 连接失败或超时，端口未被占用
-    }
+    TcpStream::connect_timeout(&addr, Duration::from_millis(100)).is_ok()
 }
 
 /// 在独立线程中读取子进程的输出，同时写入日志文件

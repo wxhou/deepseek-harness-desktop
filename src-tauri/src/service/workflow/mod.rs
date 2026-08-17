@@ -352,9 +352,9 @@ pub async fn install(
         stop(app_handle.clone()).await?;
     } else {
         log::warn!("Harness service not responding, force cleaning dsh processes");
-        kill_port_holder(config::get_store_dat_setting(&app_handle).port);
+        kill_port_holder(config::get_store_dat_setting(app_handle).port);
         #[cfg(windows)]
-        kill_dsh_processes(&config::get_base_dir(&app_handle));
+        kill_dsh_processes(&config::get_base_dir(app_handle));
         tokio::time::sleep(std::time::Duration::from_millis(800)).await;
     }
 
@@ -389,7 +389,7 @@ pub async fn install(
         tracker.start_phase("download", &format!("{} {}", config::i18n::t("install.downloading"), task.title()));
         let url = task.get_download_url()?;
         log::debug!("Download URL: {}", url);
-        let name = url.split('/').last().unwrap().to_string();
+        let name = url.split('/').next_back().unwrap().to_string();
         log::debug!("File name: {}", name);
         let buffer = download::download_file(&tracker, url).await?;
         log::info!("Download completed, file size: {} bytes", buffer.len());

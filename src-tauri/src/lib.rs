@@ -87,16 +87,14 @@ fn tray<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<()> {
 
     fn handle_tray_icon_event<R: Runtime>(tray: &tauri::tray::TrayIcon<R>, event: &TrayIconEvent) {
         let app = tray.app_handle();
-        match event {
-            TrayIconEvent::Click {
-                button: MouseButton::Left,
-                ..
-            } => {
-                if let Some(window) = app.get_webview_window("main") {
-                    show_window(&window);
-                }
+        if let TrayIconEvent::Click {
+            button: MouseButton::Left,
+            ..
+        } = event
+        {
+            if let Some(window) = app.get_webview_window("main") {
+                show_window(&window);
             }
-            _ => {}
         }
     }
 
@@ -107,7 +105,7 @@ fn tray<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<()> {
         .show_menu_on_left_click(false)
         .tooltip("Deepseek Harness Desktop")
         .on_menu_event(move |app, event| handle_menu_event(app, &event))
-        .on_tray_icon_event(move |tray, event| handle_tray_icon_event(&tray, &event))
+        .on_tray_icon_event(move |tray, event| handle_tray_icon_event(tray, &event))
         .build(app)?;
 
     Ok(())
@@ -194,7 +192,7 @@ fn builder() -> tauri::Builder<tauri::Wry> {
                     _ => true,
                 })
                 .build()?;
-            tray(&app.handle())?;
+            tray(app.handle())?;
             setup(app.handle().clone());
             Ok(())
         })
