@@ -214,12 +214,20 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     envs.insert("NO_COLOR".to_string(), "1".to_string());
     envs.insert("DSH_WEB_PORT".to_string(), setting.port.to_string());
 
-    // 扩展 PATH，让 dsh 及其子进程能找到 node
+    // 扩展 PATH，让 dsh 及其子进程能找到 node；Windows 上再注入 Git Bash 的
+    // bin 目录：persistent bash（--noprofile --norc）不执行 profile 脚本、PATH
+    // 完全继承服务进程，若不含 Git 的 usr/bin，ls/sed/find 等 coreutils 全会
+    // `command not found`（MSYS 运行时在部分环境下不会自动补 /usr/bin）。
     if let Some(node_dir) = node_binary_path.parent() {
         if let Some(existing_path) = std::env::var_os("PATH") {
             let mut paths = vec![node_dir.to_path_buf()];
+            paths.extend(win_inspector::git_bash_bin_dirs());
             paths.extend(std::env::split_paths(&existing_path));
             if let Ok(new_path) = std::env::join_paths(paths) {
+                log::info!(
+                    "harness service PATH built: {}",
+                    new_path.to_string_lossy()
+                );
                 envs.insert("PATH".to_string(), new_path.to_string_lossy().into_owned());
             }
         }
