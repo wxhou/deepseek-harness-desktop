@@ -100,3 +100,75 @@ html[data-theme="light"] {
     font-size: 14px;
   }
 }
+
+/* ── 顶部导航栏（壳层 ShellNavBar）────────────────────────────
+   与 dsh-tauri 插件导航栏视觉一致：44px、无边框、主题色按钮。
+   插件接管（dsh://tauri-ready）后该栏隐藏，插件在 iframe 内渲染同款。 */
+.dsh-tauri-nav {
+  --dsh-tauri-ink: #f9fafb;
+  --dsh-tauri-muted: #adb2b8;
+  --dsh-tauri-hover: rgba(255, 255, 255, 0.08);
+  --dsh-tauri-active: rgba(255, 255, 255, 0.12);
+  --dsh-tauri-line: rgba(255, 255, 255, 0.12);
+  --dsh-tauri-danger: #f25a5a;
+
+  height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 6px;
+  box-sizing: border-box;
+  background: rgb(21, 21, 23);
+  border-bottom: 1px solid var(--dsh-tauri-line);
+  user-select: none;
+  -webkit-user-select: none;
+}
+html[data-theme="light"] .dsh-tauri-nav--shell {
+  --dsh-tauri-ink: #0f1115;
+  --dsh-tauri-muted: #61666b;
+  --dsh-tauri-hover: rgba(0, 0, 0, 0.06);
+  --dsh-tauri-active: rgba(0, 0, 0, 0.1);
+  --dsh-tauri-line: rgba(0, 0, 0, 0.12);
+  background: rgb(255, 255, 255);
+}
+/* 壳层导航栏：流内布局（插件栏是 fixed，这里覆盖为相对定位占满宽度） */
+.dsh-tauri-nav--shell {
+  position: relative;
+  width: 100%;
+  flex: none;
+}
+.dsh-tauri-nav__btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--dsh-tauri-ink);
+  cursor: default;
+  outline: none;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+.dsh-tauri-nav__btn:hover {
+  background: var(--dsh-tauri-hover);
+}
+.dsh-tauri-nav__btn:active {
+  background: var(--dsh-tauri-active);
+}
+.dsh-tauri-nav__btn[aria-disabled='true'],
+.dsh-tauri-nav__btn:disabled {
+  color: var(--dsh-tauri-muted);
+  background: transparent;
+}
+.dsh-tauri-nav__btn--danger:hover {
+  background: rgba(242, 90, 90, 0.16);
+  color: var(--dsh-tauri-danger);
+}
+.dsh-tauri-nav__drag {
+  flex: 1;
+  align-self: stretch;
+  min-width: 0;
+}

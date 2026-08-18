@@ -103,5 +103,9 @@
   "messages.start_failed": "启动服务失败",
   "messages.stop_failed": "停止服务失败",
   "messages.restarting": "正在重启服务...",
-  "messages.logs_cleared": "日志已清空"
+  "messages.logs_cleared": "日志已清空",
+  "nav.minimize": "最小化",
+  "nav.maximize": "最大化",
+  "nav.background": "后台化"
 }
+

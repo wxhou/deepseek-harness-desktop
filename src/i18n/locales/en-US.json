@@ -103,5 +103,9 @@
   "messages.start_failed": "Failed to start service",
   "messages.stop_failed": "Failed to stop service",
   "messages.restarting": "Restarting service...",
-  "messages.logs_cleared": "Logs cleared"
+  "messages.logs_cleared": "Logs cleared",
+  "nav.minimize": "Minimize",
+  "nav.maximize": "Maximize",
+  "nav.background": "Background"
 }
+

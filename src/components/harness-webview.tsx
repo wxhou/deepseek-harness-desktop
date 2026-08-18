@@ -4,10 +4,12 @@ import { useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useStore } from 'valtio-define'
 import { useIframeShim } from '@/hooks/use-iframe-shim'
+import { useIframeTauri } from '@/hooks/use-iframe-tauri'
 import { harness } from '../store/modules/harness'
 import Loadable from './loadable'
 import PreinstallSetup from './preinstall-setup'
 import Setup from './setup'
+import ShellNavBar from './shell-nav-bar'
 
 /**
  * 主区域视图：安装/错误态渲染 Setup，
@@ -28,10 +30,12 @@ export default function HarnessWebview() {
   const iframeRef = useRef<HTMLIFrameElement>(null)
 
   useIframeShim(iframeRef)
+  const isTauriPluginNavActive = useIframeTauri(iframeRef)
 
   if (status === 'error') {
     return (
       <main className="relative flex-1 bg-canvas">
+        <ShellNavBar />
         <Setup />
       </main>
     )
@@ -41,6 +45,7 @@ export default function HarnessWebview() {
   if (status === 'preinstall') {
     return (
       <main className="relative w-full bg-canvas">
+        <ShellNavBar />
         <PreinstallSetup />
       </main>
     )
@@ -49,6 +54,7 @@ export default function HarnessWebview() {
   if (status !== 'ready') {
     return (
       <main className="relative w-full bg-canvas">
+        <ShellNavBar />
         <Setup />
       </main>
     )
@@ -58,30 +64,38 @@ export default function HarnessWebview() {
     <main className="relative flex-1 bg-canvas">
       {serviceHealthy
         ? (
-            <iframe
-              key={iframeKey}
-              ref={iframeRef}
-              className="block h-full w-full border-none bg-load-bg"
-              src={iframeSrc}
-              allow="clipboard-read; clipboard-write; camera; microphone; geolocation; display-capture; autoplay; encrypted-media; fullscreen; notifications *"
-              sandbox="allow-same-origin allow-scripts allow-popups allow-forms allow-modals allow-downloads allow-storage-access-by-user-activation"
-              onLoad={harness.markIframeLoaded}
-              onError={harness.markIframeError}
-              title={t('app.open_editor')}
-            />
+            <>
+              {!isTauriPluginNavActive && <ShellNavBar />}
+              <iframe
+                key={iframeKey}
+                ref={iframeRef}
+                className="block h-full w-full border-none bg-load-bg"
+                src={iframeSrc}
+                allow="clipboard-read; clipboard-write; camera; microphone; geolocation; display-capture; autoplay; encrypted-media; fullscreen; notifications *"
+                sandbox="allow-same-origin allow-scripts allow-popups allow-forms allow-modals allow-downloads allow-storage-access-by-user-activation"
+                onLoad={harness.markIframeLoaded}
+                onError={harness.markIframeError}
+                title={t('app.open_editor')}
+              />
+            </>
           )
         : (
             <div className="absolute inset-0 z-[1]">
+              <ShellNavBar />
               <Loadable subtitle={t('status.loading')} />
             </div>
           )}
       {serviceHealthy && iframeError && (
-        <Loadable
-          icon={CircleExclamation}
-          title={t('ui.iframe_error')}
-          errorMsg={t('ui.ensure_running', { url: serviceUrl })}
-          onRetry={harness.refreshIframe}
-        />
+        <>
+          <ShellNavBar />
+          <Loadable
+            icon={CircleExclamation}
+            title={t('ui.iframe_error')}
+            errorMsg={t('ui.ensure_running', { url: serviceUrl })}
+            onRetry={harness.refreshIframe}
+          />
+        </>
+
       )}
     </main>
   )

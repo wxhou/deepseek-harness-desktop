@@ -112,7 +112,9 @@ pub fn build_main_window(app: &tauri::AppHandle<Wry>) -> tauri::Result<tauri::We
             .inner_size(1280.0, 840.0)
             .min_inner_size(860.0, 620.0)
             .resizable(true)
-            .decorations(true)
+            // 无系统标题栏：窗口 chrome 由壳层 ShellNavBar（插件未接管时）或
+            // dsh-tauri 插件导航栏（接管时）提供，两者样式一致
+            .decorations(false)
             // 恢复 iframe 内 HTML5 拖拽（拖入图片/拖动元素）：
             // Tauri 默认注册 wry drag_drop_handler → WebView2 SetAllowExternalDrop(false)
             // 并注入 IDropTarget 接管拖放，iframe 内拖拽被禁用。
