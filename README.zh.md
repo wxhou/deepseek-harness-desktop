@@ -103,4 +103,4 @@ Harness 发行版由 [deepseek-harness-pkg](https://github.com/hairyf/deepseek-h
 
 ## License
 
-[MIT](./LICENSE) © deepseek-harness-desktop contributors
+[MIT](./LICENSE)，附加[非商用条款](./LICENSE.details) © deepseek-harness-desktop contributors
