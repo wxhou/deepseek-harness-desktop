@@ -13,28 +13,29 @@ use super::preset::load_presets;
 pub(crate) const PREINSTALL_PROFILE: &str = "web";
 
 /// 用于强类型解析 profile 下 package.json 的辅助结构
+/// （字段 pub(crate)：供 watch 模块解析已安装插件清单复用）
 #[derive(Deserialize)]
 pub(crate) struct ProfilePackageJson {
     #[serde(default)]
-    dependencies: HashMap<String, String>,
+    pub(crate) dependencies: HashMap<String, String>,
     #[serde(default)]
-    dsh: Option<ProfileDshSection>,
+    pub(crate) dsh: Option<ProfileDshSection>,
 }
 
 #[derive(Deserialize)]
 pub(crate) struct ProfileDshSection {
     #[serde(default)]
-    profile: Option<ProfileInner>,
+    pub(crate) profile: Option<ProfileInner>,
 }
 
 #[derive(Deserialize)]
 pub(crate) struct ProfileInner {
     #[serde(default)]
-    bundles: Vec<String>,
+    pub(crate) bundles: Vec<String>,
 }
 
 /// 预装插件所在的 profile 目录（$DSH_HOME/profiles/web）
-fn profile_dir(app_handle: &AppHandle) -> PathBuf {
+pub(crate) fn profile_dir(app_handle: &AppHandle) -> PathBuf {
     config::get_dsh_data_path(app_handle)
         .join("profiles")
         .join(PREINSTALL_PROFILE)

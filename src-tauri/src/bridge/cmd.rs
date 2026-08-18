@@ -206,6 +206,14 @@ pub async fn open_preinstall_repo(app_handle: AppHandle, id: String) -> Result<(
         .map_err(|e| e.to_string())
 }
 
+/// 当前 profile 已安装插件列表（含解析后的元信息），`use-dsh-plugins` 首次加载用；
+/// 之后 Rust 侧监控插件文件，变化时通过 `dsh-plugins-updated` 事件实时推送。
+#[tauri::command]
+pub fn get_dsh_plugins(app_handle: AppHandle) -> Vec<plugin::DshPlugin> {
+    plugin::watch::list(&app_handle)
+}
+
+
 /// 健康检查（通过 Rust 代理，避免 WebView CORS 问题）
 #[tauri::command]
 pub async fn proxy_health_check(app_handle: AppHandle) -> Result<String, String> {
