@@ -40,9 +40,10 @@
 
 首次启动引导中提供的插件，按需勾选安装：
 
-- [dsh-win-terminal-inspector](https://github.com/clearkurt/dsh-win-terminal-inspector) — Windows 极简模式修复项；仅 Windows 列出
-- [dsh-market](https://github.com/dsh-market/dsh-market) — 插件市场；首次启动时推荐并默认
-- [dsh-notification](https://github.com/omdsh-dev/dsh-notification) — 回合完成桌面通知
+- [dsh-win-terminal-inspector](https://github.com/clearkurt/dsh-win-terminal-inspector) — Windows 极简模式修复项：注入 persistent shell 必需的 win32 进程监视
+- [dsh-tauri](https://github.com/hairyf/dsh-tauri) — 桌面端消息桥：提供与 Tauri 2 外壳的通信通道（推荐）
+- [dsh-market](https://github.com/dsh-market/dsh-market) — 可视化插件市场：浏览、搜索并一键安装社区插件（推荐）
+- [dsh-notification](https://github.com/omdsh-dev/dsh-notification) — 回合完成时桌面通知：按结果分别开关，支持包含/排除关键词规则
 
 ## 快速开始
 
