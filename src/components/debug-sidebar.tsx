@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+// import type { DshPlugin } from '../hooks/use-dsh-plugins'
 import { ArrowRotateRight, ArrowsRotateRight, ArrowUpRightFromSquare, Copy, Folder, Power } from '@gravity-ui/icons'
 import {
   Button,
@@ -14,7 +15,9 @@ import {
 import { invoke } from '@tauri-apps/api/core'
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+// import { If } from 'react-if-lite'
 import { useStore } from 'valtio-define'
+// import { useDshPlugins } from '../hooks/use-dsh-plugins'
 import { harness } from '../store/modules/harness'
 import { setting } from '../store/modules/setting'
 import { toast } from '../utils/toast'
@@ -78,6 +81,7 @@ export default function DebugSidebar() {
   const { t, i18n } = useTranslation()
   const { sidebarOpen } = useStore(setting)
   const { serviceRunning, busyAction, preinstall } = useStore(harness)
+  // const { plugins, loading: pluginsLoading, error: pluginsError, refresh: refreshPlugins } = useDshPlugins()
   const [info, setInfo] = useState<RuntimeInfo | null>(null)
   const [cliLinkEnabled, setCliLinkEnabled] = useState(true)
   const [port, setPort] = useState(3080)
@@ -242,6 +246,22 @@ export default function DebugSidebar() {
       setBusy(null)
     }
   }
+
+  // /** 打开插件仓库：URL 由 Rust 侧从解析结果解析（不信任前端入参） */
+  // async function openPluginRepo(plugin: DshPlugin) {
+  //   if (busy)
+  //     return
+  //   setBusy('openPluginRepo')
+  //   try {
+  //     await invoke('open_plugin_repo', { id: plugin.id })
+  //   }
+  //   catch (err) {
+  //     console.error('[DebugSidebar] failed to open plugin repo:', err)
+  //   }
+  //   finally {
+  //     setBusy(null)
+  //   }
+  // }
 
   return (
     <Drawer.Root>
@@ -480,6 +500,81 @@ export default function DebugSidebar() {
                   {t('preinstall.open_preset')}
                 </Button>
               </SectionCard>
+
+              {/* 已安装插件（Rust 侧文件监控，变化时实时同步） */}
+              {/* <SectionCard>
+                <SectionTitle
+                  action={(
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      isIconOnly
+                      className="size-6 min-w-6"
+                      aria-label={t('app.refresh')}
+                      onPress={refreshPlugins}
+                      isDisabled={pluginsLoading}
+                    >
+                      {pluginsLoading ? <Spinner size="sm" color="current" /> : <ArrowsRotateRight className="size-3.5" />}
+                    </Button>
+                  )}
+                >
+                  {t('plugins.title')}
+                </SectionTitle>
+
+                <If cond={pluginsLoading && plugins.length === 0}>
+                  <p className="text-xs text-muted">{t('plugins.loading')}</p>
+                </If>
+                <If cond={pluginsError}>
+                  <p className="text-xs text-danger">{t('plugins.error')}</p>
+                </If>
+                <If cond={!pluginsLoading && !pluginsError && plugins.length === 0}>
+                  <p className="text-xs text-muted">{t('plugins.empty')}</p>
+                </If>
+
+                <ul className="space-y-0.5">
+                  {plugins.map(plugin => (
+                    <li
+                      key={plugin.id}
+                      className="flex items-center justify-between gap-2 border-b border-line/30 py-1 text-xs last:border-b-0"
+                    >
+                      <span className="min-w-0">
+                        <span className="block truncate font-medium text-ink">{plugin.name}</span>
+                        <If cond={plugin.version}>
+                          <span className="block truncate font-mono text-[10px] text-muted/70">
+                            v
+                            {plugin.version}
+                          </span>
+                        </If>
+                      </span>
+                      <span className="flex shrink-0 items-center gap-1">
+                        <If cond={plugin.bundled}>
+                          <Chip size="sm" variant="soft" color="accent" className="font-medium">
+                            {t('plugins.bundled')}
+                          </Chip>
+                        </If>
+                        <If cond={plugin.recommended}>
+                          <Chip size="sm" variant="soft" color="success" className="font-medium">
+                            {t('preinstall.recommend')}
+                          </Chip>
+                        </If>
+                        <If cond={Boolean(plugin.repo_url)}>
+                          <Button
+                            isIconOnly
+                            size="sm"
+                            variant="ghost"
+                            className="size-6 min-w-6 rounded-md"
+                            aria-label={t('preinstall.open_repo', { name: plugin.name })}
+                            onPress={() => openPluginRepo(plugin)}
+                            isDisabled={busy === 'openPluginRepo'}
+                          >
+                            <CircleInfo className="size-3.5" />
+                          </Button>
+                        </If>
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </SectionCard> */}
 
               {/* 日志 */}
               <SectionCard>
