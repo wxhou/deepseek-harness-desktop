@@ -6,12 +6,12 @@ import { useStore } from 'valtio-define'
 import { useIframeShim } from '@/hooks/use-iframe-shim'
 import { harness } from '../store/modules/harness'
 import Loadable from './loadable'
+import Navbar from './navbar'
 import PreinstallSetup from './preinstall-setup'
 import Setup from './setup'
-import ShellNavBar from './shell-nav-bar'
 
 /**
- * 主区域视图：壳层导航栏（ShellNavBar）常驻顶部，
+ * 主区域视图：壳层导航栏（Navbar）常驻顶部，
  * 安装/错误态渲染 Setup，就绪态渲染 iframe
  * （挂载后加载职责交给 dsh 应用内官方 boot 页，避免两套 loading 叠加）。
  * 状态与方法全部来自 harness store，不再接收 props。
@@ -34,7 +34,7 @@ export default function HarnessWebview() {
   if (status === 'error') {
     return (
       <main className="relative flex min-h-0 flex-1 flex-col bg-canvas">
-        <ShellNavBar />
+        <Navbar />
         <div className="min-h-0 flex-1">
           <Setup />
         </div>
@@ -46,7 +46,7 @@ export default function HarnessWebview() {
   if (status === 'preinstall') {
     return (
       <main className="relative flex min-h-0 w-full flex-col bg-canvas">
-        <ShellNavBar />
+        <Navbar />
         <div className="min-h-0 flex-1">
           <PreinstallSetup />
         </div>
@@ -57,7 +57,7 @@ export default function HarnessWebview() {
   if (status !== 'ready') {
     return (
       <main className="relative flex min-h-0 w-full flex-col bg-canvas">
-        <ShellNavBar />
+        <Navbar />
         <div className="min-h-0 flex-1">
           <Setup />
         </div>
@@ -67,7 +67,7 @@ export default function HarnessWebview() {
 
   return (
     <main className="relative flex min-h-0 flex-1 flex-col bg-canvas">
-      <ShellNavBar iframeRef={iframeRef} />
+      <Navbar iframeRef={iframeRef} />
 
       {/* iframe 区域：加载失败时用覆盖层展示重试（iframe 保持挂载，重试复用） */}
       <div className="relative min-h-0 flex-1">

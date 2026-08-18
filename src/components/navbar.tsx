@@ -41,12 +41,12 @@ import { useIframeTauri } from '../hooks/use-iframe-tauri'
  */
 const TAURI_PLUGIN_ID = 'dsh-tauri'
 
-interface ShellNavBarProps {
+interface NavbarProps {
   /** 就绪态 iframe；传入时启用左侧导航控制 */
   iframeRef?: RefObject<HTMLIFrameElement | null>
 }
 
-export default function ShellNavBar({ iframeRef }: ShellNavBarProps) {
+export default function Navbar({ iframeRef }: NavbarProps) {
   const { t } = useTranslation()
   const { plugins } = useDshPlugins()
   const { sidebarCollapsed, canGoBack, canGoForward, sendNav } = useIframeTauri(iframeRef)
@@ -70,13 +70,13 @@ export default function ShellNavBar({ iframeRef }: ShellNavBarProps) {
   }
 
   return (
-    <div className="shell-nav">
+    <div className="relative flex h-11 w-full flex-none select-none items-center gap-0.5 border-b border-line bg-canvas px-1.5 dark:bg-[#1b1b1c]">
       <If cond={iframeRef != null && tauriEnabled}>
         <Button
+          className="rounded-lg size-7"
           isIconOnly
           size="sm"
           variant="ghost"
-          className="shell-nav__btn"
           aria-label={t(sidebarCollapsed ? 'nav.sidebar_expand' : 'nav.sidebar_collapse')}
           onPress={() => { sendNav('sidebar:toggle') }}
         >
@@ -88,10 +88,10 @@ export default function ShellNavBar({ iframeRef }: ShellNavBarProps) {
         </Button>
 
         <Button
+          className="rounded-lg size-7"
           isIconOnly
           size="sm"
           variant="ghost"
-          className="shell-nav__btn"
           aria-label={t('nav.back')}
           isDisabled={!canGoBack}
           onPress={() => { sendNav('page:prev') }}
@@ -100,10 +100,10 @@ export default function ShellNavBar({ iframeRef }: ShellNavBarProps) {
         </Button>
 
         <Button
+          className="rounded-lg size-7"
           isIconOnly
           size="sm"
           variant="ghost"
-          className="shell-nav__btn"
           aria-label={t('nav.forward')}
           isDisabled={!canGoForward}
           onPress={() => { sendNav('page:next') }}
@@ -114,16 +114,16 @@ export default function ShellNavBar({ iframeRef }: ShellNavBarProps) {
 
       {/* 拖拽区：Tauri 原生拖拽（仅此元素带 data-tauri-drag-region，按钮不受影响） */}
       <div
-        className="shell-nav__drag"
+        className="min-w-0 flex-1 self-stretch"
         data-tauri-drag-region
         onDoubleClick={() => { void getCurrentWindow().toggleMaximize() }}
       />
 
       <Button
+        className="rounded-lg size-7"
         isIconOnly
         size="sm"
         variant="ghost"
-        className="shell-nav__btn"
         aria-label={t('nav.minimize')}
         onPress={() => { handleWindowAction('minimize') }}
       >
@@ -131,10 +131,10 @@ export default function ShellNavBar({ iframeRef }: ShellNavBarProps) {
       </Button>
 
       <Button
+        className="rounded-lg size-7"
         isIconOnly
         size="sm"
         variant="ghost"
-        className="shell-nav__btn"
         aria-label={t('nav.maximize')}
         onPress={() => { handleWindowAction('maximize') }}
       >
@@ -142,10 +142,10 @@ export default function ShellNavBar({ iframeRef }: ShellNavBarProps) {
       </Button>
 
       <Button
+        className="rounded-lg size-7 transition-colors enabled:hover:bg-danger/16 enabled:hover:text-danger"
         isIconOnly
         size="sm"
         variant="ghost"
-        className="shell-nav__btn shell-nav__btn--danger"
         aria-label={t('nav.background')}
         onPress={() => { handleWindowAction('background') }}
       >
