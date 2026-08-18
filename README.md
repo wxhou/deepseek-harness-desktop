@@ -25,7 +25,7 @@
   <samp><strong>English</strong> · <a href="./README.zh.md">中文</a></samp>
 </p>
 
-![Preview](docs/preivew.png)
+![Preview](docs/hero.png)
 
 ## Features
 
