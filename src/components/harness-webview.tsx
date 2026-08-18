@@ -1,7 +1,9 @@
 /* eslint-disable react/dom-no-unsafe-iframe-sandbox */
 import { CircleExclamation } from '@gravity-ui/icons'
+import { useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useStore } from 'valtio-define'
+import { useIframeShim } from '@/hooks/use-iframe-shim'
 import { harness } from '../store/modules/harness'
 import Loadable from './loadable'
 import PreinstallSetup from './preinstall-setup'
@@ -22,6 +24,10 @@ export default function HarnessWebview() {
     iframeSrc,
     serviceUrl,
   } = useStore(harness)
+
+  const iframeRef = useRef<HTMLIFrameElement>(null)
+
+  useIframeShim(iframeRef)
 
   if (status === 'error') {
     return (
@@ -54,9 +60,10 @@ export default function HarnessWebview() {
         ? (
             <iframe
               key={iframeKey}
+              ref={iframeRef}
               className="block h-full w-full border-none bg-load-bg"
               src={iframeSrc}
-              allow="clipboard-read; clipboard-write; camera; microphone; geolocation; display-capture; autoplay; encrypted-media; fullscreen; notifications"
+              allow="clipboard-read; clipboard-write; camera; microphone; geolocation; display-capture; autoplay; encrypted-media; fullscreen; notifications *"
               sandbox="allow-same-origin allow-scripts allow-popups allow-forms allow-modals allow-downloads allow-storage-access-by-user-activation"
               onLoad={harness.markIframeLoaded}
               onError={harness.markIframeError}

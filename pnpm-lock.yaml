@@ -49,6 +49,9 @@ importers:
       react-if-lite:
         specifier: ^0.1.0
         version: 0.1.0(react@19.2.8)
+      react-use:
+        specifier: ^17.6.1
+        version: 17.6.1(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       tailwind-variants:
         specifier: ^3.3.1
         version: 3.3.1(tailwind-merge@3.4.0)(tailwindcss@4.1.11)
