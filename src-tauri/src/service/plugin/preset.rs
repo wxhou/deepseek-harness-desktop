@@ -35,11 +35,26 @@ pub struct PreinstallPluginInfo {
     pub win_only: bool,
 }
 
-/// 定位预设插件清单文件：优先使用随安装包分发的资源目录，回落到源码开发目录
+/// 在资源根目录下查找预设清单：先探测扁平布局（exe 同级），再探测
+/// `resources/` 子目录布局（Tauri 2 的 `bundle.resources` 按相对路径保留前缀）。
+fn find_in_resource_root(root: &std::path::Path) -> Option<PathBuf> {
+    let flat = root.join(PRESET_PLUGINS_FILE);
+    if flat.exists() {
+        return Some(flat);
+    }
+    let nested = root.join("resources").join(PRESET_PLUGINS_FILE);
+    nested.exists().then_some(nested)
+}
+
+/// 定位预设插件清单文件：优先使用随安装包分发的资源目录，回落到源码开发目录。
+///
+/// 注意：Tauri 2 在 Windows 上 `resource_dir()` 恒等于 exe 所在目录，而安装包
+/// （NSIS/MSI）与开发产物都会把资源按 `resources/**` 前缀落盘到
+/// `{resource_dir}/resources/` 子目录，因此必须探测该子目录；`CARGO_MANIFEST_DIR`
+/// 是编译期路径，仅开发机有效（CI/发布版在本机不可用），只作最后兜底。
 fn preset_plugins_path(app_handle: &AppHandle) -> Option<PathBuf> {
     if let Ok(dir) = app_handle.path().resource_dir() {
-        let candidate = dir.join(PRESET_PLUGINS_FILE);
-        if candidate.exists() {
+        if let Some(candidate) = find_in_resource_root(&dir) {
             return Some(candidate);
         }
     }
@@ -115,5 +130,42 @@ mod tests {
         let ids: std::collections::HashSet<&str> =
             presets.iter().map(|p| p.id.as_str()).collect();
         assert_eq!(ids.len(), presets.len(), "preset ids must be unique");
+    }
+
+    #[test]
+    fn preset_discovery_finds_nested_resources_dir() {
+        // 回归：Windows 安装包（NSIS/MSI）与开发产物把资源按 `resources/**` 前缀
+        // 落盘到 `{resource_dir}/resources/` 子目录，此前只探测 exe 同级导致
+        // 发布版预装页恒为空清单。
+        let dir = std::env::temp_dir().join(format!("dsh-preset-layout-{}", std::process::id()));
+        let nested = dir.join("resources");
+        std::fs::create_dir_all(&nested).expect("create temp resources dir");
+        std::fs::write(
+            nested.join(PRESET_PLUGINS_FILE),
+            r#"[{"id":"x","spec":"y","name":"X","description":"","repoUrl":"u"}]"#,
+        )
+        .expect("write temp preset file");
+
+        let found = find_in_resource_root(&dir).expect("nested resources layout should be found");
+        assert_eq!(found, nested.join(PRESET_PLUGINS_FILE));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn preset_discovery_prefers_flat_layout() {
+        // 扁平布局（资源直接放在 exe 同级）仍应优先命中。
+        let dir = std::env::temp_dir().join(format!("dsh-preset-flat-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        std::fs::write(
+            dir.join(PRESET_PLUGINS_FILE),
+            r#"[{"id":"x","spec":"y","name":"X","description":"","repoUrl":"u"}]"#,
+        )
+        .expect("write temp preset file");
+
+        let found = find_in_resource_root(&dir).expect("flat layout should be found");
+        assert_eq!(found, dir.join(PRESET_PLUGINS_FILE));
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
