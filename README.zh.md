@@ -36,6 +36,15 @@
 - ⌨️ **命令行集成** — 安装后自动注册 `dsh` 命令（`*/bin`），新开终端即用。
 - 🧭 **首次启动引导** — 首次启动可选装推荐插件（如 dsh-market 插件市场）并实时查看安装日志；可随时跳过，之后也能从侧边栏重新打开。
 
+## 预设插件
+
+首次启动引导中提供的插件，按需勾选安装：
+
+- [dsh-win-terminal-inspector](https://github.com/clearkurt/dsh-win-terminal-inspector) — Windows 极简模式修复项：注入 persistent shell 必需的 win32 进程监视
+- [dsh-tauri](https://github.com/hairyf/dsh-tauri) — 桌面端消息桥：提供与 Tauri 2 外壳的通信通道（推荐）
+- [dsh-market](https://github.com/dsh-market/dsh-market) — 可视化插件市场：浏览、搜索并一键安装社区插件（推荐）
+- [dsh-notification](https://github.com/omdsh-dev/dsh-notification) — 回合完成时桌面通知：按结果分别开关，支持包含/排除关键词规则
+
 ## 快速开始
 
 从 [Releases](https://github.com/hairyf/deepseek-harness-desktop/releases) 下载对应平台安装包，安装后启动即可。
@@ -90,7 +99,6 @@ Harness 发行版由 [deepseek-harness-pkg](https://github.com/hairyf/deepseek-h
 
 - [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) — 上游 `dsh` agent 平台
 - [deepseek-harness-pkg](https://github.com/hairyf/deepseek-harness-pkg) — 打包好的 Harness 发行版（本应用下载源）
-- [dsh-market](https://github.com/dsh-market/dsh-market) — 插件市场，首次启动时作为推荐预装插件提供
 - [n8n-desktop](https://github.com/tangtao646/n8n-desktop) — 参考实现
 
 ## License

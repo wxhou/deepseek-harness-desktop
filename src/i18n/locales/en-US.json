@@ -41,6 +41,12 @@
   "preinstall.settings_hint": "Reopen the preset wizard to re-select or install recommended plugins.",
   "preinstall.open_preset": "Open Preset",
 
+  "plugins.title": "Installed Plugins",
+  "plugins.empty": "No plugins installed",
+  "plugins.loading": "Loading plugins…",
+  "plugins.error": "Failed to load plugins",
+  "plugins.bundled": "Loaded",
+
   "update.available": "A new version {{tag}} is available. Update now?",
   "update.now": "Update Now",
   "update.later": "Later",
@@ -103,5 +109,12 @@
   "messages.start_failed": "Failed to start service",
   "messages.stop_failed": "Failed to stop service",
   "messages.restarting": "Restarting service...",
-  "messages.logs_cleared": "Logs cleared"
+  "messages.logs_cleared": "Logs cleared",
+  "nav.sidebar_expand": "Expand sidebar",
+  "nav.sidebar_collapse": "Collapse sidebar",
+  "nav.back": "Back",
+  "nav.forward": "Forward",
+  "nav.minimize": "Minimize",
+  "nav.maximize": "Maximize",
+  "nav.background": "Background"
 }
