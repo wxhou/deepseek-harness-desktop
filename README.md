@@ -4,11 +4,11 @@
   </a>
 </p>
 
-<h1 align="center">DeepSeek Harness Desktop</h1>
+<h1 align="center">DeepSeek Harness 桌面版</h1>
 
 <p align="center">
-  Run <a href="https://github.com/deepseek-ai/deepseek-harness">DeepSeek Harness</a> on your desktop, instantly —<br />
-  no Node.js, no pnpm, no Docker. Download, install, go.
+  在桌面上一键运行 <a href="https://github.com/deepseek-ai/deepseek-harness">DeepSeek Harness</a> ——<br />
+  无需 Node.js、无需 pnpm、无需 Docker，下载即用。
 </p>
 
 <p align="center">
@@ -22,85 +22,85 @@
 </p>
 
 <p align="center">
-  <samp><strong>English</strong> · <a href="./README.zh.md">中文</a></samp>
+  <samp><a href="./README.en.md">English</a> · <strong>中文</strong></samp>
 </p>
 
-![Preview](docs/hero.png)
+![预览](docs/hero.png)
 
-## Features
+## 功能
 
-- ⚡️ **Zero setup** — First launch bootstraps the bundled Node runtime and Harness core automatically; a compatible local Node / Pnpm setup is reused as-is when present.
-- 🔄 **Self-healing core** — Every launch syncs with the latest upstream Harness release, so upstream fixes reach you without reinstalling.
-- 🔒 **Local & private by default** — Runs on `127.0.0.1:3080`. Profiles, sessions and settings stay on your machine; telemetry is off by default.
-- 🪶 **Native & lightweight** — A Tauri 2 shell (not Electron): smaller installers, lower memory, native windows. Windows / macOS / Linux, bilingual UI.
-- ⌨️ **CLI ready** — Registers `dsh` commands (`*/bin`) after install, ready in a new terminal.
-- 🧭 **First-run wizard** — On first launch, pick the recommended plugins (e.g. the dsh-market plugin store) and watch the install stream in real time; skip anytime and reopen later from the sidebar.
+- ⚡️ **零环境** — 首次启动自动装配内置 Node 运行时与 Harness 内核；本机已有兼容 Node / Pnpm 时直接复用，不修改已有的系统环境。
+- 🔄 **内核自愈** — 自动同步上游最新 Harness 版本，上游修复无需重新安装软件版本，打开即跟上。
+- 🔒 **纯本地 · 隐私默认** — 运行在 `127.0.0.1:3080`，profile / 会话 / 设置全部留在本机，默认关闭遥测。
+- 🪶 **原生轻量** — Tauri 2 外壳（非 Electron）：更小的安装包、更低的内存占用、原生窗口。Windows / macOS / Linux，中英双语界面。
+- ⌨️ **命令行集成** — 安装后自动注册 `dsh` 命令（`*/bin`），新开终端即用。
+- 🧭 **首次启动引导** — 首次启动可选装推荐插件并实时查看安装日志；随时跳过，之后也能从侧边栏重新打开。
 
-## Presets
+## 预设插件
 
-Plugins offered on the first-run wizard; select what you need and install on demand:
+首次启动引导中提供的插件，按需勾选安装：
 
-- [DSH Win Terminal Inspector](https://github.com/clearkurt/dsh-win-terminal-inspector) — Windows-only fix for Minimal mode
-- [DSH Tauri](https://github.com/hairyf/dsh-tauri) — desktop message bridge: a communication channel with the Tauri 2 shell (Recommended)
-- [DSH Market](https://github.com/dsh-market/dsh-market) — the visual plugin market: browse, search, and one-click install community plugins (Recommended)
-- [DSH Notification](https://github.com/omdsh-dev/dsh-notification) — desktop notifications when a turn finishes: per-outcome toggles plus include/exclude keyword rules
+- [DSH Win Terminal Inspector](https://github.com/clearkurt/dsh-win-terminal-inspector) — Windows 极简模式修复
+- [DSH Tauri](https://github.com/hairyf/dsh-tauri) — 桌面端消息桥：提供与 Tauri 2 外壳的通信通道（推荐）
+- [DSH Market](https://github.com/dsh-market/dsh-market) — 可视化插件市场：浏览、搜索并一键安装社区插件（推荐）
+- [DSH Notification](https://github.com/omdsh-dev/dsh-notification) — 回合完成时桌面通知：按结果分别开关，支持包含/排除关键词规则
 
-## Quick Start
+## 快速开始
 
-Download the installer for your platform from [Releases](https://github.com/hairyf/deepseek-harness-desktop/releases), install, and launch.
+从 [Releases](https://github.com/hairyf/deepseek-harness-desktop/releases) 下载对应平台安装包，安装后启动即可。
 
-The first run downloads the Node runtime and Harness core (~a few hundred MB) and takes you straight into the harness at `http://127.0.0.1:3080`. Everything after that runs locally — no network required.
+首次运行会下载 Node 运行时与 Harness 内核，随后直接进入 `http://127.0.0.1:3080` 的 Harness 界面；此后完全本地运行，无需联网。
 
-**Requirements:** Windows 10+ (64-bit) · macOS 10.15+ · Linux (AppImage) · network on first launch
+**系统要求：** Windows 10+（64 位）· macOS 10.15+ · Linux（AppImage）· 首次运行需要网络
 
-## Dev
+## 开发
 
-Want to get involved in the development? See [docs/DEVELOPMENT.md](./docs/DEVELOPMENT.md).
+想参与开发？参见 [docs/DEVELOPMENT.zh.md](./docs/DEVELOPMENT.zh.md)。
 
-## How It Works
+## 工作原理
 
 ```text
 ┌──────────────────────────────────────────────┐
 │ Tauri WebView (React)                        │
-│   setup state machine → progress → iframe    │
-│   loads the dsh web UI + sidebar controls    │
+│   安装状态机 → 下载进度 → iframe              │
+│   加载 dsh Web 界面 + 侧边栏控制              │
 └──────────────────────┬───────────────────────┘
-                       │ invoke commands + events
+                       │ invoke 命令 + 事件
 ┌──────────────────────┴───────────────────────┐
-│ Tauri Rust backend                           │
-│   service/download  installer + extraction   │
-│   service/workflow  dsh process lifecycle    │
-│   task              dsh health checks        │
+│ Tauri Rust 后端                              │
+│   service/download  安装器 + 解压             │
+│   service/workflow  dsh 进程生命周期          │
+│   task              dsh 健康检查              │
 └──────┬───────────────────────────┬───────────┘
        │                           │
-  runtime/ (Node.js v22.22.0)   dependencies/dsh/ (prebuilt bundle)
+  runtime/ (Node.js v22.22.0)   dependencies/dsh/ (发行版)
        └─────────────┬─────────────┘
                      ▼
    dsh --profile web --host 127.0.0.1 --port 3080
                      │  DSH_HOME=<app-data>/data/dsh
                      ▼
-        http://127.0.0.1:3080/  ← embedded UI
+        http://127.0.0.1:3080/  ← 内嵌界面
 ```
 
-The prebuilt Harness bundle is published by [deepseek-harness-pkg](https://github.com/hairyf/deepseek-harness-pkg). Every launch diffs the installed bundle against the latest release and re-downloads when outdated — keeping the local install when GitHub is unreachable.
+Harness 发行版由 [deepseek-harness-pkg](https://github.com/hairyf/deepseek-harness-pkg) 构建发布。每次启动都会对比最新发行版，本地过期时自动重新下载；GitHub 不可达时保留本地安装。
 
-## Notes
+## 说明
 
 > [!WARNING]
-> **Developer preview** — upstream `dsh` is evolving fast with breaking changes; this project tracks it closely.
+> **开发预览** — 上游 `dsh` 仍在快速迭代，存在破坏性变更；本项目同步跟随。
 
 > [!IMPORTANT]
-> **macOS Gatekeeper** — the app is not notarized; allow it once via System Settings → Privacy & Security → Open Anyway.
+> **macOS Gatekeeper** — 应用未公证，首次启动需在系统设置 → 隐私与安全性 → 仍要打开 放行一次。
 
 > [!NOTE]
-> **Security** — `dsh` can execute code locally. For learning / research / testing only; run it in a trusted, isolated environment.
+> **安全声明** — `dsh` 具备本地代码执行能力。仅供学习 / 研究 / 测试，请在可信、隔离的环境中使用。
 
-## Related
+## 相关项目
 
-- [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) — the upstream `dsh` agent platform
-- [deepseek-harness-pkg](https://github.com/hairyf/deepseek-harness-pkg) — prebuilt Harness bundles consumed by this app
-- [n8n-desktop](https://github.com/tangtao646/n8n-desktop) — reference implementation
+- [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) — 上游 `dsh` agent 平台
+- [deepseek-harness-pkg](https://github.com/hairyf/deepseek-harness-pkg) — 预打包 Harness 发行版（本应用下载源）
+- [n8n-desktop](https://github.com/tangtao646/n8n-desktop) — 参考实现
 
 ## License
 
-[MIT](./LICENSE) with a [Non-Commercial Condition](./LICENSE.details) © deepseek-harness-desktop contributors
+[MIT](./LICENSE)，附加[非商用条款](./LICENSE.details) © deepseek-harness-desktop contributors
