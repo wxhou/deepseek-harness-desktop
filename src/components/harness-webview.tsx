@@ -56,7 +56,7 @@ export default function HarnessWebview() {
               key={iframeKey}
               className="block h-full w-full border-none bg-load-bg"
               src={iframeSrc}
-              allow="clipboard-read; clipboard-write; camera; microphone; geolocation; display-capture; autoplay; encrypted-media; fullscreen"
+              allow="clipboard-read; clipboard-write; camera; microphone; geolocation; display-capture; autoplay; encrypted-media; fullscreen; notifications"
               sandbox="allow-same-origin allow-scripts allow-popups allow-forms allow-modals allow-downloads allow-storage-access-by-user-activation"
               onLoad={harness.markIframeLoaded}
               onError={harness.markIframeError}

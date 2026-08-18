@@ -29,12 +29,12 @@
 
 ## 功能
 
-- **零环境** — 首次启动自动装配内置 Node 运行时与 Harness 内核；本机已有兼容 Node / Pnpm 时直接复用，不碰你的系统环境。
-- **内核自愈** — 每次启动自动同步上游最新 Harness 版本，上游修复无需重新安装，打开即跟上。
-- **纯本地 · 隐私默认** — 运行在 `127.0.0.1:3080`，profile / 会话 / 设置全部留在本机，默认关闭遥测。
-- **原生轻量** — Tauri 2 外壳（非 Electron）：更小的安装包、更低的内存占用、原生窗口。Windows / macOS / Linux，中英双语界面。
-- **命令行集成** — 安装后自动注册 `dsh` 命令（`*/bin`），新开终端即用。
-- **首次启动引导** — 首次启动可选装推荐插件（如 dsh-market 插件市场）并实时查看安装日志；可随时跳过，之后也能从侧边栏重新打开。
+- ⚡️ **零环境** — 首次启动自动装配内置 Node 运行时与 Harness 内核；本机已有兼容 Node / Pnpm 时直接复用，不碰你的系统环境。
+- 🔄 **内核自愈** — 每次启动自动同步上游最新 Harness 版本，上游修复无需重新安装，打开即跟上。
+- 🔒 **纯本地 · 隐私默认** — 运行在 `127.0.0.1:3080`，profile / 会话 / 设置全部留在本机，默认关闭遥测。
+- 🪶 **原生轻量** — Tauri 2 外壳（非 Electron）：更小的安装包、更低的内存占用、原生窗口。Windows / macOS / Linux，中英双语界面。
+- ⌨️ **命令行集成** — 安装后自动注册 `dsh` 命令（`*/bin`），新开终端即用。
+- 🧭 **首次启动引导** — 首次启动可选装推荐插件（如 dsh-market 插件市场）并实时查看安装日志；可随时跳过，之后也能从侧边栏重新打开。
 
 ## 快速开始
 
@@ -44,15 +44,9 @@
 
 **系统要求：** Windows 10+（64 位）· macOS 10.15+ · Linux（AppImage）· 首次运行需要网络
 
-## 开发与构建
+## 开发
 
-```bash
-pnpm install      # 安装依赖
-pnpm tauri dev    # 本地开发
-pnpm tauri build  # 构建安装包
-```
-
-需要 Node.js 20+、Rust 1.77+、pnpm 9+，以及平台编译工具链（MSVC + WebView2 / Xcode CLT / WebKit2GTK）。
+想参与开发？参见 [docs/DEVELOPMENT.zh.md](./docs/DEVELOPMENT.zh.md)。
 
 ## 工作原理
 
@@ -79,13 +73,18 @@ pnpm tauri build  # 构建安装包
         http://127.0.0.1:3080/  ← 内嵌界面
 ```
 
-Harness 发行版由 [deepseek-harness-pkg](https://github.com/hairyf/deepseek-harness-pkg) 构建发布（发布契约见 [docs/PKG-CONTRACT.md](docs/PKG-CONTRACT.md)）。每次启动都会对比最新发行版，本地过期时自动重新下载；GitHub 不可达时保留本地安装。完整架构见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
+Harness 发行版由 [deepseek-harness-pkg](https://github.com/hairyf/deepseek-harness-pkg) 构建发布。每次启动都会对比最新发行版，本地过期时自动重新下载；GitHub 不可达时保留本地安装。
 
 ## 说明
 
-- **开发预览** — 上游 `dsh` 仍在快速迭代，存在破坏性变更；本项目同步跟随。
-- **macOS Gatekeeper** — 应用未公证，首次启动需在系统设置 → 隐私与安全性 → 仍要打开 放行一次。
-- **安全声明** — `dsh` 具备本地代码执行能力。仅供学习 / 研究 / 测试，请在可信、隔离的环境中使用。
+> [!WARNING]
+> **开发预览** — 上游 `dsh` 仍在快速迭代，存在破坏性变更；本项目同步跟随。
+
+> [!IMPORTANT]
+> **macOS Gatekeeper** — 应用未公证，首次启动需在系统设置 → 隐私与安全性 → 仍要打开 放行一次。
+
+> [!NOTE]
+> **安全声明** — `dsh` 具备本地代码执行能力。仅供学习 / 研究 / 测试，请在可信、隔离的环境中使用。
 
 ## 相关项目
 
