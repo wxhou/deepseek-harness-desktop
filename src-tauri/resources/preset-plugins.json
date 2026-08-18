@@ -1,5 +1,13 @@
 [
   {
+    "id": "dsh-tauri",
+    "spec": "github:hairyf/dsh-tauri",
+    "name": "DSH Tauri",
+    "description": "Native top nav bar for the desktop shell: sidebar/back/forward route control plus minimize/maximize/background window controls, driven by iframe events. · 桌面端顶部原生导航栏：侧边栏/后退/前进路由控制 + 最小化/最大化/后台化窗口控制（iframe 事件驱动，接管系统标题栏）。",
+    "repoUrl": "https://github.com/hairyf/dsh-tauri",
+    "recommended": true
+  },
+  {
     "id": "dsh-win-terminal-inspector",
     "spec": "github:clearkurt/dsh-win-terminal-inspector",
     "name": "Windows Terminal Inspector",
@@ -16,5 +24,14 @@
     "description": "Visual plugin market inside DeepSeek Harness — browse, search, and one-click install community plugins. · DSH 可视化插件市场：逛一逛，点一下，装好。",
     "repoUrl": "https://github.com/dsh-market/dsh-market",
     "recommended": true
+  },
+  {
+    "id": "dsh-notification",
+    "spec": "github:omdsh-dev/dsh-notification",
+    "name": "DSH Notification",
+    "description": "Desktop notifications when a turn finishes — per-outcome toggles plus include/exclude keyword rules, delivered via the browser Notification API. · 回合完成时桌面通知：按结果分别开关，支持包含/排除关键词规则，经浏览器 Notification API 弹出。",
+    "repoUrl": "https://github.com/omdsh-dev/dsh-notification",
+    "recommended": false,
+    "defaultChecked": true
   }
 ]

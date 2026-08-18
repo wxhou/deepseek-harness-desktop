@@ -71,6 +71,8 @@ pub struct PreinstallPlugin {
     pub recommended: bool,
     /// 是否为「修复」类项（前端渲染黄色 chip，默认勾选）
     pub fix: bool,
+    /// 无 chip 但默认勾选（首次引导直接勾上，不标「推荐」）
+    pub default_checked: bool,
     pub installed: bool,
 }
 
@@ -91,6 +93,7 @@ pub fn list(app_handle: &AppHandle) -> Vec<PreinstallPlugin> {
                 repo_url: p.repo_url,
                 recommended: p.recommended,
                 fix: p.fix,
+                default_checked: p.default_checked,
                 installed: is_installed,
             }
         })

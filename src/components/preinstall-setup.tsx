@@ -134,11 +134,11 @@ export default function PreinstallSetup() {
     void harness.loadPreinstallPlugins()
   }, [])
 
-  // 默认勾选：未安装的推荐插件 +「修复」类项（当前为 Windows 极简模式修复）。
+  // 默认勾选：未安装的推荐插件 +「修复」类项 + 无 chip 但标记默认勾选的项（如 dsh-notification）。
   // 派生计算而非在加载回调里 setState，避免与 store 的加载去重守卫竞争，
   // 保证插件到位后默认勾选必定生效（用户手动调整后以用户选择为准）。
   const effectiveSelected = !touched
-    ? new Set(preinstall.plugins.filter(p => !p.installed && (p.recommended || p.fix)).map(p => p.id))
+    ? new Set(preinstall.plugins.filter(p => !p.installed && (p.recommended || p.fix || p.defaultChecked)).map(p => p.id))
     : selected
 
   function toggle(id: string, checked: boolean) {
