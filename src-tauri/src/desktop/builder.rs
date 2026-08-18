@@ -7,10 +7,10 @@ use tauri::{
     ipc::Invoke,
     menu::{Menu, MenuEvent, MenuItem},
     tray::{MouseButton, TrayIconBuilder, TrayIconEvent},
-    Manager, Runtime, WebviewUrl, WebviewWindowBuilder, Wry,
+    Runtime, WebviewUrl, WebviewWindowBuilder, Wry,
 };
 
-use crate::core::utils::show_window;
+use crate::core::utils::show_main_window;
 use crate::desktop::window::{on_download, on_new_window};
 #[cfg(windows)]
 use crate::desktop::window::on_page_load;
@@ -62,11 +62,7 @@ pub fn tray<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<()> {
 
     fn handle_menu_event<R: Runtime>(app: &tauri::AppHandle<R>, event: &MenuEvent) {
         match event.id().as_ref() {
-            "open" => {
-                if let Some(window) = app.get_webview_window("main") {
-                    show_window(&window);
-                }
-            }
+            "open" => show_main_window(app),
             "quit" => {
                 app.exit(0);
             }
@@ -75,15 +71,12 @@ pub fn tray<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<()> {
     }
 
     fn handle_tray_icon_event<R: Runtime>(tray: &tauri::tray::TrayIcon<R>, event: &TrayIconEvent) {
-        let app = tray.app_handle();
         if let TrayIconEvent::Click {
             button: MouseButton::Left,
             ..
         } = event
         {
-            if let Some(window) = app.get_webview_window("main") {
-                show_window(&window);
-            }
+            show_main_window(tray.app_handle());
         }
     }
 
