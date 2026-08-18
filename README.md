@@ -34,6 +34,7 @@
 - **Local & private by default** — Runs on `127.0.0.1:3080`. Profiles, sessions and settings stay on your machine; telemetry is off by default.
 - **Native & lightweight** — A Tauri 2 shell (not Electron): smaller installers, lower memory, native windows. Windows / macOS / Linux, bilingual UI.
 - **CLI ready** — Registers `dsh` commands (`*/bin`) after install, ready in a new terminal.
+- **First-run wizard** — On first launch, pick the recommended plugins (e.g. the dsh-market plugin store) and watch the install stream in real time; skip anytime and reopen later from the sidebar.
 
 ## Quick Start
 
