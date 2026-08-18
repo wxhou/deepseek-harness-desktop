@@ -198,7 +198,8 @@ pub async fn skip_preinstall_plugins(app_handle: AppHandle) -> Result<(), String
 /// 在系统浏览器中打开预装插件的仓库地址（仅允许预装清单内的 id）
 #[tauri::command]
 pub async fn open_preinstall_repo(app_handle: AppHandle, id: String) -> Result<(), String> {
-    let url = plugin::repo_url_of(&id).ok_or_else(|| format!("PREINSTALL_INVALID_ID: {id}"))?;
+    let url = plugin::repo_url_of(&app_handle, &id)
+        .ok_or_else(|| format!("PREINSTALL_INVALID_ID: {id}"))?;
     app_handle
         .opener()
         .open_url(url, None::<&str>)
