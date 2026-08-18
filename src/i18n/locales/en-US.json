@@ -110,8 +110,11 @@
   "messages.stop_failed": "Failed to stop service",
   "messages.restarting": "Restarting service...",
   "messages.logs_cleared": "Logs cleared",
+  "nav.sidebar_expand": "Expand sidebar",
+  "nav.sidebar_collapse": "Collapse sidebar",
+  "nav.back": "Back",
+  "nav.forward": "Forward",
   "nav.minimize": "Minimize",
   "nav.maximize": "Maximize",
   "nav.background": "Background"
 }
-

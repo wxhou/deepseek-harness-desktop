@@ -1,79 +1,91 @@
 import type { RefObject } from 'react'
-import { getCurrentWindow } from '@tauri-apps/api/window'
 import { useState } from 'react'
 import { useEvent } from 'react-use'
 
 /**
- * dsh-tauri 插件桥：监听 iframe（dsh web UI）内插件发来的窗口控制事件。
+ * 壳层导航桥（宿主侧）：ShellNavBar 左侧三个控件的消息通道。
  *
- * 协议（iframe → 宿主，postMessage）：
- * - `{ source: 'dsh-tauri', type: 'dsh://tauri-ready' }`
- *   插件导航栏挂载完成 → 隐藏壳层自定义导航栏（ShellNavBar），由插件接管；
- * - `{ source: 'dsh-tauri', type: 'dsh://window-control', action }`
- *   action: minimize | maximize | background | drag-start，对应 Tauri 窗口操作。
+ * 协议（与 dsh-tauri 插件 / 桌面端 NAV_SHIM_JS 一致）：
+ * - 发送（宿主 → iframe）：`{ source: 'dsh-desktop', type }`
+ *   - `dsh://sidebar:toggle`  切换侧边栏
+ *   - `dsh://page:prev` / `dsh://page:next`  后退 / 前进
+ * - 接收（iframe → 宿主）：`{ source: 'dsh-nav-bridge', type, ... }`
+ *   - `dsh://sidebar:collapsed` `{ collapsed }` 侧边栏折叠状态
+ *   - `dsh://page:firsted` / `dsh://page:lasted` `{ firsted/lasted }`
+ *     历史边界（宿主据此禁用后退/前进按钮）
  *
- * 只在 iframe 直接发来的消息上生效（event.source 校验），与通知桥一致；
- * iframe 每次重新加载时恢复壳层导航栏（插件未挂载期间窗口仍有可用 chrome）。
- *
- * @returns tauriNavActive —— 插件导航栏是否已接管（壳层导航栏应隐藏）。
+ * 只在 iframe 直接发来的消息上生效（event.source 校验），与通知桥一致。
+ * iframeRef 为空（安装/错误/预装引导页）时只返回默认状态，不发送任何消息。
  */
-interface TauriControlMessage {
-  source?: 'dsh-tauri'
-  type?: 'dsh://tauri-ready' | 'dsh://window-control'
-  action?: 'minimize' | 'maximize' | 'background' | 'drag-start'
+
+/** 左侧导航控制动作（宿主 → iframe 命令）。 */
+export type ShellNavAction = 'sidebar:toggle' | 'page:prev' | 'page:next'
+
+/** 命令类型映射（消息 type 与 action 一一对应）。 */
+const COMMAND_TYPES: Record<ShellNavAction, string> = {
+  'sidebar:toggle': 'dsh://sidebar:toggle',
+  'page:prev': 'dsh://page:prev',
+  'page:next': 'dsh://page:next',
 }
 
-export function useIframeTauri(iframeRef: RefObject<HTMLIFrameElement | null>): boolean {
-  // 插件导航栏是否已接管（决定壳层 ShellNavBar 的显隐）
-  const [tauriNavActive, setTauriNavActive] = useState(false)
+/** iframe 导航桥回报协议。 */
+interface NavBridgeMessage {
+  source?: 'dsh-nav-bridge'
+  type?: 'dsh://sidebar:collapsed' | 'dsh://page:firsted' | 'dsh://page:lasted'
+  collapsed?: boolean
+  firsted?: boolean
+  lasted?: boolean
+}
 
-  function handleMessage(event: MessageEvent<TauriControlMessage>) {
+export function useIframeTauri(
+  iframeRef: RefObject<HTMLIFrameElement | null> | undefined,
+): {
+  sidebarCollapsed: boolean
+  /** 可否后退（!firsted）；默认不可，收到桥回报后更新 */
+  canGoBack: boolean
+  /** 可否前进（!lasted）；默认不可，收到桥回报后更新 */
+  canGoForward: boolean
+  sendNav: (action: ShellNavAction) => void
+} {
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  // 历史边界默认置位（按钮禁用），等待 iframe 内导航桥回报后更新
+  const [pageEdge, setPageEdge] = useState({ firsted: true, lasted: true })
+
+  function handleMessage(event: MessageEvent<NavBridgeMessage>) {
     const data = event.data
-    if (!data || typeof data !== 'object' || data.source !== 'dsh-tauri') {
+    if (!data || typeof data !== 'object' || data.source !== 'dsh-nav-bridge') {
       return
     }
     // 只接受 DSH 直接 iframe 发来的消息；不兼容多层嵌套 iframe。
-    if (event.source !== iframeRef.current?.contentWindow) {
+    if (event.source !== iframeRef?.current?.contentWindow) {
       return
     }
-
-    if (data.type === 'dsh://tauri-ready') {
-      // 插件导航栏已就绪：隐藏壳层自定义导航栏，插件栏接管窗口 chrome
-      setTauriNavActive(true)
-      // ack：插件据此停止重试（握手收敛）
-      iframeRef.current?.contentWindow?.postMessage(
-        { source: 'dsh-tauri', type: 'dsh://tauri-ack' },
-        '*',
-      )
-      return
-    }
-
-    if (data.type !== 'dsh://window-control') {
-      return
-    }
-
-    const appWindow = getCurrentWindow()
-    switch (data.action) {
-      case 'minimize':
-        void appWindow.minimize().catch(error => console.error('[tauri-nav] minimize failed:', error))
+    switch (data.type) {
+      case 'dsh://sidebar:collapsed':
+        setSidebarCollapsed(Boolean(data.collapsed))
         break
-      case 'maximize':
-        void appWindow.toggleMaximize().catch(error => console.error('[tauri-nav] toggleMaximize failed:', error))
+      case 'dsh://page:firsted':
+        setPageEdge(prev => ({ ...prev, firsted: Boolean(data.firsted) }))
         break
-      case 'background':
-        // 后台化：隐藏窗口到托盘（与关闭按钮行为一致，服务保持运行）
-        void appWindow.hide().catch(error => console.error('[tauri-nav] hide failed:', error))
-        break
-      case 'drag-start':
-        // 空白区拖拽：窗口移动循环由 Tauri 接管
-        void appWindow.startDragging().catch(error => console.error('[tauri-nav] startDragging failed:', error))
-        break
-      default:
+      case 'dsh://page:lasted':
+        setPageEdge(prev => ({ ...prev, lasted: Boolean(data.lasted) }))
         break
     }
   }
 
   useEvent('message', handleMessage)
 
-  return tauriNavActive
+  function sendNav(action: ShellNavAction) {
+    iframeRef?.current?.contentWindow?.postMessage(
+      { source: 'dsh-desktop', type: COMMAND_TYPES[action] },
+      '*',
+    )
+  }
+
+  return {
+    sidebarCollapsed,
+    canGoBack: !pageEdge.firsted,
+    canGoForward: !pageEdge.lasted,
+    sendNav,
+  }
 }

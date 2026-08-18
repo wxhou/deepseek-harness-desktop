@@ -112,8 +112,8 @@ pub fn build_main_window(app: &tauri::AppHandle<Wry>) -> tauri::Result<tauri::We
             .inner_size(1280.0, 840.0)
             .min_inner_size(860.0, 620.0)
             .resizable(true)
-            // 无系统标题栏：窗口 chrome 由壳层 ShellNavBar（插件未接管时）或
-            // dsh-tauri 插件导航栏（接管时）提供，两者样式一致
+            // 无系统标题栏：窗口 chrome 由壳层 ShellNavBar 常驻提供
+            // （44px 顶部导航：左侧 iframe 导航控制 + 右侧窗口控制）
             .decorations(false)
             // 恢复 iframe 内 HTML5 拖拽（拖入图片/拖动元素）：
             // Tauri 默认注册 wry drag_drop_handler → WebView2 SetAllowExternalDrop(false)
@@ -140,10 +140,12 @@ pub fn build_main_window(app: &tauri::AppHandle<Wry>) -> tauri::Result<tauri::We
     });
 
     // 非 Windows（macOS/Linux）没有 WebView2 的 FrameCreated/ContentLoading 流程，
-    // 直接用 Tauri 的 initialization_script_for_all_frames 把通知桥注入所有 frame。
+    // 直接用 Tauri 的 initialization_script_for_all_frames 把通知桥与导航桥注入
+    // 所有 frame（两个脚本均带 window.__dsh_*_bridge__ 幂等守卫，重复注入安全）。
     #[cfg(not(windows))]
     let webview_builder = webview_builder
-        .initialization_script_for_all_frames(crate::desktop::notification::NOTIFICATION_SHIM_JS);
+        .initialization_script_for_all_frames(crate::desktop::notification::NOTIFICATION_SHIM_JS)
+        .initialization_script_for_all_frames(crate::desktop::nav::NAV_SHIM_JS);
 
     let webview_window = webview_builder.build()?;
 
