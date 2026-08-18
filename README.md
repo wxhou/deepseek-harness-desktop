@@ -40,10 +40,10 @@
 
 Plugins offered on the first-run wizard; select what you need and install on demand:
 
-- [dsh-win-terminal-inspector](https://github.com/clearkurt/dsh-win-terminal-inspector) — Windows-only fix for Minimal mode: injects the win32 ProcessInspector persistent shells require
-- [dsh-tauri](https://github.com/hairyf/dsh-tauri) — desktop message bridge: a communication channel with the Tauri 2 shell (Recommended)
-- [dsh-market](https://github.com/dsh-market/dsh-market) — the visual plugin market: browse, search, and one-click install community plugins (Recommended)
-- [dsh-notification](https://github.com/omdsh-dev/dsh-notification) — desktop notifications when a turn finishes: per-outcome toggles plus include/exclude keyword rules
+- [DSH Win Terminal Inspector](https://github.com/clearkurt/dsh-win-terminal-inspector) — Windows-only fix for Minimal mode
+- [DSH Tauri](https://github.com/hairyf/dsh-tauri) — desktop message bridge: a communication channel with the Tauri 2 shell (Recommended)
+- [DSH Market](https://github.com/dsh-market/dsh-market) — the visual plugin market: browse, search, and one-click install community plugins (Recommended)
+- [DSH Notification](https://github.com/omdsh-dev/dsh-notification) — desktop notifications when a turn finishes: per-outcome toggles plus include/exclude keyword rules
 
 ## Quick Start
 
