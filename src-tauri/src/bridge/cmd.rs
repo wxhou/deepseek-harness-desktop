@@ -39,19 +39,57 @@ pub async fn install_dependencies(app_handle: AppHandle) -> Result<(), String> {
     let dsh_files_ok = download::Dsh.check_installed(&app_handle);
     let dsh_latest = download::fetch_latest_dsh_pkg_info().await;
 
-    let dsh_ok = match &dsh_latest {
-        Ok(latest) => {
-            dsh_files_ok
-                && config::get_dsh_pkg_commit(&app_handle).as_deref()
-                    == Some(latest.commit.as_str())
+    // 已安装文件在盘时，用 resolve_update 甄别「记录滞后」与「真更新」：
+    // 记录滞后（HealUpToDate）只修正 store 记录、绝不整包重下。否则会把一个
+    // 可用的 node_modules 整目录删除重解压，Windows 上原生模块 DLL 锁/重解压
+    // 很容易留下破损安装，导致启动报找不到 @deepseek-ai/dsh-client-ui-settings
+    // 或 HARNESS_NOT_FOUND。仅在真更新（UpdateAvailable）时才允许重新下载。
+    let dsh_need_install = match &dsh_latest {
+        Ok(latest) if dsh_files_ok => {
+            let record_commit = config::get_dsh_pkg_commit(&app_handle);
+            let record_tag = config::get_dsh_pkg_tag(&app_handle);
+            let installed_version = config::get_dsh_version(&app_handle);
+            // 老记录没有 tag，反查 pkg 仓库 tags 列表确认记录对应的发布版本；
+            // 反查失败时由 resolve_update 回退到“以实际文件为准”的保守分支
+            let legacy_tags = if record_tag.is_none() {
+                download::fetch_dsh_pkg_tags().await.unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            match download::resolve_update(
+                record_commit.as_deref(),
+                record_tag.as_deref(),
+                installed_version.as_deref(),
+                latest,
+                &legacy_tags,
+            ) {
+                // 安装文件已是最新 release，只是记录滞后：修正记录后下次
+                // 启动直接走 commit 快速比对，不再误判、也绝不整包重下
+                download::UpdateCheck::UpToDate
+                | download::UpdateCheck::HealUpToDate => {
+                    if record_commit.as_deref() != Some(latest.commit.as_str()) {
+                        log::info!(
+                            "Installed Harness files already at latest release, healing stale record: {} ({})",
+                            latest.tag,
+                            latest.commit
+                        );
+                        config::set_dsh_pkg_commit(&app_handle, latest.commit.clone());
+                        config::set_dsh_pkg_tag(&app_handle, latest.tag.clone());
+                    }
+                    false
+                }
+                download::UpdateCheck::UpdateAvailable => true,
+            }
         }
+        // 核心文件缺失（首次安装或目录被清空）→ 需要安装
+        Ok(_) => true,
         Err(e) => {
             // 网络不可用或 GitHub API 限流时保留本地安装，不阻塞启动
             log::warn!(
                 "Failed to check latest dsh release info, keeping local install: {}",
                 e
             );
-            dsh_files_ok
+            !dsh_files_ok
         }
     };
 
@@ -60,7 +98,7 @@ pub async fn install_dependencies(app_handle: AppHandle) -> Result<(), String> {
     // 需一并纳入"已就绪"判定，缺失时由 workflow::install 按任务补齐。
     let pnpm_ok = download::Pnpm.check_installed(&app_handle);
 
-    if node_ok && dsh_ok && pnpm_ok {
+    if node_ok && !dsh_need_install && pnpm_ok {
         log::debug!("Dependencies already installed and up to date, skipping installation");
         let mut setting = config::get_store_dat_setting(&app_handle);
         if !setting.installed {
