@@ -15,8 +15,8 @@ const DISMISS_KEY = 'desktop-update-dismissed-tag'
  * 桌面端自更新模块：检查新版本 → 弹出更新对话框 → 下载安装包 → 打开安装器。
  *
  * 与 `updater` 模块（dsh 内核更新）区分：本模块针对桌面应用自身。
- * 轮询检查每 10 秒触发一次（见 components/desktop-updater），命中 Rust 侧
- * 缓存后不重复打网络，避免 GitHub 未认证限流。
+ * 轮询检查低频触发（见 components/desktop-updater），Rust 侧每次实时查询、
+ * 不做缓存，由低频轮询避免 GitHub 未认证限流。
  */
 function readDismissedTag(): string {
   try {
