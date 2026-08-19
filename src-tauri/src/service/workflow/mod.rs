@@ -9,8 +9,6 @@ use crate::service::download;
 use crate::service::workflow::utils::{is_dsh_running, is_port_in_use, spawn_output_readers};
 use std::collections::HashMap;
 use std::fs;
-// Path 仅被 Windows 专属的 kill_dsh_processes 使用，Unix 构建下不引入
-#[cfg(windows)]
 use std::path::Path;
 use std::process::{Command, Stdio};
 #[cfg(windows)]
@@ -97,6 +95,26 @@ fn kill_dsh_processes(base_dir: &Path) {
 
     if let Err(e) = cmd.output() {
         log::error!("Failed to kill dsh processes: {}", e);
+    }
+}
+
+/// 结束本应用（AppData 目录）下由 dsh 拉起的 node 进程（Unix 分支）。
+///
+/// Windows 上这些进程会锁原生模块 DLL；macOS/Linux 上虽然不锁 DLL，但 dsh 派生
+/// 的 worker 子进程会持有 `dependencies/dsh` 与 `runtime` 目录下的文件句柄——
+/// 若在更新/重解压期间仍存活，会与 `ensure_extract` 的删除-重写产生竞态，留下
+/// 半写坏的安装目录（对应 issue #21「更新闪退、装推荐插件闪退后环境损坏」）。
+///
+/// 这里按“命令行中包含本应用布局标记”来匹配（dsh 入口 `dependencies/dsh` 与
+/// 捆绑运行时 `runtime`），只清理本应用派生进程，绝不使用 `pkill -9 node`
+/// 误杀用户自己运行的 node。pkill 以单个 argv 传入，无 shell 参与，空格安全。
+#[cfg(not(windows))]
+fn kill_dsh_processes(base_dir: &Path) {
+    let base = base_dir.to_string_lossy();
+    for marker in [format!("{base}/dependencies/dsh"), format!("{base}/runtime")] {
+        let _ = Command::new("pkill")
+            .args(["-9", "-f", &marker])
+            .output();
     }
 }
 
@@ -194,10 +212,10 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
         tokio::time::sleep(std::time::Duration::from_millis(800)).await;
     }
 
-    #[cfg(unix)]
-    {
-        let _ = Command::new("pkill").arg("-9").arg("node").output();
-    }
+    // 清理上次可能残留的本应用 dsh 进程，避免命令行/端口复用竞态。
+    // 注意只按本应用布局标记匹配，绝不使用旧的 `pkill -9 node`（会误杀用户
+    // 自己运行的 node，尤其 macOS 上常见）。
+    kill_dsh_processes(&config::get_base_dir(&app_handle));
 
     // 构造环境变量：隔离的 $DSH_HOME + 隐私默认（关闭遥测）
     let dsh_home = config::get_dsh_data_path(&app_handle);
@@ -324,9 +342,9 @@ pub async fn stop(app_handle: tauri::AppHandle) -> Result<(), String> {
     LAUNCH_GUARD.store(false, Ordering::SeqCst);
     kill_port_holder(port);
 
-    // 连带清理 dsh 派生的 node 子进程：它们可能不再监听端口，
-    // 但仍把原生模块 DLL 加载在内存中（Windows 文件锁）
-    #[cfg(windows)]
+    // 连带清理 dsh 派生的 node 子进程：它们可能不再监听端口，但仍持有原生
+    // 模块 DLL（Windows 文件锁）或 dependencies/runtime 目录文件句柄
+    // （macOS/Linux 重解压竞态），需要一并强制结束。
     kill_dsh_processes(&config::get_base_dir(&app_handle));
 
     // 给系统一点时间释放端口 (重要！)
@@ -340,14 +358,11 @@ pub async fn stop(app_handle: tauri::AppHandle) -> Result<(), String> {
 /// 应用退出时同步回收 Harness 进程。
 ///
 /// 退出路径上不更新状态、不做异步等待，仅强制结束端口占用者及其进程树，
-/// 以及 AppData 目录下的 node 进程，避免残留进程把原生模块 DLL 锁在内存，
-/// 导致下次启动重新解压失败。
-/// Windows 下需要 app_handle 定位 AppData 目录来清理进程树；
-/// Unix 构建不使用该参数，允许未使用告警以保持签名一致
-#[cfg_attr(not(windows), allow(unused_variables))]
+/// 以及 AppData 目录下的 node 进程，避免残留进程把原生模块 DLL 锁在内存或
+/// 持有目录文件句柄，导致下次启动重新解压失败。
+/// 需要 app_handle 定位 AppData 目录来清理进程树。
 pub fn stop_on_exit(app_handle: tauri::AppHandle, port: u16) {
     kill_port_holder(port);
-    #[cfg(windows)]
     kill_dsh_processes(&config::get_base_dir(&app_handle));
 }
 
@@ -369,7 +384,6 @@ pub async fn install(
     } else {
         log::warn!("Harness service not responding, force cleaning dsh processes");
         kill_port_holder(config::get_store_dat_setting(app_handle).port);
-        #[cfg(windows)]
         kill_dsh_processes(&config::get_base_dir(app_handle));
         tokio::time::sleep(std::time::Duration::from_millis(800)).await;
     }
@@ -406,7 +420,10 @@ pub async fn install(
         tracker.start_phase("download", &format!("{} {}", config::i18n::t("install.downloading"), task.title()));
         let url = task.get_download_url()?;
         log::debug!("Download URL: {}", url);
-        let name = url.split('/').next_back().unwrap().to_string();
+        // 取文件名用于解压类型判定；下载 URL 正常必含 '/'，但这里不 panic，
+        // 防御性兜底为空串（后续 ensure_extract 会因无法判定类型而报错返回，
+        // 不再让进程崩溃）。
+        let name = url.rsplit('/').next().unwrap_or("").to_string();
         log::debug!("File name: {}", name);
         let buffer = download::download_file(&tracker, url).await?;
         log::info!("Download completed, file size: {} bytes", buffer.len());
