@@ -27,6 +27,14 @@
     "recommended": true
   },
   {
+    "id": "dsh-better-sidebar",
+    "spec": "github:omdsh-dev/DSH-better-sidebar",
+    "name": "DSH Better Sidebar",
+    "description": "A VSCode-like right sidebar (explorer / editor / terminal / git / browser), isolated per conversation session. Exposes a service for other plugins to register sidebar tabs and file viewers.",
+    "repoUrl": "https://github.com/omdsh-dev/DSH-better-sidebar",
+    "recommended": true
+  },
+  {
     "id": "dsh-notification",
     "spec": "github:omdsh-dev/dsh-notification",
     "name": "DSH Notification",
