@@ -99,6 +99,8 @@ jobs:
             args: ''
 
     runs-on: ${{ matrix.platform }}
+    # 兜底：apt/网络偶发卡死时避免占用 runner 到 GitHub 默认的 6 小时上限
+    timeout-minutes: 60
 
     steps:
       - name: Check if this platform should run
@@ -146,7 +148,22 @@ jobs:
       - name: Install dependencies (Ubuntu only)
         if: steps.check.outputs.should_run == 'true' && matrix.platform == 'ubuntu-latest'
         run: |
-          sudo apt-get update
+          # GitHub runner 上 apt-get update 偶发网络卡死（无输出、无超时），
+          # 加 Acquire 超时/重试 + 外层 timeout + 循环重试，避免整个 job 挂起数小时。
+          apt_ok=0
+          for i in 1 2 3; do
+            if timeout 180 sudo apt-get update \
+              -o Acquire::Retries=5 \
+              -o Acquire::http::Timeout=60 \
+              -o Acquire::https::Timeout=60 \
+              -o Acquire::ftp::Timeout=60; then
+              apt_ok=1
+              break
+            fi
+            echo "apt-get update 第 $i 次失败，10 秒后重试..."
+            sleep 10
+          done
+          [ "$apt_ok" = "1" ] || { echo "apt-get update 连续 3 次失败，中止"; exit 1; }
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
       - name: Install frontend dependencies
