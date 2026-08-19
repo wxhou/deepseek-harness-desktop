@@ -54,7 +54,9 @@ impl<'a, R: Runtime> ProgressTracker<'a, R> {
     /// log: 用于在 log 窗口显示的文字 (如 "Download http://..." 或 "Extract xx/xx/xx")
     pub fn update(&self, stage_pct: f64, detail: String, log: String) {
         let now = Instant::now();
-        let mut last_emit = self.last_emit_time.lock().unwrap();
+        // 中毒安全：若 install 过程中已有 panic 污染该锁，后续不应再次 panic
+        // 导致整个桌面进程退出，这里忽略中毒状态继续读取旧值。
+        let mut last_emit = self.last_emit_time.lock().unwrap_or_else(|e| e.into_inner());
 
         // 节流处理：如果距离上次发送不足 50ms，则跳过
         if let Some(last_time) = *last_emit {

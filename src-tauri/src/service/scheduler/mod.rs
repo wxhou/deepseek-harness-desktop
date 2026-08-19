@@ -14,9 +14,9 @@ async fn scheduler_permanent_loop(app_handle: AppHandle) {
     let mut interval = time::interval(Duration::from_secs(1));
 
     loop {
-        crate::task::tick_check_dsh_process::trigger(app_handle.clone())
-            .await
-            .unwrap();
+        if let Err(e) = crate::task::tick_check_dsh_process::trigger(app_handle.clone()).await {
+            log::warn!("tick_check_dsh_process failed: {e}");
+        }
         crate::config::check_and_emit_theme(&app_handle);
         // 已安装插件文件监控：指纹变化（防抖后）推送 `dsh-plugins-updated`
         crate::service::plugin::watch::check_and_emit(&app_handle);

@@ -271,10 +271,11 @@ pub fn enable_notification_permissions(
 
         let _ = frame3.add_ContentLoading(
             &FrameContentLoadingEventHandler::create(Box::new(move |_, _| {
-                // 通知桥 + 导航桥（壳层导航栏左侧控制需要 iframe 上下文执行）
+                // 通知桥 + 导航桥 + 样式桥（壳层导航栏左侧控制需要 iframe 上下文执行）
                 for script in [
                     crate::desktop::notification::NOTIFICATION_SHIM_JS,
                     crate::desktop::nav::NAV_SHIM_JS,
+                    crate::desktop::style::IFRAME_STYLES_JS,
                 ] {
                     let script = HSTRING::from(script);
                     let _ = frame_for_injection.ExecuteScript(

@@ -1,3 +1,4 @@
+import { desktopUpdate } from './modules/desktop-update'
 import { download } from './modules/download'
 import { harness } from './modules/harness'
 import { setting } from './modules/setting'
@@ -9,8 +10,15 @@ export const store = {
   updater,
   download,
   setting,
+  desktopUpdate,
 }
 
+export { desktopUpdate } from './modules/desktop-update'
+export type {
+  DesktopAboutInfo,
+  DesktopDownloadProgress,
+  DesktopUpdateInfo,
+} from './modules/desktop-update'
 export { download } from './modules/download'
 export type { DownloadFinishedPayload } from './modules/download'
 export { harness } from './modules/harness'

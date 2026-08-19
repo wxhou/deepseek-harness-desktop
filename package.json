@@ -1,7 +1,7 @@
 {
   "name": "deepseek-harness-desktop",
   "type": "module",
-  "version": "0.5.1",
+  "version": "0.6.1",
   "private": true,
   "description": "Desktop application for DeepSeek Harness (dsh) — one-click local install and launch, no Node.js setup required.",
   "scripts": {
@@ -22,6 +22,7 @@
     "@heroui/react": "^3.2.4",
     "@heroui/styles": "^3.2.4",
     "@overlastic/react": "^0.9.0",
+    "@tanstack/react-query": "^5.101.4",
     "@tauri-apps/api": "^2.11.1",
     "i18next": "^26.3.6",
     "react": "^19.2.8",
