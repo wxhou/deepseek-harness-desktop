@@ -49,6 +49,8 @@
 - [DSH Notification](https://github.com/omdsh-dev/dsh-notification) — 回合完成时桌面通知：按结果分别开关，支持包含/排除关键词规则
 - [DSH Session Context Menu](https://github.com/baihejiangnan/dsh-session-context-menu) — DSH 封装端右键菜单：为会话、工作区、输入框和链接补充常用操作
 
+> 你想收录新的插件作为预设？修改 [preset-plugins.json](https://github.com/hairyf/deepseek-harness-desktop/blob/main/src-tauri/resources/preset-plugins.json) 并提交 PR，审核通过后将在将来版本新增为预设插件。
+
 ## 快速开始
 
 从 [Releases](https://github.com/hairyf/deepseek-harness-desktop/releases) 下载对应平台安装包，安装后启动即可。
