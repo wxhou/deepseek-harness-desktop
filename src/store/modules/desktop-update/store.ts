@@ -92,8 +92,6 @@ export const desktopUpdate = defineStore({
 
     /** 打开更新对话框（「检查更新」菜单）：先检查，有更新才弹框，否则提示已是最新 */
     async openUpdateDialog() {
-      this.updateDialogOpen = true
-
       if (!this.updateInfo)
         await this.check()
       if (this.updateInfo) {
