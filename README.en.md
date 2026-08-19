@@ -47,7 +47,6 @@ Plugins offered on the first-run wizard; select what you need and install on dem
 - [DSH Market](https://github.com/dsh-market/dsh-market) — the visual plugin market: browse, search, and one-click install community plugins (Recommended)
 - [DSH Better Sidebar](https://github.com/omdsh-dev/DSH-better-sidebar) — a VSCode-like right sidebar (explorer/editor/terminal/git/browser), isolated per session (Recommended)
 - [DSH Notification](https://github.com/omdsh-dev/dsh-notification) — desktop notifications when a turn finishes: per-outcome toggles plus include/exclude keyword rules
-- [DeepSeek Harness Desktop](https://github.com/hairyf/deepseek-harness-desktop) — the desktop shell (Tauri 2) that hosts this harness UI, with the DSH Tauri message bridge and self-update
 
 ## Quick Start
 
