@@ -120,7 +120,7 @@ pub async fn install_dependencies(app_handle: AppHandle) -> Result<(), String> {
     };
 
     if node_ok && !dsh_need_install && pnpm_ok {
-        log::debug!("Dependencies already installed and up to date, skipping installation");
+        log::info!("Dependencies already installed and up to date, skipping installation");
         let mut setting = config::get_store_dat_setting(&app_handle);
         if !setting.installed {
             setting.installed = true;
@@ -130,7 +130,7 @@ pub async fn install_dependencies(app_handle: AppHandle) -> Result<(), String> {
         return Ok(());
     }
 
-    log::debug!("Dependencies missing or outdated, starting installation process");
+    log::info!("Dependencies missing or outdated, starting installation process");
     workflow::status::set_status(workflow::status::Status::Installing);
     workflow::status::emit_status(&app_handle);
     workflow::install(&app_handle, dsh_latest.ok()).await?;

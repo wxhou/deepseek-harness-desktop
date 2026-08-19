@@ -113,7 +113,9 @@ pub async fn start(app_handle: tauri::AppHandle) -> Result<(), String> {
         let mut setting = config::get_store_dat_setting(&app_handle);
         setting.installed = false;
         config::set_store_dat_setting(&app_handle, setting);
-        log::debug!("Harness not installed, skipping startup");
+        // 状态变更需要 info 级落盘：这是「store 显示未安装」的源头之一
+        // （核心文件短暂缺失被复位），自更新后自动重开走进安装分支多由此触发。
+        log::info!("Runtime files missing (node/dsh), resetting installed flag");
         return Ok(());
     }
 

@@ -1,7 +1,9 @@
 use log::{Level, LevelFilter, Metadata, Record};
+use std::fs::{File, OpenOptions};
 use std::io::Write;
-use std::sync::atomic::{AtomicU8, Ordering};
-use std::sync::OnceLock;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 /// 日志级别对应数值（数值越大，日志越不敏感/级别越高）
 const TRACE: u8 = 0;
@@ -10,6 +12,15 @@ const INFO: u8 = 2;
 const WARN: u8 = 3;
 const ERROR: u8 = 4;
 const OFF: u8 = 5;
+
+/// 与 tauri.conf.json 的 identifier 保持一致。logger 初始化早于 AppHandle 可用，
+/// 日志文件路径需要自行按 Tauri app_data_dir 的规则（系统数据目录 + identifier）推导。
+const APP_IDENTIFIER: &str = "io.github.hairyf.deepseek-harness-desktop";
+/// 壳自身日志文件名（与 dsh 核心的 dsh-web.log 放同一 logs 目录）
+const LOG_FILE_NAME: &str = "desktop.log";
+/// 单文件超过该字节数即滚动，滚动后保留最近 3 个历史文件（desktop.log.1 ~ .3）
+const MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
+const MAX_BACKUPS: usize = 3;
 
 /// 将 `log::Level` 转换为内部比较数值
 #[inline]
@@ -36,7 +47,13 @@ const DEFAULT_NOISY_RULES: &[(&str, u8)] = &[("reqwest", WARN), ("hyper", WARN)]
 static FILTER_LEVEL: AtomicU8 = AtomicU8::new(INFO);
 static FILTER_RULES: OnceLock<Vec<FilterRule>> = OnceLock::new();
 
-/// 自定义轻量级日志格式化器
+/// 文件 sink（懒初始化）：GUI 模式下 stdout/stderr 被丢弃，必须落盘才能在
+/// 桌面端自更新/启动异常后回溯流程（例如「自动重开是否走了安装自愈」）。
+/// 首次写日志时才创建目录与文件；创建失败后不再重复尝试，退回纯控制台输出。
+static FILE_SINK: Mutex<Option<File>> = Mutex::new(None);
+static FILE_SINK_TRIED: AtomicBool = AtomicBool::new(false);
+
+/// 自定义轻量级日志格式化器（控制台 + 文件双写）
 struct SimpleLogger;
 
 impl log::Log for SimpleLogger {
@@ -72,7 +89,7 @@ impl log::Log for SimpleLogger {
 
         let module_path = record.module_path().unwrap_or("unknown");
 
-        // 优化点：获取 I/O 句柄锁并使用 writeln! 直接输出，避免 format! 导致的额外内存分配
+        // 控制台输出保持原有格式（`pnpm tauri dev` 时可见）
         if record.level() == Level::Error {
             let stderr = std::io::stderr();
             let mut handle = stderr.lock();
@@ -84,11 +101,52 @@ impl log::Log for SimpleLogger {
             let _ = writeln!(handle, "[{}]: {}", module_path, record.args());
             let _ = handle.flush();
         }
+
+        // 文件输出：带时间戳与级别，便于与安装/启动时间线对齐
+        Self::write_file(&format!(
+            "[{}] [{}] [{}]: {}",
+            now_utc(),
+            record.level(),
+            module_path,
+            record.args()
+        ));
     }
 
     fn flush(&self) {
         let _ = std::io::stdout().lock().flush();
         let _ = std::io::stderr().lock().flush();
+        if let Ok(mut sink) = FILE_SINK.lock() {
+            if let Some(file) = sink.as_mut() {
+                let _ = file.flush();
+            }
+        }
+    }
+}
+
+impl SimpleLogger {
+    /// 追加一行到日志文件；文件超过大小上限时滚动。目录不可用时静默跳过。
+    fn write_file(line: &str) {
+        if FILE_SINK_TRIED.load(Ordering::Relaxed) {
+            return;
+        }
+        let mut sink = FILE_SINK.lock().unwrap_or_else(|e| e.into_inner());
+        if sink.is_none() {
+            *sink = open_sink();
+            if sink.is_none() {
+                FILE_SINK_TRIED.store(true, Ordering::Relaxed);
+                return;
+            }
+        }
+        let Some(file) = sink.as_mut() else {
+            return;
+        };
+        let _ = writeln!(file, "{line}");
+        let _ = file.flush();
+        // 超过上限时滚动：先释放当前句柄（Windows 下文件被占用无法重命名）
+        if file.metadata().map(|m| m.len()).unwrap_or(0) > MAX_LOG_BYTES {
+            *sink = None;
+            *sink = rotate_sink();
+        }
     }
 }
 
@@ -150,6 +208,113 @@ fn parse_directives(input: &str) -> (Option<u8>, Vec<FilterRule>) {
     (global, rules)
 }
 
+/// 推导应用数据目录（与 Tauri app_data_dir 的规则一致，此时尚无 AppHandle）：
+/// Windows 用 %APPDATA%（Roaming），macOS 用 ~/Library/Application Support，
+/// Linux 用 $XDG_DATA_HOME 或 ~/.local/share，再拼上 identifier。
+fn app_data_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        let appdata = std::env::var("APPDATA").ok()?;
+        return Some(PathBuf::from(appdata).join(APP_IDENTIFIER));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let home = std::env::var("HOME").ok()?;
+        return Some(
+            PathBuf::from(home)
+                .join("Library")
+                .join("Application Support")
+                .join(APP_IDENTIFIER),
+        );
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let base = std::env::var("XDG_DATA_HOME")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::var("HOME")
+                    .ok()
+                    .map(|h| PathBuf::from(h).join(".local/share"))
+            })?;
+        return Some(base.join(APP_IDENTIFIER));
+    }
+    #[allow(unreachable_code)]
+    None
+}
+
+/// 日志文件完整路径：`{app_data_dir}/logs/desktop.log`（与 dsh-web.log 同目录）
+fn log_file_path() -> Option<PathBuf> {
+    Some(app_data_dir()?.join("logs").join(LOG_FILE_NAME))
+}
+
+/// 打开（或创建）日志文件，追加模式
+fn open_sink() -> Option<File> {
+    let path = log_file_path()?;
+    std::fs::create_dir_all(path.parent()?).ok()?;
+    OpenOptions::new().create(true).append(true).open(path).ok()
+}
+
+/// 滚动日志文件：`desktop.log → .1 → .2 → .3`（删除最旧的），再打开新的 desktop.log
+fn rotate_sink() -> Option<File> {
+    let path = log_file_path()?;
+    // 先删除最旧的备份，避免 Windows 下 rename 目标已存在而失败
+    let _ = std::fs::remove_file(backup_path(&path, MAX_BACKUPS));
+    for i in (1..=MAX_BACKUPS).rev() {
+        let src = backup_path(&path, i - 1);
+        let dst = backup_path(&path, i);
+        if src.exists() {
+            let _ = std::fs::rename(&src, &dst);
+        }
+    }
+    open_sink()
+}
+
+/// 第 n 个备份的文件名：n=0 为当前文件，n>0 为 `desktop.log.n`
+fn backup_path(base: &PathBuf, n: usize) -> PathBuf {
+    if n == 0 {
+        base.clone()
+    } else {
+        PathBuf::from(format!("{}.{}", base.display(), n))
+    }
+}
+
+/// 当前 UTC 时间（`YYYY-MM-DD HH:MM:SS.mmm`），纯算法实现避免引入时间库依赖。
+/// 统一用 UTC 而非本地时区：跨平台可移植，且足够用于与安装/启动时间线对齐。
+fn now_utc() -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let secs = now.as_secs();
+    let millis = now.subsec_millis();
+    let days = secs / 86_400;
+    let sod = secs % 86_400;
+
+    let (y, m, d) = civil_from_days(days as i64);
+    format!(
+        "{y:04}-{m:02}-{d:02} {:02}:{:02}:{:02}.{:03}Z",
+        sod / 3_600,
+        (sod % 3_600) / 60,
+        sod % 60,
+        millis
+    )
+}
+
+/// 自 UNIX 纪元（1970-01-01）起的日数 → 公历 (年, 月, 日)。Howard Hinnant 算法。
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = (if mp < 10 { mp + 3 } else { mp - 9 }) as u32;
+    let y = (if m <= 2 { yoe + 1 } else { yoe }) + era * 400;
+    (y, m, d)
+}
+
 /// 初始化日志系统
 ///
 /// 默认日志级别为 `info`，可以通过环境变量 `RUST_LOG` 进行控制。
@@ -166,4 +331,39 @@ pub fn init() {
     log::set_logger(&LOGGER)
         .map(|()| log::set_max_level(LevelFilter::Trace))
         .expect("Failed to initialize logger");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn civil_from_days_epoch_and_adjacent() {
+        assert_eq!(civil_from_days(0), (1970, 1, 1));
+        assert_eq!(civil_from_days(31), (1970, 2, 1));
+        assert_eq!(civil_from_days(364), (1970, 12, 31));
+        assert_eq!(civil_from_days(365), (1971, 1, 1)); // 1970 非闰年
+        assert_eq!(civil_from_days(366), (1971, 1, 2));
+    }
+
+    #[test]
+    fn civil_from_days_leap_year() {
+        // 1972-02-29（闰年 2 月最后一天）
+        assert_eq!(civil_from_days(789), (1972, 2, 29));
+        assert_eq!(civil_from_days(790), (1972, 3, 1));
+    }
+
+    #[test]
+    fn now_utc_format() {
+        let s = now_utc();
+        let ok = s.len() >= 20
+            && s.ends_with('Z')
+            && s.as_bytes().get(4) == Some(&b'-')
+            && s.as_bytes().get(7) == Some(&b'-')
+            && s.as_bytes().get(10) == Some(&b' ')
+            && s.as_bytes().get(13) == Some(&b':')
+            && s.as_bytes().get(16) == Some(&b':')
+            && s.as_bytes().get(19) == Some(&b'.');
+        assert!(ok, "unexpected timestamp format: {s}");
+    }
 }
