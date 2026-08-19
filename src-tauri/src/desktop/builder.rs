@@ -222,6 +222,13 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
                 let _ = window.hide();
             }
         })
+        // 单例模式：多次双击图标（或重复启动）时不会新开窗口，而是把
+        // 已存在的（可能已隐藏到托盘）主窗口调到前台，实现“单例 + 复用后台窗口”。
+        // 该回调在首次启动时也会以当前进程的参数触发一次（幂等，仅 show/focus），
+        // 之后每次二次启动都会派发到这里，重新展示后台运行的主窗口。
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            crate::core::utils::show_main_window(app);
+        }))
         // Opener plugin
         .plugin(tauri_plugin_opener::init())
         // Notification plugin（Windows 上以 tauri-winrt-notification 实现点击回调，
