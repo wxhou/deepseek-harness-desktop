@@ -47,6 +47,7 @@ Plugins offered on the first-run wizard; select what you need and install on dem
 - [DSH Market](https://github.com/dsh-market/dsh-market) — the visual plugin market: browse, search, and one-click install community plugins (Recommended)
 - [DSH Better Sidebar](https://github.com/omdsh-dev/DSH-better-sidebar) — a VSCode-like right sidebar (explorer/editor/terminal/git/browser), isolated per session (Recommended)
 - [DSH Notification](https://github.com/omdsh-dev/dsh-notification) — desktop notifications when a turn finishes: per-outcome toggles plus include/exclude keyword rules
+- [DSH Session Context Menu](https://github.com/baihejiangnan/dsh-session-context-menu) — right-click context menu for the DSH app shell: quick actions for conversations, workspaces, inputs, and links
 
 ## Quick Start
 

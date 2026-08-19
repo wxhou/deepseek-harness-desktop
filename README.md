@@ -47,6 +47,7 @@
 - [DSH Market](https://github.com/dsh-market/dsh-market) — 可视化插件市场：浏览、搜索并一键安装社区插件（推荐）
 - [DSH Better Sidebar](https://github.com/omdsh-dev/DSH-better-sidebar) — 类 VSCode 右侧栏（资源管理器/编辑器/终端/Git/浏览器），按会话隔离（推荐）
 - [DSH Notification](https://github.com/omdsh-dev/dsh-notification) — 回合完成时桌面通知：按结果分别开关，支持包含/排除关键词规则
+- [DSH Session Context Menu](https://github.com/baihejiangnan/dsh-session-context-menu) — DSH 封装端右键菜单：为会话、工作区、输入框和链接补充常用操作
 
 ## 快速开始
 
