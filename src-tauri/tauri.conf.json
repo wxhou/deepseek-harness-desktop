@@ -27,7 +27,7 @@
     ],
     "resources": ["resources/**/*"],
     "category": "DeveloperTool",
-    "copyright": "Copyright © 2026 deepseek-harness-desktop contributors",
+    "copyright": "Copyright © 2026 Deepseek Harness Desktop contributors",
     "shortDescription": "Desktop application for DeepSeek Harness",
     "longDescription": "A native desktop application for running DeepSeek Harness (dsh) locally with one-click install and zero configuration."
   }

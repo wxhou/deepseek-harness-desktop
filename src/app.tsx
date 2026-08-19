@@ -1,5 +1,8 @@
 import { useEffect } from 'react'
 import { useStore } from 'valtio-define'
+import DesktopAboutDialog from './components/desktop-about-dialog'
+import DesktopUpdateDialog from './components/desktop-update-dialog'
+import DesktopUpdater from './components/desktop-updater'
 import DownloadToast from './components/download-toast'
 import HarnessUpdater from './components/harness-updater'
 import HarnessWebview from './components/harness-webview'
@@ -24,6 +27,9 @@ export default function App() {
       <HarnessWebview />
       {status === 'ready' && <HarnessUpdater />}
       {status === 'ready' && <DownloadToast />}
+      <DesktopUpdater />
+      <DesktopUpdateDialog />
+      <DesktopAboutDialog />
     </div>
   )
 }
