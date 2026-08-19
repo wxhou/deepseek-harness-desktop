@@ -20,6 +20,11 @@ pub struct PreinstallPluginInfo {
     pub id: String,
     /// 传给 `dsh plugin add` 的依赖形式（npm 包名或 git 依赖形式）
     pub spec: String,
+    /// 安装进 profile 后实际出现在 `dependencies`/`bundles` 里的包名。
+    /// 默认与 `id` 相同；仅当 npm 包名与预设 id 不一致时（如 scoped 包
+    /// `@scope/name`）才需要显式指定，供“已安装”检测使用。
+    #[serde(default)]
+    pub package: Option<String>,
     pub name: String,
     pub description: String,
     pub repo_url: String,

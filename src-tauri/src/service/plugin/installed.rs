@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use tauri::AppHandle;
 
-use super::preset::load_presets;
+use super::preset::{load_presets, PreinstallPluginInfo};
 
 /// 预装插件安装到的 profile（与 dsh 服务启动的 profile 一致）
 pub(crate) const PREINSTALL_PROFILE: &str = "web";
@@ -77,6 +77,12 @@ pub struct PreinstallPlugin {
     pub installed: bool,
 }
 
+/// 用于“已安装”检测的包名：预设显式声明 `package` 时用它（scoped 包名与预设
+/// id 不一致），未声明则回落到 `id`。
+fn installed_name(p: &PreinstallPluginInfo) -> &str {
+    p.package.as_deref().unwrap_or(p.id.as_str())
+}
+
 /// 预装插件列表（含 installed 状态），前端渲染用
 pub fn list(app_handle: &AppHandle) -> Vec<PreinstallPlugin> {
     let installed = list_installed(app_handle);
@@ -86,7 +92,9 @@ pub fn list(app_handle: &AppHandle) -> Vec<PreinstallPlugin> {
         .into_iter()
         .filter(|p| !p.win_only || is_windows)
         .map(|p| {
-            let is_installed = installed.contains(&p.id);
+            // 已安装检测以实际 npm 包名为准：预设可显式声明 package（scoped 包
+            // 名与预设 id 不一致时），未声明则回落到 id。
+            let is_installed = installed.contains(installed_name(&p));
             PreinstallPlugin {
                 id: p.id,
                 name: p.name,
@@ -143,5 +151,30 @@ mod tests {
         assert_eq!(set.len(), 2);
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn installed_name_resolves_package_else_id() {
+        let installed = PreinstallPluginInfo {
+            id: "dsh-session-context-menu".into(),
+            spec: "github:baihejiangnan/dsh-session-context-menu".into(),
+            package: Some("@baihejiangnan/dsh-session-context-menu".into()),
+            name: "DSH Session Context Menu".into(),
+            description: String::new(),
+            repo_url: String::new(),
+            recommended: false,
+            fix: false,
+            default_checked: true,
+            win_only: false,
+        };
+        // scoped 包名与预设 id 不同：以 package 为准
+        assert_eq!(
+            installed_name(&installed),
+            "@baihejiangnan/dsh-session-context-menu"
+        );
+
+        // 未声明 package 时回落到 id
+        let plain = PreinstallPluginInfo { package: None, ..installed };
+        assert_eq!(installed_name(&plain), "dsh-session-context-menu");
     }
 }

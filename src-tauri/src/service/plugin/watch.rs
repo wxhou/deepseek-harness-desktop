@@ -298,6 +298,7 @@ mod tests {
             fix: false,
             default_checked: false,
             win_only: false,
+            package: None,
         }]
     }
 
