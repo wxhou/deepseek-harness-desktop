@@ -4,14 +4,14 @@
 //! 自身的更新：查询 GitHub Release 的最新版本、下载安装包、并交给系统打开安装器。
 //!
 //! 设计考量：
-//! - GitHub 未认证 API 限流 60 次/小时/IP，而前端每 10 秒轮询一次「检查更新」，
-//!   因此这里对最新 Release 查询结果做 5 分钟内存缓存，轮询命中缓存、不再打网络。
+//! - 每次「检查更新」都实时向 GitHub 查询最新 Release（不做缓存），保证看到的
+//!   永远是最新发布，不会因上传期间的旧结果而误判「已是最新」。
+//! - 注意未认证 API 限流 60 次/小时/IP，前端轮询需放低频以免触发 403。
 //! - 安装包下载到 AppData/updates 目录；已存在则视为「已下载」，不再重复拉取。
 //! - 打开安装器（exe/msi/dmg 等）交给系统默认处理器（ShellExecute/LaunchServices）。
 
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use futures_util::StreamExt;
 use tauri::{AppHandle, Emitter, Manager};
@@ -25,8 +25,6 @@ const REPO_URL: &str = "https://github.com/hairyf/deepseek-harness-desktop";
 const COPYRIGHT: &str = "Copyright © 2026 Deepseek Harness Desktop contributors";
 /// About 对话框的 "Powered by" 文案
 const POWERED_BY: &str = "DeepSeek Harness";
-/// 最新 Release 查询结果缓存时长（轮询防限流）
-const CACHE_TTL: Duration = Duration::from_secs(300);
 /// AppData 下安装包存放目录名
 const UPDATES_DIR: &str = "updates";
 
@@ -39,16 +37,6 @@ struct LatestRelease {
     url: String,
     asset_name: String,
 }
-
-/// 缓存的查询结果：published_at 无论是否有更新都会写入，
-/// release 仅在「有更新且匹配到资产」时为 Some，其余为 None（同样缓存以免限流）。
-struct CacheEntry {
-    fetched_at: Instant,
-    published_at: String,
-    release: Option<LatestRelease>,
-}
-
-static CACHE: OnceLock<Mutex<Option<CacheEntry>>> = OnceLock::new();
 
 /// 当前桌面端版本号（来自 Cargo.toml / tauri.conf.json）
 fn current_version() -> String {
@@ -110,29 +98,14 @@ fn pick_asset(assets: &[serde_json::Value]) -> Option<(String, String)> {
     best.map(|(_, name, url)| (name, url))
 }
 
-/// 查询最新 Release（带缓存）。
-///
-/// 返回 `Ok(Some(LatestRelease))` 表示有更新且匹配到当前平台安装包；
-/// `Ok(None)` 表示无更新（或未匹配到资产）。网络失败/限流返回 Err。
-async fn fetch_latest_release() -> Result<Option<LatestRelease>, String> {
-    {
-        let lock = CACHE.get_or_init(|| Mutex::new(None));
-        if let Ok(guard) = lock.lock() {
-            if let Some(entry) = guard.as_ref() {
-                if entry.fetched_at.elapsed() < CACHE_TTL {
-                    return Ok(entry.release.clone());
-                }
-            }
-        }
-    }
-
+/// 请求 GitHub 最新 Release 原始 JSON（不做缓存，每次实时拉取）。
+async fn fetch_latest_release_json() -> Result<serde_json::Value, String> {
     let client = reqwest::Client::builder()
         .user_agent("deepseek-harness-desktop")
         .timeout(Duration::from_secs(5))
         .build()
         .map_err(|e| format!("UPDATE_CLIENT: {e}"))?;
-
-    let release: serde_json::Value = client
+    client
         .get(format!("{GITHUB_API}/releases/latest"))
         .send()
         .await
@@ -141,8 +114,15 @@ async fn fetch_latest_release() -> Result<Option<LatestRelease>, String> {
         .map_err(|e| format!("UPDATE_REQ: {e}"))?
         .json()
         .await
-        .map_err(|e| format!("UPDATE_PARSE: {e}"))?;
+        .map_err(|e| format!("UPDATE_PARSE: {e}"))
+}
 
+/// 查询最新 Release（无缓存，每次实时检查）。
+///
+/// 返回 `Ok(Some(LatestRelease))` 表示有更新且匹配到当前平台安装包；
+/// `Ok(None)` 表示无更新（或未匹配到资产）。网络失败/限流返回 Err。
+async fn fetch_latest_release() -> Result<Option<LatestRelease>, String> {
+    let release = fetch_latest_release_json().await?;
     let tag_name = release
         .get("tag_name")
         .and_then(|v| v.as_str())
@@ -163,7 +143,7 @@ async fn fetch_latest_release() -> Result<Option<LatestRelease>, String> {
     let asset = pick_asset(&assets);
 
     // 有更新且匹配到资产才视为「可更新」
-    let release = if is_newer(&version, &current_version()) {
+    Ok(if is_newer(&version, &current_version()) {
         match asset {
             Some((name, url)) => Some(LatestRelease {
                 version: version.clone(),
@@ -176,16 +156,7 @@ async fn fetch_latest_release() -> Result<Option<LatestRelease>, String> {
         }
     } else {
         None
-    };
-
-    if let Ok(mut guard) = CACHE.get_or_init(|| Mutex::new(None)).lock() {
-        *guard = Some(CacheEntry {
-            fetched_at: Instant::now(),
-            published_at,
-            release: release.clone(),
-        });
-    }
-    Ok(release)
+    })
 }
 
 /// 安装包存放路径（AppData/updates/<asset_name>）
@@ -334,20 +305,17 @@ pub struct DesktopAboutInfo {
     pub powered_by: String,
 }
 
-/// 关于信息：版本来自编译常量，发布时间复用最近一次 Release 查询结果。
-/// 缓存为空（如尚未触发任何轮询）时做一次尽力查询填充，失败则留空、不影响展示。
+/// 关于信息：版本来自编译常量，发布时间每次实时查询最新 Release（不缓存），
+/// 查询失败则留空、不影响展示。
 pub async fn about() -> DesktopAboutInfo {
-    let cache_empty = CACHE
-        .get()
-        .map_or(true, |m| m.lock().map(|g| g.is_none()).unwrap_or(true));
-    if cache_empty {
-        let _ = fetch_latest_release().await;
-    }
-    let published_at = CACHE
-        .get()
-        .and_then(|m| m.lock().ok())
-        .and_then(|g| g.as_ref().map(|e| e.published_at.clone()))
-        .unwrap_or_default();
+    let published_at = match fetch_latest_release_json().await {
+        Ok(json) => json
+            .get("published_at")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        Err(_) => String::new(),
+    };
     DesktopAboutInfo {
         version: current_version(),
         published_at,
