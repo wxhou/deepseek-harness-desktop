@@ -37,6 +37,32 @@ pub async fn install_dependencies(app_handle: AppHandle) -> Result<(), String> {
     // 不一致时，说明上游 pkg 有更新/修复，需要自动重新下载。
     let node_ok = download::Nodejs.check_installed(&app_handle);
     let dsh_files_ok = download::Dsh.check_installed(&app_handle);
+    // pnpm 是 dsh plugin 子命令的运行时依赖（v0.3.0 起随环境安装）；老版本
+    // 升级后 `installed` 已为 true 会跳过环境安装，捆绑 pnpm 可能从未落盘，
+    // 需一并纳入"已就绪"判定，缺失时由 workflow::install 按任务补齐。
+    let pnpm_ok = download::Pnpm.check_installed(&app_handle);
+
+    // 启动自愈捷径：记录显示未安装、但运行时文件已全部在盘。常见于桌面端自更新
+    // 安装器强杀进程，或上次启动时核心文件短暂缺失被 workflow::start 复位
+    // `installed`（一旦复位，此后每次启动都会走进安装分支）。此时直接补记
+    // installed 收尾：不做联网核对、绝不整包重下——联网核对可能把「记录滞后」
+    // 误判为真更新，而重下整目录在 Windows 上极易破坏 node_modules（历史 issue：
+    // 重解压后启动报找不到 @deepseek-ai/dsh-client-ui-settings）。真更新一律由
+    // 启动后的 check_dsh_update 提示用户手动安装，启动路径不该自行下载。
+    if node_ok && dsh_files_ok && pnpm_ok {
+        let setting = config::get_store_dat_setting(&app_handle);
+        if !setting.installed {
+            log::info!(
+                "Runtime files already present although store says not installed, healing installed flag"
+            );
+            let mut setting = config::get_store_dat_setting(&app_handle);
+            setting.installed = true;
+            config::set_store_dat_setting(&app_handle, setting);
+            sync_cli_link(&app_handle);
+            return Ok(());
+        }
+    }
+
     let dsh_latest = download::fetch_latest_dsh_pkg_info().await;
 
     // 已安装文件在盘时，用 resolve_update 甄别「记录滞后」与「真更新」：
@@ -92,11 +118,6 @@ pub async fn install_dependencies(app_handle: AppHandle) -> Result<(), String> {
             !dsh_files_ok
         }
     };
-
-    // pnpm 是 dsh plugin 子命令的运行时依赖（v0.3.0 起随环境安装）；老版本
-    // 升级后 `installed` 已为 true 会跳过环境安装，捆绑 pnpm 可能从未落盘，
-    // 需一并纳入"已就绪"判定，缺失时由 workflow::install 按任务补齐。
-    let pnpm_ok = download::Pnpm.check_installed(&app_handle);
 
     if node_ok && !dsh_need_install && pnpm_ok {
         log::debug!("Dependencies already installed and up to date, skipping installation");
