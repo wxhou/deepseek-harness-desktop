@@ -34,11 +34,11 @@ export default function DesktopUpdateDialog() {
                 <div className="space-y-1.5">
                   <div className="flex items-center justify-between text-sm">
                     <span className="text-muted">{t('ui.current_version')}</span>
-                    <span className="text-ink font-medium">{updateInfo?.version}</span>
+                    <span className="text-ink font-medium">{updateInfo?.currentVersion}</span>
                   </div>
                   <div className="flex items-center justify-between text-sm">
                     <span className="text-muted">{t('update.new_version_label')}</span>
-                    <span className="text-ink font-medium">{updateInfo?.tag}</span>
+                    <span className="text-ink font-medium">{updateInfo?.version}</span>
                   </div>
                   <If cond={updateInfo?.downloaded}>
                     <Description className="text-xs">
