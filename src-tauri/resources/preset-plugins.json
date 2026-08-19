@@ -42,14 +42,5 @@
     "repoUrl": "https://github.com/omdsh-dev/dsh-notification",
     "recommended": false,
     "defaultChecked": true
-  },
-  {
-    "id": "deepseek-harness-desktop",
-    "spec": "github:hairyf/deepseek-harness-desktop",
-    "name": "DeepSeek Harness Desktop",
-    "description": "DeepSeek Harness desktop shell (Tauri 2) that hosts this harness UI — includes the DSH Tauri message bridge and self-update.",
-    "repoUrl": "https://github.com/hairyf/deepseek-harness-desktop",
-    "recommended": false,
-    "defaultChecked": true
   }
 ]
