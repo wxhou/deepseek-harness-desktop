@@ -213,6 +213,10 @@ pub fn handler() -> impl Fn(Invoke<Wry>) -> bool + Send + Sync + 'static {
 // configure tauri builder
 pub fn builder() -> tauri::Builder<tauri::Wry> {
     tauri::Builder::default()
+        // 单实例插件必须最先注册：重复启动时仅唤醒当前主窗口。
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            show_main_window(app);
+        }))
         .setup(|app| {
             let app_handle = app.handle().clone();
             build_main_window(&app_handle)?;
