@@ -1,5 +1,5 @@
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{SocketAddr, TcpStream};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
 use std::path::PathBuf;
 use std::thread;
 use std::time::Duration;
@@ -33,13 +33,9 @@ pub async fn is_dsh_running(port: u16) -> bool {
 
 /// 检查指定端口是否被占用（通过尝试连接来判断）
 pub fn is_port_in_use(port: u16) -> bool {
-    // 尝试连接到端口，设置较短的超时时间（100ms）以快速检测
-    let addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap_or_else(|_| {
-        // 如果解析失败，返回一个默认地址（虽然不太可能发生）
-        "127.0.0.1:0".parse().unwrap()
-    });
-
-    TcpStream::connect_timeout(&addr, Duration::from_millis(100)).is_ok()
+    // 以实际绑定结果判断，能够识别“已绑定但尚未 listen”的占用状态。
+    let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
+    TcpListener::bind(addr).is_err()
 }
 
 /// 在独立线程中读取子进程的输出，同时写入日志文件
@@ -48,11 +44,8 @@ pub fn is_port_in_use(port: u16) -> bool {
 /// - `stdout`: 子进程的标准输出
 /// - `stderr`: 子进程的标准错误输出
 /// - `log_path`: 前端日志面板读取的日志文件
-pub fn spawn_output_readers<R1, R2>(
-    stdout: Option<R1>,
-    stderr: Option<R2>,
-    log_path: PathBuf,
-) where
+pub fn spawn_output_readers<R1, R2>(stdout: Option<R1>, stderr: Option<R2>, log_path: PathBuf)
+where
     R1: Read + Send + 'static,
     R2: Read + Send + 'static,
 {

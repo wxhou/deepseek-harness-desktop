@@ -12,6 +12,8 @@ pub const DSH_CORE_URL: &str =
 
 /// 捆绑的 pnpm 版本（与 deepseek-harness-pkg 的 packageManager: pnpm@11.7.0 对齐）
 pub const PNPM_VERSION: &str = "11.7.0";
+/// pnpm 11.7.0 官方 npm tarball 的 SHA-256；升级版本时必须同步更新。
+pub const PNPM_SHA256: &str = "deafa7ec98a1218b6a047289b92fbe2395c1e22d3495bb711653013218ee15ee";
 
 /// pnpm 官方 npm registry tarball 下载地址前缀（纯 JS 发行，全平台同一 URL）
 pub const PNPM_BASE_URL: &str = "https://registry.npmjs.org/pnpm/-/";

@@ -1,8 +1,10 @@
 use futures_util::StreamExt;
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use crate::config;
 use crate::service::download::ProgressTracker;
 use tauri::Runtime;
 
@@ -19,6 +21,7 @@ pub async fn download_file<'a, R: Runtime>(
     url: String,
 ) -> Result<Vec<u8>, String> {
     log::info!("Starting file download: {}", url);
+    validate_download_url(&url)?;
     // 创建具备 User-Agent 的客户端
     let client = reqwest::Client::builder()
         .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (deepseek-harness-desktop)")
@@ -33,6 +36,7 @@ pub async fn download_file<'a, R: Runtime>(
         log::error!("Download request failed: {}", e);
         e.to_string()
     })?;
+    validate_download_url(res.url().as_str())?;
 
     if !res.status().is_success() {
         log::error!("Download failed with HTTP status: {}", res.status());
@@ -66,6 +70,73 @@ pub async fn download_file<'a, R: Runtime>(
 
     log::info!("Download completed, {} bytes total", downloaded);
     Ok(buffer)
+}
+
+fn validate_download_url(url: &str) -> Result<(), String> {
+    let parsed = reqwest::Url::parse(url).map_err(|e| format!("DOWNLOAD_URL_INVALID: {e}"))?;
+    let trusted_host = matches!(
+        parsed.host_str(),
+        Some(
+            "nodejs.org"
+                | "registry.npmjs.org"
+                | "github.com"
+                | "release-assets.githubusercontent.com"
+                | "objects.githubusercontent.com"
+        )
+    );
+    if parsed.scheme() != "https" || !trusted_host {
+        return Err(format!("DOWNLOAD_SOURCE_UNTRUSTED: {url}"));
+    }
+    Ok(())
+}
+
+/// 校验下载内容的 SHA-256，拒绝未通过完整性校验的运行时与核心包。
+pub fn verify_sha256(buffer: &[u8], expected: &str) -> Result<(), String> {
+    let expected = expected
+        .strip_prefix("sha256:")
+        .unwrap_or(expected)
+        .trim()
+        .to_ascii_lowercase();
+    if expected.len() != 64 || !expected.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("INTEGRITY_METADATA_INVALID: expected SHA-256 is invalid".to_string());
+    }
+    let actual = format!("{:x}", Sha256::digest(buffer));
+    if actual != expected {
+        return Err(format!(
+            "INTEGRITY_CHECK_FAILED: SHA-256 mismatch, expected {expected}, got {actual}"
+        ));
+    }
+    Ok(())
+}
+
+/// 从 Node.js 官方同版本 SHASUMS256.txt 中读取当前平台包的摘要。
+pub async fn fetch_node_sha256(download_url: &str) -> Result<String, String> {
+    let (base, filename) = download_url.rsplit_once('/').ok_or_else(|| {
+        "INTEGRITY_METADATA_INVALID: Node.js download URL has no filename".to_string()
+    })?;
+    let checksums_url = format!("{base}/SHASUMS256.txt");
+    let checksums = reqwest::Client::builder()
+        .user_agent("deepseek-harness-desktop")
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|e| format!("INTEGRITY_METADATA_FAILED: {e}"))?
+        .get(&checksums_url)
+        .send()
+        .await
+        .map_err(|e| format!("INTEGRITY_METADATA_FAILED: {e}"))?
+        .error_for_status()
+        .map_err(|e| format!("INTEGRITY_METADATA_FAILED: {e}"))?
+        .text()
+        .await
+        .map_err(|e| format!("INTEGRITY_METADATA_FAILED: {e}"))?;
+
+    checksums
+        .lines()
+        .filter_map(|line| line.split_once(char::is_whitespace))
+        .find_map(|(digest, name)| {
+            (name.trim_start_matches([' ', '*']) == filename).then(|| digest.to_string())
+        })
+        .ok_or_else(|| format!("INTEGRITY_METADATA_MISSING: no checksum for {filename}"))
 }
 
 /// 删除目录并等待 Windows 文件锁释放。
@@ -103,6 +174,67 @@ fn remove_dir_with_retry(dest: &Path) -> bool {
     false
 }
 
+fn remove_path_if_exists(path: &Path) -> Result<(), String> {
+    if !path.exists() {
+        return Ok(());
+    }
+    if path.is_dir() {
+        if remove_dir_with_retry(path) {
+            Ok(())
+        } else {
+            Err(format!(
+                "INSTALL_PATH_LOCKED: cannot remove {}",
+                path.display()
+            ))
+        }
+    } else {
+        fs::remove_file(path)
+            .map_err(|e| format!("INSTALL_PATH_REMOVE_FAILED: {}: {e}", path.display()))
+    }
+}
+
+/// 将已经完整解压并验证结构的临时目录切换为正式目录；切换失败时恢复旧版本。
+fn commit_staged_install(staging: &Path, dest: &Path, backup: &Path) -> Result<(), String> {
+    // 上次若恰好在“旧目录改名为备份”后崩溃，先恢复旧版本再进行本次切换。
+    if !dest.exists() && backup.exists() {
+        fs::rename(backup, dest).map_err(|e| {
+            format!(
+                "INSTALL_RECOVERY_FAILED: {} -> {}: {e}",
+                backup.display(),
+                dest.display()
+            )
+        })?;
+    }
+    remove_path_if_exists(backup)?;
+    let had_previous = dest.exists();
+    if had_previous {
+        fs::rename(dest, backup).map_err(|e| {
+            format!(
+                "INSTALL_BACKUP_FAILED: {} -> {}: {e}",
+                dest.display(),
+                backup.display()
+            )
+        })?;
+    }
+    if let Err(e) = fs::rename(staging, dest) {
+        if had_previous {
+            let _ = fs::rename(backup, dest);
+        }
+        return Err(format!(
+            "INSTALL_COMMIT_FAILED: {} -> {}: {e}",
+            staging.display(),
+            dest.display()
+        ));
+    }
+    if had_previous {
+        if let Err(e) = remove_path_if_exists(backup) {
+            // 新版本已经切换成功，备份清理失败不应把成功安装误报为失败。
+            log::warn!("Failed to remove previous installation backup: {e}");
+        }
+    }
+    Ok(())
+}
+
 /// 确保解压文件到指定目录
 ///
 /// # 参数
@@ -123,6 +255,16 @@ pub fn ensure_extract<'a, R: Runtime>(
     use super::extractor::{extract_tgz, extract_zip};
     use super::utils::flatten_directory;
 
+    // 始终先落到同盘临时路径，全部成功后再原子切换，避免更新失败破坏旧版本。
+    let parent = dest.parent().unwrap_or(Path::new("."));
+    let leaf = dest
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("package");
+    let staging = parent.join(format!(".{leaf}.installing-{}", std::process::id()));
+    let backup = parent.join(format!(".{leaf}.backup"));
+    remove_path_if_exists(&staging)?;
+
     // 判断文件类型
     let pure_name = name.split('?').next().unwrap_or(&name).to_lowercase();
     let is_tgz = pure_name.ends_with(".tar.gz") || pure_name.ends_with(".tgz");
@@ -132,38 +274,27 @@ pub fn ensure_extract<'a, R: Runtime>(
     // 目标是文件，跳过，直接写入文件
     if !is_tgz && !is_zip {
         log::debug!("Non-compressed file, writing directly");
-        if let Some(parent) = dest.parent() {
+        if let Some(parent) = staging.parent() {
             fs::create_dir_all(parent).map_err(|e| {
                 log::error!("Failed to create parent directory: {}", e);
                 e.to_string()
             })?;
         }
-        fs::write(&dest, &buffer).map_err(|e| {
+        fs::write(&staging, &buffer).map_err(|e| {
             log::error!("Failed to write file: {}", e);
             e.to_string()
         })?;
         tracker.update(
             100.0,
             format!("已写入: {}", "100%"),
-            format!("File written: {}", dest.display()),
+            format!("File written: {}", staging.display()),
         );
+        commit_staged_install(&staging, &dest, &backup)?;
         log::info!("File write completed: {}", dest.display());
         return Ok(());
     }
 
-    // 清理并准备目标目录。Windows 上被进程加载的 DLL 在进程退出后释放句柄
-    // 需要时间，轮询等待目录可被删除；仍被占用时直接报错，避免在残留文件
-    // 上继续解压而得到“文件被锁”的误导性错误。
-    if dest.exists() {
-        log::debug!("Destination directory exists, cleaning");
-        if !remove_dir_with_retry(&dest) {
-            return Err(format!(
-                "Destination directory is still locked, cannot clean: {:?}",
-                dest
-            ));
-        }
-    }
-    fs::create_dir_all(&dest).map_err(|e| {
+    fs::create_dir_all(&staging).map_err(|e| {
         log::error!("Failed to create destination directory: {}", e);
         e.to_string()
     })?;
@@ -171,15 +302,15 @@ pub fn ensure_extract<'a, R: Runtime>(
     // 根据文件类型解压
     if is_tgz {
         log::debug!("Using tgz extractor");
-        extract_tgz(tracker, &buffer, &dest)?;
+        extract_tgz(tracker, &buffer, &staging)?;
     } else {
         log::debug!("Using zip extractor");
-        extract_zip(tracker, &buffer, &dest)?;
+        extract_zip(tracker, &buffer, &staging)?;
     }
 
     // 处理解压后的"套娃"文件夹
     log::debug!("Flattening directory structure");
-    flatten_directory(&dest).map_err(|e| {
+    flatten_directory(&staging).map_err(|e| {
         log::error!("Failed to flatten directory: {}", e);
         e.to_string()
     })?;
@@ -190,7 +321,7 @@ pub fn ensure_extract<'a, R: Runtime>(
         use super::utils::fix_recursive_permissions;
         // 递归赋予可执行权限 (755)
         log::debug!("Fixing file permissions");
-        fix_recursive_permissions(&dest).map_err(|e| {
+        fix_recursive_permissions(&staging).map_err(|e| {
             log::error!("Failed to fix permissions: {}", e);
             format!("Failed to fix permissions: {}", e)
         })?;
@@ -200,14 +331,13 @@ pub fn ensure_extract<'a, R: Runtime>(
         {
             use std::process::Command;
             log::debug!("Removing macOS quarantine attribute");
-            if let Some(path_str) = dest.to_str() {
-                let _ = Command::new("xattr")
-                    .args(["-cr", path_str])
-                    .output();
+            if let Some(path_str) = staging.to_str() {
+                let _ = Command::new("xattr").args(["-cr", path_str]).output();
             }
         }
     }
 
+    commit_staged_install(&staging, &dest, &backup)?;
     Ok(())
 }
 
@@ -219,6 +349,8 @@ const DSH_PKG_GITHUB_API: &str = "https://api.github.com/repos/hairyf/deepseek-h
 pub struct LatestDshPkg {
     pub tag: String,
     pub commit: String,
+    pub asset_url: String,
+    pub digest: String,
 }
 
 /// 查询 GitHub 上最新 Harness 发行版信息
@@ -264,9 +396,35 @@ pub async fn fetch_latest_dsh_pkg_info() -> Result<LatestDshPkg, String> {
         .and_then(|v| v.as_str())
         .ok_or_else(|| "Missing sha in release commit response".to_string())?;
 
+    let expected_name = config::get_dsh_download_url()?
+        .rsplit('/')
+        .next()
+        .ok_or_else(|| "Missing DSH asset filename".to_string())?
+        .to_string();
+    let asset = release
+        .get("assets")
+        .and_then(|value| value.as_array())
+        .and_then(|assets| {
+            assets.iter().find(|asset| {
+                asset.get("name").and_then(|value| value.as_str()) == Some(expected_name.as_str())
+            })
+        })
+        .ok_or_else(|| format!("Missing release asset {expected_name}"))?;
+    let asset_url = asset
+        .get("browser_download_url")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| format!("Missing download URL for {expected_name}"))?;
+    let digest = asset
+        .get("digest")
+        .and_then(|value| value.as_str())
+        .filter(|value| value.starts_with("sha256:"))
+        .ok_or_else(|| format!("Missing SHA-256 digest for {expected_name}"))?;
+
     Ok(LatestDshPkg {
         tag: tag_name.to_string(),
         commit: sha.to_string(),
+        asset_url: asset_url.to_string(),
+        digest: digest.to_string(),
     })
 }
 
@@ -330,7 +488,9 @@ pub fn resolve_update(
             .find(|(_, commit)| Some(commit.as_str()) == record_commit)
         {
             Some((tag, _)) => match parse_version_from_tag(tag) {
-                Some(record_version) if record_version < latest_version => UpdateCheck::HealUpToDate,
+                Some(record_version) if record_version < latest_version => {
+                    UpdateCheck::HealUpToDate
+                }
                 // 反查到的版本与最新版本相同（或解析失败）→ 视为同版本热修
                 _ => UpdateCheck::UpdateAvailable,
             },
@@ -378,10 +538,59 @@ pub async fn fetch_dsh_pkg_tags() -> Result<Vec<(String, String)>, String> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn sha256_verification_accepts_only_matching_digest() {
+        let expected = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        assert!(verify_sha256(b"abc", expected).is_ok());
+        assert!(verify_sha256(b"changed", expected).is_err());
+        assert!(verify_sha256(b"abc", "not-a-digest").is_err());
+    }
+
+    #[test]
+    fn download_sources_are_https_and_allowlisted() {
+        assert!(validate_download_url("https://nodejs.org/dist/v22/file.zip").is_ok());
+        assert!(validate_download_url("https://registry.npmjs.org/pnpm/-/pnpm.tgz").is_ok());
+        assert!(validate_download_url("http://nodejs.org/dist/file.zip").is_err());
+        assert!(validate_download_url("https://example.com/file.zip").is_err());
+    }
+
+    #[test]
+    fn staged_install_replaces_previous_version_and_cleans_backup() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("dsh-atomic-install-{unique}"));
+        let dest = root.join("package");
+        let staging = root.join("package.installing");
+        let backup = root.join("package.backup");
+        fs::create_dir_all(&dest).expect("create previous install");
+        fs::create_dir_all(&staging).expect("create staged install");
+        fs::write(dest.join("version.txt"), "old").expect("write previous version");
+        fs::write(staging.join("version.txt"), "new").expect("write staged version");
+
+        commit_staged_install(&staging, &dest, &backup).expect("commit staged install");
+
+        assert_eq!(fs::read_to_string(dest.join("version.txt")).unwrap(), "new");
+        assert!(!staging.exists());
+        assert!(!backup.exists());
+
+        // 模拟上次切换在 dest -> backup 后崩溃，本次应先恢复再安全切换。
+        fs::rename(&dest, &backup).expect("simulate interrupted switch");
+        fs::create_dir_all(&staging).expect("create next staged install");
+        fs::write(staging.join("version.txt"), "next").expect("write next version");
+        commit_staged_install(&staging, &dest, &backup).expect("recover and commit");
+        assert_eq!(fs::read_to_string(dest.join("version.txt")).unwrap(), "next");
+        assert!(!backup.exists());
+        fs::remove_dir_all(root).ok();
+    }
+
     fn latest(tag: &str, commit: &str) -> LatestDshPkg {
         LatestDshPkg {
             tag: tag.to_string(),
             commit: commit.to_string(),
+            asset_url: "https://example.invalid/dsh.zip".to_string(),
+            digest: format!("sha256:{}", "0".repeat(64)),
         }
     }
 
@@ -402,7 +611,10 @@ mod tests {
 
     #[test]
     fn resolve_matching_commit_is_up_to_date() {
-        let latest = latest("dsh-0.1.0-rc.7-32054485373", "6c659bb2636b3ad396a204c4c6ff110276fa3a09");
+        let latest = latest(
+            "dsh-0.1.0-rc.7-32054485373",
+            "6c659bb2636b3ad396a204c4c6ff110276fa3a09",
+        );
         let decision = resolve_update(
             Some("6c659bb2636b3ad396a204c4c6ff110276fa3a09"),
             Some("dsh-0.1.0-rc.7-32054485373"),
@@ -415,7 +627,10 @@ mod tests {
 
     #[test]
     fn resolve_different_installed_version_is_update() {
-        let latest = latest("dsh-0.1.0-rc.7-32054485373", "6c659bb2636b3ad396a204c4c6ff110276fa3a09");
+        let latest = latest(
+            "dsh-0.1.0-rc.7-32054485373",
+            "6c659bb2636b3ad396a204c4c6ff110276fa3a09",
+        );
         let decision = resolve_update(
             Some("564019027fd9469991aef6e57bb0a96325491c4e"),
             Some("dsh-0.1.0-rc.6-31773193667"),
@@ -429,7 +644,10 @@ mod tests {
     #[test]
     fn resolve_same_version_hotfix_is_update() {
         // 记录正确（与文件一致），最新 release 是同版本热修：应提示更新
-        let latest = latest("dsh-0.1.0-rc.6-31773193667", "564019027fd9469991aef6e57bb0a96325491c4e");
+        let latest = latest(
+            "dsh-0.1.0-rc.6-31773193667",
+            "564019027fd9469991aef6e57bb0a96325491c4e",
+        );
         let decision = resolve_update(
             Some("995e261e117617780dc50db16c70d445255978fd"),
             Some("dsh-0.1.0-rc.6-31762761461"),
@@ -443,7 +661,10 @@ mod tests {
     #[test]
     fn resolve_stale_record_behind_files_heals() {
         // 用户现场：记录停留在 rc.6，文件已是 rc.7 → 修正记录、免打扰
-        let latest = latest("dsh-0.1.0-rc.7-32054485373", "6c659bb2636b3ad396a204c4c6ff110276fa3a09");
+        let latest = latest(
+            "dsh-0.1.0-rc.7-32054485373",
+            "6c659bb2636b3ad396a204c4c6ff110276fa3a09",
+        );
         let decision = resolve_update(
             Some("564019027fd9469991aef6e57bb0a96325491c4e"),
             Some("dsh-0.1.0-rc.6-31773193667"),
@@ -457,7 +678,10 @@ mod tests {
     #[test]
     fn resolve_legacy_record_without_tag_heals_via_tags_lookup() {
         // 老记录没有 tag：反查 tags 列表发现记录版本低于文件版本 → 修正
-        let latest = latest("dsh-0.1.0-rc.7-32054485373", "6c659bb2636b3ad396a204c4c6ff110276fa3a09");
+        let latest = latest(
+            "dsh-0.1.0-rc.7-32054485373",
+            "6c659bb2636b3ad396a204c4c6ff110276fa3a09",
+        );
         let tags = vec![(
             "dsh-0.1.0-rc.6-31773193667".to_string(),
             "564019027fd9469991aef6e57bb0a96325491c4e".to_string(),
@@ -475,7 +699,10 @@ mod tests {
     #[test]
     fn resolve_legacy_same_version_still_updates() {
         // 老记录无 tag 但反查为同版本热修：仍应提示
-        let latest = latest("dsh-0.1.0-rc.6-31773193667", "564019027fd9469991aef6e57bb0a96325491c4e");
+        let latest = latest(
+            "dsh-0.1.0-rc.6-31773193667",
+            "564019027fd9469991aef6e57bb0a96325491c4e",
+        );
         let tags = vec![(
             "dsh-0.1.0-rc.6-31762761461".to_string(),
             "995e261e117617780dc50db16c70d445255978fd".to_string(),

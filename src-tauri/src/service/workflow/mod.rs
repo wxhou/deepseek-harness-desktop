@@ -6,116 +6,97 @@ pub(crate) mod win_spawn;
 
 use crate::config;
 use crate::service::download;
-use crate::service::workflow::utils::{is_dsh_running, is_port_in_use, spawn_output_readers};
+use crate::service::workflow::utils::{is_port_in_use, spawn_output_readers};
 use std::collections::HashMap;
-use std::fs;
-use std::path::Path;
-use std::process::{Command, Stdio};
+
 #[cfg(windows)]
 use std::ffi::OsString;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::fs;
+use std::process::{Command, Stdio};
+#[cfg(windows)]
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use tauri::Manager;
 
 /// 启动守卫：并发调用 `launch` 时只允许一个真正拉起 dsh 进程
 static LAUNCH_GUARD: AtomicBool = AtomicBool::new(false);
+/// 当前进程内由桌面端创建的 Harness 根进程 PID；0 表示没有持有的实例。
+static OWNED_PROCESS_ID: AtomicU32 = AtomicU32::new(0);
+/// Windows 进程句柄用于确认 PID 仍指向原进程，消除 PID 复用误杀窗口。
+#[cfg(windows)]
+static OWNED_PROCESS_HANDLE: AtomicUsize = AtomicUsize::new(0);
 
-/// 强制结束占用指定端口的进程（用于停止服务或清理僵尸进程）
-fn kill_port_holder(port: u16) {
-    #[cfg(unix)]
-    {
-        // 使用 lsof 找到占用端口的进程并强制结束
-        let _ = Command::new("sh")
-            .arg("-c")
-            .arg(format!("lsof -ti:{} | xargs kill -9", port))
-            .output();
+struct LaunchGuard;
+
+impl Drop for LaunchGuard {
+    fn drop(&mut self) {
+        LAUNCH_GUARD.store(false, Ordering::SeqCst);
+    }
+}
+
+/// 从起始端口向上查找第一个空闲端口，绝不结束未知的端口占用进程。
+fn find_available_port(start: u16) -> Result<u16, String> {
+    let mut port = start;
+    loop {
+        if !is_port_in_use(port) {
+            return Ok(port);
+        }
+        log::warn!("Port {port} is occupied, trying the next port");
+        port = port.checked_add(1).ok_or_else(|| {
+            "PORT_EXHAUSTED: no available TCP port after the configured port".to_string()
+        })?;
+    }
+}
+
+/// 只结束本应用当前进程创建并仍持有的 Harness 进程树。
+fn terminate_owned_process() {
+    let pid = OWNED_PROCESS_ID.swap(0, Ordering::SeqCst);
+    if pid == 0 {
+        return;
     }
 
     #[cfg(windows)]
     {
-        // 使用 PowerShell 找到占用端口的进程，再通过 taskkill /T 结束整个进程树。
-        // dsh 会派生 node worker 子进程，若只杀端口占用者，子进程仍会锁定原生
-        // 模块 DLL（如 sharp 的 libvips-42.dll），导致重新解压失败。
-        let ps_cmd = format!(
-            "$ids = Get-NetTCPConnection -LocalPort {} -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique; foreach ($id in $ids) {{ taskkill /PID $id /T /F 2>$null }}",
-            port
-        );
-
-        let mut cmd = Command::new("powershell");
-        // 使用 -WindowStyle Hidden 和 -NoProfile -NonInteractive 确保不显示窗口
-        cmd.args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-WindowStyle",
-            "Hidden",
-            "-Command",
-            &ps_cmd,
-        ]);
-
-        // 隐藏 PowerShell 窗口，避免弹出黑色控制台窗口
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::WaitForSingleObject;
+        const WAIT_TIMEOUT_CODE: u32 = 0x0000_0102;
+        let handle_value = OWNED_PROCESS_HANDLE.swap(0, Ordering::SeqCst);
+        if handle_value == 0 {
+            return;
+        }
+        let handle = handle_value as windows_sys::Win32::Foundation::HANDLE;
+        // 真实句柄已结束说明 PID 可能已复用，此时绝不调用 taskkill。
+        if unsafe { WaitForSingleObject(handle, 0) } != WAIT_TIMEOUT_CODE {
+            unsafe { CloseHandle(handle) };
+            return;
+        }
+        let mut cmd = Command::new("taskkill");
+        cmd.args(["/PID", &pid.to_string(), "/T", "/F"]);
         use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-
-        // 重定向 stdout 和 stderr 到空，进一步确保不显示窗口
+        cmd.creation_flags(0x08000000);
         cmd.stdout(Stdio::null());
         cmd.stderr(Stdio::null());
-
         if let Err(e) = cmd.output() {
-            log::error!("Failed to kill port holder: {}", e);
+            log::error!("Failed to stop owned Harness process {pid}: {e}");
+        }
+        unsafe {
+            WaitForSingleObject(handle, 5_000);
+            CloseHandle(handle);
         }
     }
-}
 
-/// 结束本应用（AppData 目录）下由 dsh 拉起的 node 进程。
-///
-/// sharp 等原生模块 DLL 会被 node 及其子进程加载并锁定。服务崩溃或失去响应时
-/// HTTP 探测不到，但这些进程仍持有 DLL；仅杀端口占用者会漏掉不再监听端口的
-/// 子进程。这里通过可执行文件路径或命令行是否位于 AppData 目录来识别。
-#[cfg(windows)]
-fn kill_dsh_processes(base_dir: &Path) {
-    let base = base_dir.to_string_lossy().to_string();
-    let ps_cmd = format!(
-        "Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" | Where-Object {{ ($_.ExecutablePath -like '{base}\\*') -or ($_.CommandLine -like '*{base}\\*') }} | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }}"
-    );
-
-    let mut cmd = Command::new("powershell");
-    cmd.args([
-        "-NoProfile",
-        "-NonInteractive",
-        "-WindowStyle",
-        "Hidden",
-        "-Command",
-        &ps_cmd,
-    ]);
-
-    // 隐藏 PowerShell 窗口，避免弹出黑色控制台窗口
-    use std::os::windows::process::CommandExt;
-    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-    cmd.stdout(Stdio::null());
-    cmd.stderr(Stdio::null());
-
-    if let Err(e) = cmd.output() {
-        log::error!("Failed to kill dsh processes: {}", e);
+    #[cfg(unix)]
+    {
+        // Harness 根进程启动在独立进程组中，负 PID 只作用于该进程树。
+        let group = format!("-{pid}");
+        let _ = Command::new("kill").args(["-TERM", "--", &group]).output();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let _ = Command::new("kill").args(["-KILL", "--", &group]).output();
     }
 }
 
-/// 结束本应用（AppData 目录）下由 dsh 拉起的 node 进程（Unix 分支）。
-///
-/// Windows 上这些进程会锁原生模块 DLL；macOS/Linux 上虽然不锁 DLL，但 dsh 派生
-/// 的 worker 子进程会持有 `dependencies/dsh` 与 `runtime` 目录下的文件句柄——
-/// 若在更新/重解压期间仍存活，会与 `ensure_extract` 的删除-重写产生竞态，留下
-/// 半写坏的安装目录（对应 issue #21「更新闪退、装推荐插件闪退后环境损坏」）。
-///
-/// 这里按“命令行中包含本应用布局标记”来匹配（dsh 入口 `dependencies/dsh` 与
-/// 捆绑运行时 `runtime`），只清理本应用派生进程，绝不使用 `pkill -9 node`
-/// 误杀用户自己运行的 node。pkill 以单个 argv 传入，无 shell 参与，空格安全。
-#[cfg(not(windows))]
-fn kill_dsh_processes(base_dir: &Path) {
-    let base = base_dir.to_string_lossy();
-    for marker in [format!("{base}/dependencies/dsh"), format!("{base}/runtime")] {
-        let _ = Command::new("pkill")
-            .args(["-9", "-f", &marker])
-            .output();
-    }
+pub fn has_owned_process() -> bool {
+    OWNED_PROCESS_ID.load(Ordering::SeqCst) != 0
 }
 
 /// 检测并启动 Harness 服务
@@ -136,18 +117,8 @@ pub async fn start(app_handle: tauri::AppHandle) -> Result<(), String> {
         return Ok(());
     }
 
-    log::debug!("Checking Harness running status");
-    let port_in_use = is_port_in_use(setting.port);
-    let dsh_running = is_dsh_running(setting.port).await;
-
-    if port_in_use && !dsh_running {
-        log::info!("Harness is not running, but port is in use, stopping harness");
-        stop(app_handle.clone()).await?;
-        return Ok(());
-    }
-
-    if dsh_running {
-        log::info!("Harness is already running");
+    if has_owned_process() {
+        log::info!("Owned Harness process is already running");
         status::set_status(status::Status::Running);
         status::emit_status(&app_handle);
         return Ok(());
@@ -177,7 +148,7 @@ pub async fn restart(app_handle: tauri::AppHandle) -> Result<(), String> {
 
 /// 启动 Harness 服务进程
 pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
-    let setting = config::get_store_dat_setting(&app_handle);
+    let mut setting = config::get_store_dat_setting(&app_handle);
     let node_binary_path = config::get_node_binary_path(&app_handle);
     let dsh_binary_path = config::get_dsh_binary_path(&app_handle);
 
@@ -193,29 +164,30 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     }
 
     // 避免重复启动（配合启动守卫，确保并发调用只拉起一个进程）
-    if is_dsh_running(setting.port).await {
-        log::info!("Harness is already running, skipping launch");
+    if has_owned_process() {
+        log::info!("Owned Harness process is already running, skipping launch");
         return Ok(());
     }
-    if LAUNCH_GUARD.swap(true, Ordering::SeqCst) {
+    if LAUNCH_GUARD
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
         log::info!("Harness launch already in progress, skipping");
         return Ok(());
     }
+    let _launch_guard = LaunchGuard;
 
-    // 端口被占用但服务未响应：先清理僵尸进程，避免 dsh EADDRINUSE 崩溃
-    if is_port_in_use(setting.port) {
-        log::warn!(
-            "Port {} is occupied but harness is not responding, cleaning up",
-            setting.port
+    // 端口冲突时从当前值开始逐个递增，并持久化最终选择供所有调用方复用。
+    let available_port = find_available_port(setting.port)?;
+    if available_port != setting.port {
+        log::info!(
+            "Harness port changed from {} to {} because the configured port is occupied",
+            setting.port,
+            available_port
         );
-        kill_port_holder(setting.port);
-        tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+        setting.port = available_port;
+        config::set_store_dat_setting(&app_handle, setting.clone());
     }
-
-    // 清理上次可能残留的本应用 dsh 进程，避免命令行/端口复用竞态。
-    // 注意只按本应用布局标记匹配，绝不使用旧的 `pkill -9 node`（会误杀用户
-    // 自己运行的 node，尤其 macOS 上常见）。
-    kill_dsh_processes(&config::get_base_dir(&app_handle));
 
     // 构造环境变量：隔离的 $DSH_HOME + 隐私默认（关闭遥测）
     let dsh_home = config::get_dsh_data_path(&app_handle);
@@ -227,7 +199,10 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
         log::warn!("win32 terminal support apply failed: {e}");
     }
     let mut envs: HashMap<String, String> = HashMap::new();
-    envs.insert("DSH_HOME".to_string(), dsh_home.to_string_lossy().into_owned());
+    envs.insert(
+        "DSH_HOME".to_string(),
+        dsh_home.to_string_lossy().into_owned(),
+    );
     envs.insert("DSH_TELEMETRY_DISABLED".to_string(), "1".to_string());
     envs.insert("NO_COLOR".to_string(), "1".to_string());
     envs.insert("DSH_WEB_PORT".to_string(), setting.port.to_string());
@@ -274,16 +249,41 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
                 OsString::from("--port"),
                 OsString::from(setting.port.to_string()),
             ];
-            win_spawn::spawn_with_hidden_console(
+            win_spawn::spawn_with_hidden_console_owned(
                 &node_binary_path,
                 &args,
                 Some(&config::get_dsh_install_path(&app_handle)),
                 &envs,
             )
-            .map(|(stdout, stderr)| (Some(stdout), Some(stderr)))
+            .map(|(stdout, stderr, pid, handle)| {
+                OWNED_PROCESS_ID.store(pid, Ordering::SeqCst);
+                // 持有真实进程句柄直到退出；退出后仅在 PID 仍匹配时清空，避免复用。
+                let handle_value = handle as usize;
+                OWNED_PROCESS_HANDLE.store(handle_value, Ordering::SeqCst);
+                std::thread::spawn(move || unsafe {
+                    use windows_sys::Win32::Foundation::CloseHandle;
+                    use windows_sys::Win32::System::Threading::{WaitForSingleObject, INFINITE};
+                    let process_handle = handle_value as windows_sys::Win32::Foundation::HANDLE;
+                    WaitForSingleObject(process_handle, INFINITE);
+                    let _ = OWNED_PROCESS_ID.compare_exchange(
+                        pid,
+                        0,
+                        Ordering::SeqCst,
+                        Ordering::SeqCst,
+                    );
+                    let owns_handle = OWNED_PROCESS_HANDLE
+                        .compare_exchange(handle_value, 0, Ordering::SeqCst, Ordering::SeqCst)
+                        .is_ok();
+                    if owns_handle {
+                        CloseHandle(process_handle);
+                    }
+                });
+                (Some(stdout), Some(stderr), pid)
+            })
         }
         #[cfg(not(windows))]
         {
+            use std::os::unix::process::CommandExt;
             let mut cmd = Command::new(&node_binary_path);
             cmd.arg(&dsh_binary_path)
                 .arg("--profile")
@@ -298,37 +298,40 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
                 .stdin(Stdio::null())
                 // 使用管道捕获输出，以便在子线程中读取
                 .stdout(Stdio::piped())
-                .stderr(Stdio::piped());
+                .stderr(Stdio::piped())
+                // 独立进程组让停止操作只影响 Harness 及其后代。
+                .process_group(0);
             cmd.spawn().map(|mut child| {
+                let pid = child.id();
                 let stdout = child.stdout.take();
                 let stderr = child.stderr.take();
-                (stdout, stderr)
+                OWNED_PROCESS_ID.store(pid, Ordering::SeqCst);
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                    let _ = OWNED_PROCESS_ID.compare_exchange(
+                        pid,
+                        0,
+                        Ordering::SeqCst,
+                        Ordering::SeqCst,
+                    );
+                });
+                (stdout, stderr, pid)
             })
         }
     };
 
     match spawn_result {
-        Ok((stdout, stderr)) => {
-            log::info!("Harness process started successfully");
+        Ok((stdout, stderr, pid)) => {
+            log::info!(
+                "Harness process started successfully: pid={pid}, port={}",
+                setting.port
+            );
             spawn_output_readers(stdout, stderr, log_path);
-
-            // 后台等待 dsh 就绪后释放启动守卫，覆盖启动窗口内的并发调用
-            tauri::async_runtime::spawn(async move {
-                for _ in 0..15 {
-                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                    if is_dsh_running(setting.port).await {
-                        break;
-                    }
-                }
-                LAUNCH_GUARD.store(false, Ordering::SeqCst);
-            });
-
             Ok(())
         }
         Err(e) => {
-            LAUNCH_GUARD.store(false, Ordering::SeqCst);
             log::error!("Failed to start process: {}", e);
-            Err(format!("Failed to start process: {}", e))
+            Err(format!("PROCESS_START_FAILED: {e}"))
         }
     }
 }
@@ -336,16 +339,9 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
 /// 停止 Harness 服务
 pub async fn stop(app_handle: tauri::AppHandle) -> Result<(), String> {
     log::info!("Stopping Harness service...");
-    let port = config::get_store_dat_setting(&app_handle).port;
-
-    // 重置启动守卫，确保后续 launch 可以重新拉起
+    // 重置启动守卫，确保后续 launch 可以重新拉起；仅结束持有的根进程树。
     LAUNCH_GUARD.store(false, Ordering::SeqCst);
-    kill_port_holder(port);
-
-    // 连带清理 dsh 派生的 node 子进程：它们可能不再监听端口，但仍持有原生
-    // 模块 DLL（Windows 文件锁）或 dependencies/runtime 目录文件句柄
-    // （macOS/Linux 重解压竞态），需要一并强制结束。
-    kill_dsh_processes(&config::get_base_dir(&app_handle));
+    terminate_owned_process();
 
     // 给系统一点时间释放端口 (重要！)
     tokio::time::sleep(std::time::Duration::from_millis(800)).await;
@@ -357,13 +353,9 @@ pub async fn stop(app_handle: tauri::AppHandle) -> Result<(), String> {
 
 /// 应用退出时同步回收 Harness 进程。
 ///
-/// 退出路径上不更新状态、不做异步等待，仅强制结束端口占用者及其进程树，
-/// 以及 AppData 目录下的 node 进程，避免残留进程把原生模块 DLL 锁在内存或
-/// 持有目录文件句柄，导致下次启动重新解压失败。
-/// 需要 app_handle 定位 AppData 目录来清理进程树。
-pub fn stop_on_exit(app_handle: tauri::AppHandle, port: u16) {
-    kill_port_holder(port);
-    kill_dsh_processes(&config::get_base_dir(&app_handle));
+/// 退出路径上不更新状态、不做异步等待，只结束当前应用持有的 Harness 进程树。
+pub fn stop_on_exit(_app_handle: tauri::AppHandle, _port: u16) {
+    terminate_owned_process();
 }
 
 /// 安装环境（Node.js 运行时 + 打包的 Harness 发行版）
@@ -373,19 +365,14 @@ pub async fn install(
 ) -> Result<(), String> {
     log::info!("Starting installation process");
 
-    // 安装前先停止正在运行的 Harness 服务：运行中的 node 进程会把
+    // 安装前先停止本应用持有的 Harness 服务：运行中的 node 进程会把
     // 原生模块 DLL（如 sharp 的 libvips-42.dll）加载进内存并锁住文件，
     // 不停止的话覆盖解压必然失败（Windows os error 32）。
-    // 注意不能只依赖 HTTP 探测：服务崩溃/失去响应时探测不到，但 node
-    // 进程可能仍存活并持有 DLL，因此探测不到时也要强制清理。
-    if is_dsh_running(config::get_store_dat_setting(app_handle).port).await {
+    // 进程归属以启动时记录的 PID 为准，不根据端口结束未知程序。
+    if has_owned_process() {
         log::info!("Stopping running Harness service before installation");
         stop(app_handle.clone()).await?;
-    } else {
-        log::warn!("Harness service not responding, force cleaning dsh processes");
-        kill_port_holder(config::get_store_dat_setting(app_handle).port);
-        kill_dsh_processes(&config::get_base_dir(app_handle));
-        tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+
     }
 
     let window = app_handle
@@ -394,8 +381,11 @@ pub async fn install(
     log::debug!("Main window obtained");
     // 3 个任务 × 下载/解压 2 个阶段
     let mut tracker = download::ProgressTracker::new(&window, 6);
-    let tasks: Vec<Box<dyn download::Installable>> =
-        vec![Box::new(download::Nodejs), Box::new(download::Dsh), Box::new(download::Pnpm)];
+    let tasks: Vec<Box<dyn download::Installable>> = vec![
+        Box::new(download::Nodejs),
+        Box::new(download::Dsh),
+        Box::new(download::Pnpm),
+    ];
     log::info!("Task list created, {} tasks total", tasks.len());
 
     for (index, task) in tasks.iter().enumerate() {
@@ -417,8 +407,25 @@ pub async fn install(
         log::info!("Task {} not installed, starting installation", index + 1);
 
         // 1. 下载
-        tracker.start_phase("download", &format!("{} {}", config::i18n::t("install.downloading"), task.title()));
-        let url = task.get_download_url()?;
+        tracker.start_phase(
+            "download",
+            &format!(
+                "{} {}",
+                config::i18n::t("install.downloading"),
+                task.title()
+            ),
+        );
+        let url = if index == 1 {
+            dsh_latest
+                .as_ref()
+                .map(|info| info.asset_url.clone())
+                .ok_or_else(|| {
+                    "DSH_INTEGRITY_UNAVAILABLE: trusted release metadata is required for installation"
+                        .to_string()
+                })?
+        } else {
+            task.get_download_url()?
+        };
         log::debug!("Download URL: {}", url);
         // 取文件名用于解压类型判定；下载 URL 正常必含 '/'，但这里不 panic，
         // 防御性兜底为空串（后续 ensure_extract 会因无法判定类型而报错返回，
@@ -427,10 +434,26 @@ pub async fn install(
         log::debug!("File name: {}", name);
         let buffer = download::download_file(&tracker, url).await?;
         log::info!("Download completed, file size: {} bytes", buffer.len());
+        let expected_digest = match index {
+            0 => download::fetch_node_sha256(task.get_download_url()?.as_str()).await?,
+            1 => dsh_latest
+                .as_ref()
+                .map(|info| info.digest.clone())
+                .ok_or_else(|| {
+                    "DSH_INTEGRITY_UNAVAILABLE: trusted release digest is required".to_string()
+                })?,
+            2 => config::PNPM_SHA256.to_string(),
+            _ => return Err("INSTALL_TASK_INVALID: unknown install task".to_string()),
+        };
+        download::verify_sha256(&buffer, &expected_digest)?;
+        log::info!("Download integrity verified for task {}", index + 1);
         tracker.end_phase();
 
         // 2. 解压
-        tracker.start_phase("extract", &format!("{} {}", config::i18n::t("install.extracting"), task.title()));
+        tracker.start_phase(
+            "extract",
+            &format!("{} {}", config::i18n::t("install.extracting"), task.title()),
+        );
         let dest = task.get_install_path(app_handle);
         log::debug!("Installation path: {:?}", dest);
         download::ensure_extract(&tracker, name, buffer, dest)?;
@@ -458,6 +481,9 @@ pub async fn install(
 
 /// 健康检查（通过 Rust 代理，避免 WebView CORS 问题）
 pub async fn proxy_health_check(port: u16) -> Result<String, String> {
+    if !has_owned_process() {
+        return Err("HARNESS_NOT_OWNED: no Harness process is owned by this app".to_string());
+    }
     let client = reqwest::Client::builder()
         .timeout(config::HEALTH_CHECK_TIMEOUT)
         .build()
@@ -484,4 +510,19 @@ pub async fn proxy_health_check(port: u16) -> Result<String, String> {
         }
     }
     Err("HARNESS_NOT_READY: Harness service is not ready".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::TcpListener;
+
+    #[test]
+    fn occupied_port_advances_to_a_free_port() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind occupied test port");
+        let occupied = listener.local_addr().expect("read occupied port").port();
+        let selected = find_available_port(occupied).expect("find next free port");
+        assert!(selected > occupied);
+        assert!(!is_port_in_use(selected));
+    }
 }

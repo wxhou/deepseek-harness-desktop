@@ -11,7 +11,10 @@ pub async fn trigger(app_handle: AppHandle) -> Result<(), Box<dyn std::error::Er
     let current_status = status::get_status();
 
     let port = crate::config::get_store_dat_setting(&app_handle).port;
-    let is_dsh_running = utils::is_dsh_running(port).await;
+    // 只有本应用仍持有启动 PID 时才接受 HTTP 健康结果，避免把同端口的
+    // 其他本地 Web 服务误识别成 Harness。
+    let is_dsh_running =
+        crate::service::workflow::has_owned_process() && utils::is_dsh_running(port).await;
     log::trace!("DSH status check: dsh_running={}", is_dsh_running);
 
     // 只有当当前状态为运行中时，才更新状态

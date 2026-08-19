@@ -4,6 +4,7 @@ import { listen } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { useEffect } from 'react'
 import { useEvent, useInterval, useMountedState } from 'react-use'
+import { getIframeOrigin } from '@/utils/iframe-origin'
 
 interface NativeNotificationMessage {
   source?: 'dsh-notification-bridge'
@@ -26,6 +27,10 @@ export function useIframeShim(iframeRef: RefObject<HTMLIFrameElement | null>) {
     }
     // 只接受 DSH 直接 iframe 发来的消息；不兼容多层嵌套 iframe。
     if (event.source !== iframeRef.current?.contentWindow) {
+      return
+    }
+    const iframeOrigin = getIframeOrigin(iframeRef)
+    if (!iframeOrigin || event.origin !== iframeOrigin) {
       return
     }
     if (data.type !== 'dsh://native-notification') {
@@ -51,6 +56,9 @@ export function useIframeShim(iframeRef: RefObject<HTMLIFrameElement | null>) {
       'dsh-notification-clicked',
       (event) => {
         const payload = event.payload
+        const iframeOrigin = getIframeOrigin(iframeRef)
+        if (!iframeOrigin)
+          return
         iframeRef.current?.contentWindow?.postMessage(
           {
             type: 'dsh://focus-session',
@@ -58,7 +66,7 @@ export function useIframeShim(iframeRef: RefObject<HTMLIFrameElement | null>) {
             title: payload.title || undefined,
             tag: payload.tag || undefined,
           },
-          '*',
+          iframeOrigin,
         )
       },
     ).then((unlistener) => {
@@ -86,9 +94,12 @@ export function useIframeShim(iframeRef: RefObject<HTMLIFrameElement | null>) {
           appWindow.isVisible(),
         ])
         const hidden = minimized || !visible
+        const iframeOrigin = getIframeOrigin(iframeRef)
+        if (!iframeOrigin)
+          return
         iframeRef.current?.contentWindow?.postMessage(
           { type: 'dsh://visibility-state', hidden },
-          '*',
+          iframeOrigin,
         )
       }
       catch (error) {

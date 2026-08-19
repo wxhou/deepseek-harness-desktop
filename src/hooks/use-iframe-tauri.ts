@@ -1,6 +1,7 @@
 import type { RefObject } from 'react'
 import { useState } from 'react'
 import { useEvent } from 'react-use'
+import { getIframeOrigin } from '@/utils/iframe-origin'
 
 /**
  * 壳层导航桥（宿主侧）：ShellNavBar 左侧三个控件的消息通道。
@@ -60,6 +61,10 @@ export function useIframeTauri(
     if (event.source !== iframeRef?.current?.contentWindow) {
       return
     }
+    const iframeOrigin = iframeRef ? getIframeOrigin(iframeRef) : null
+    if (!iframeOrigin || event.origin !== iframeOrigin) {
+      return
+    }
     switch (data.type) {
       case 'dsh://sidebar:collapsed':
         setSidebarCollapsed(Boolean(data.collapsed))
@@ -76,9 +81,14 @@ export function useIframeTauri(
   useEvent('message', handleMessage)
 
   function sendNav(action: ShellNavAction) {
+    if (!iframeRef)
+      return
+    const iframeOrigin = getIframeOrigin(iframeRef)
+    if (!iframeOrigin)
+      return
     iframeRef?.current?.contentWindow?.postMessage(
       { source: 'dsh-desktop', type: COMMAND_TYPES[action] },
-      '*',
+      iframeOrigin,
     )
   }
 

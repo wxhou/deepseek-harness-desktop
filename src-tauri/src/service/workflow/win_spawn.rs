@@ -27,14 +27,15 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Threading::{
-    CreateProcessW, STARTF_USESHOWWINDOW, STARTF_USESTDHANDLES, STARTUPINFOW, CREATE_NEW_CONSOLE,
-    CREATE_UNICODE_ENVIRONMENT, PROCESS_INFORMATION,
+    CreateProcessW, GetProcessId, CREATE_NEW_CONSOLE, CREATE_UNICODE_ENVIRONMENT,
+    PROCESS_INFORMATION, STARTF_USESHOWWINDOW, STARTF_USESTDHANDLES, STARTUPINFOW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
 
 /// 以隐藏控制台方式启动 `program`，返回其 stdout / stderr 管道读取端。
 ///
 /// `envs` 中的键值会覆盖当前进程环境变量后传给子进程。
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn spawn_with_hidden_console(
     program: &Path,
     args: &[OsString],
@@ -47,6 +48,28 @@ pub fn spawn_with_hidden_console(
         CloseHandle(handle);
     }
     Ok((stdout, stderr))
+}
+
+/// 启动由桌面端持有的 Harness 进程，同时返回 PID 与进程句柄。
+///
+/// PID 用于只结束本应用创建的进程树；句柄由调用方等待并关闭，避免进程退出后
+/// PID 被系统复用时误伤其他程序。
+pub fn spawn_with_hidden_console_owned(
+    program: &Path,
+    args: &[OsString],
+    current_dir: Option<&Path>,
+    envs: &HashMap<String, String>,
+) -> io::Result<(File, File, u32, HANDLE)> {
+    let (stdout, stderr, handle) =
+        spawn_with_hidden_console_tracked(program, args, current_dir, envs)?;
+    let pid = unsafe { GetProcessId(handle) };
+    if pid == 0 {
+        unsafe {
+            CloseHandle(handle);
+        }
+        return Err(io::Error::last_os_error());
+    }
+    Ok((stdout, stderr, pid, handle))
 }
 
 /// 同 [`spawn_with_hidden_console`]，但额外返回进程句柄，供调用方等待进程
@@ -210,11 +233,7 @@ fn build_command_line(program: &Path, args: &[OsString]) -> Vec<u16> {
 
 /// 按 MSVC 规则为命令行参数加引号并转义反斜杠/双引号
 fn quote_arg(arg: &str) -> String {
-    if !arg.is_empty()
-        && !arg
-            .chars()
-            .any(|c| matches!(c, ' ' | '\t' | '"'))
-    {
+    if !arg.is_empty() && !arg.chars().any(|c| matches!(c, ' ' | '\t' | '"')) {
         return arg.to_string();
     }
 
@@ -251,7 +270,7 @@ fn quote_arg(arg: &str) -> String {
 mod tests {
     use super::*;
 
-        #[test]
+    #[test]
     fn env_key_match_is_case_insensitive() {
         // Windows 用户环境里的键通常是 `Path`：用 `PATH` 覆盖必须替换而不是追加
         let mut vars: Vec<(OsString, OsString)> = vec![
@@ -281,7 +300,8 @@ mod tests {
         let mut envs = HashMap::new();
         envs.insert("DSH_WIN_SPAWN_TEST".to_string(), "hello world".to_string());
 
-        let workdir = std::env::temp_dir().join(format!("dsh_win_spawn_test_{}", std::process::id()));
+        let workdir =
+            std::env::temp_dir().join(format!("dsh_win_spawn_test_{}", std::process::id()));
         std::fs::create_dir_all(&workdir).unwrap();
 
         let args = vec![
@@ -344,7 +364,8 @@ mod tests {
     #[test]
     fn grandchildren_inherit_hidden_console() {
         let node = find_node_on_path().expect("node.exe not found for the test");
-        let ps1 = std::env::temp_dir().join(format!("dsh_console_check_{}.ps1", std::process::id()));
+        let ps1 =
+            std::env::temp_dir().join(format!("dsh_console_check_{}.ps1", std::process::id()));
         std::fs::write(
             &ps1,
             "$code='using System;using System.Runtime.InteropServices;public class C{[DllImport(\"kernel32.dll\")]public static extern IntPtr GetConsoleWindow();[DllImport(\"user32.dll\")]public static extern bool IsWindowVisible(IntPtr h);}';Add-Type -TypeDefinition $code;$h=[C]::GetConsoleWindow();if($h -eq [IntPtr]::Zero){'NO_CONSOLE'}else{'HAS_CONSOLE_VISIBLE='+[C]::IsWindowVisible($h)}",
@@ -359,13 +380,8 @@ mod tests {
         );
 
         let args = vec![OsString::from("-e"), OsString::from(node_js)];
-        let (stdout, stderr) = spawn_with_hidden_console(
-            &node,
-            &args,
-            None,
-            &HashMap::new(),
-        )
-        .unwrap();
+        let (stdout, stderr) =
+            spawn_with_hidden_console(&node, &args, None, &HashMap::new()).unwrap();
 
         let mut output = String::new();
         let mut error = String::new();
