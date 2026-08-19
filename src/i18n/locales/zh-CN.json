@@ -11,7 +11,6 @@
   "app.copy_url": "复制地址",
   "app.reveal_dir": "打开数据目录",
   "app.refresh": "刷新",
-
   "status.checking": "正在检查系统环境...",
   "status.installing": "正在安装依赖...",
   "status.updating": "正在更新 DeepSeek Harness...",
@@ -23,7 +22,6 @@
   "status.error": "启动失败",
   "status.loading": "Loading plugins…",
   "status.loading_plugins": "Loading plugins…",
-
   "preinstall.title": "安装推荐插件",
   "preinstall.subtitle": "选择要在启动前安装的插件，之后也可以在设置中的插件市场里管理。",
   "preinstall.recommend": "推荐",
@@ -40,27 +38,22 @@
   "preinstall.settings_title": "预装插件",
   "preinstall.settings_hint": "重新打开预设引导，可重新选择或安装推荐的插件。",
   "preinstall.open_preset": "打开预设",
-
   "plugins.title": "已安装插件",
   "plugins.empty": "暂无已安装插件",
   "plugins.loading": "正在读取插件…",
   "plugins.error": "插件读取失败",
   "plugins.bundled": "已加载",
-
   "update.available": "发现新版本 {{tag}}，是否立即更新？",
   "update.now": "立即更新",
   "update.later": "稍后",
-
   "download.saved": "Session 日志已保存",
   "download.saved_to": "已保存到",
   "download.failed": "Session 日志下载失败",
   "download.show_in_folder": "打开",
-
   "errors.service_start_timeout": "DeepSeek Harness 启动超时，请检查端口 {{port}} 是否被占用或启动过慢。",
   "errors.install_verify_failed": "资源包已下载，但安装校验失败。",
   "errors.network_timeout": "网络下载超时，请检查网络连接后重试。",
   "errors.unknown": "未知错误",
-
   "ui.service_url": "服务地址",
   "ui.port": "端口",
   "ui.auto_start": "启动时自动运行",
@@ -91,13 +84,11 @@
   "ui.settings": "设置",
   "ui.waiting_logs": "等待安装日志...",
   "ui.install_log": "安装日志",
-
   "buttons.retry": "重试",
   "buttons.save": "保存",
   "buttons.copy": "复制",
   "buttons.clear_logs": "清空日志",
   "buttons.refresh_logs": "刷新",
-
   "messages.copy_success": "地址已复制到剪贴板",
   "messages.log_copied": "日志已复制到剪贴板",
   "messages.copy_failed": "复制地址失败",
@@ -116,5 +107,7 @@
   "nav.forward": "前进",
   "nav.minimize": "最小化",
   "nav.maximize": "最大化",
-  "nav.background": "后台化"
+  "nav.background": "后台化",
+  "app.debug_sidebar_title": "应用调试",
+  "messages.logs_copied": "日志已复制到剪贴板"
 }

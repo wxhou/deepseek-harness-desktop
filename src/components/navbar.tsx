@@ -6,6 +6,7 @@ import {
   LayoutSideContentLeft,
   Minus,
   Square,
+  Wrench,
   Xmark,
 } from '@gravity-ui/icons'
 import { Button } from '@heroui/react'
@@ -14,6 +15,7 @@ import { useTranslation } from 'react-i18next'
 import { If } from 'react-if-lite'
 import { useDshPlugins } from '../hooks/use-dsh-plugins'
 import { useIframeTauri } from '../hooks/use-iframe-tauri'
+import { DebugSidebar } from './debug-sidebar'
 
 /**
  * 壳层窗口顶部导航栏（44px，常驻）：
@@ -52,7 +54,6 @@ export default function Navbar({ iframeRef }: NavbarProps) {
   const { sidebarCollapsed, canGoBack, canGoForward, sendNav } = useIframeTauri(iframeRef)
   // 仅当 dsh-tauri 插件启用（已安装）时显示左侧导航控件
   const tauriEnabled = plugins.some(plugin => plugin.id === TAURI_PLUGIN_ID)
-
   function handleWindowAction(action: 'minimize' | 'maximize' | 'background') {
     const appWindow = getCurrentWindow()
     switch (action) {
@@ -70,7 +71,7 @@ export default function Navbar({ iframeRef }: NavbarProps) {
   }
 
   return (
-    <div className="relative flex h-11 w-full flex-none select-none items-center gap-0.5 border-b border-line bg-canvas px-1.5 dark:bg-[#1b1b1c]">
+    <div className="relative flex h-11 w-full flex-none select-none items-center gap-0.5 border-b border-line px-1.5 bg-[#f9fafb] dark:bg-[#1b1b1c]">
       <If cond={iframeRef != null && tauriEnabled}>
         <Button
           className="rounded-lg size-7"
@@ -110,6 +111,18 @@ export default function Navbar({ iframeRef }: NavbarProps) {
         >
           <ArrowRight />
         </Button>
+        <DebugSidebar>
+          <Button
+            className="rounded-lg size-7"
+            isIconOnly
+            size="sm"
+            variant="ghost"
+            aria-label={t('app.expand_sidebar')}
+          >
+            <Wrench />
+          </Button>
+        </DebugSidebar>
+
       </If>
 
       {/* 拖拽区：Tauri 原生拖拽（仅此元素带 data-tauri-drag-region，按钮不受影响） */}

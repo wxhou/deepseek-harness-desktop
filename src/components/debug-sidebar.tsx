@@ -1,26 +1,14 @@
-import type { ReactNode } from 'react'
-// import type { DshPlugin } from '../hooks/use-dsh-plugins'
-import { ArrowRotateRight, ArrowsRotateRight, ArrowUpRightFromSquare, Copy, Folder, Power } from '@gravity-ui/icons'
-import {
-  Button,
-  Chip,
-  Drawer,
-  Input,
-  ListBox,
-  Select,
-  Spinner,
-  Switch,
-  TextArea,
-} from '@heroui/react'
+import type { PropsWithChildren, ReactNode } from 'react'
+import { ArrowRotateRight, ArrowUpRightFromSquare, CircleInfo, Copy, Folder, Power, TrashBin } from '@gravity-ui/icons'
+import { Button, Chip, Description, Drawer, Input, ListBox, Select, Spinner, Surface, Switch, Tooltip } from '@heroui/react'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import { invoke } from '@tauri-apps/api/core'
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
-// import { If } from 'react-if-lite'
+import { If } from 'react-if-lite'
 import { useStore } from 'valtio-define'
-// import { useDshPlugins } from '../hooks/use-dsh-plugins'
-import { harness } from '../store/modules/harness'
-import { setting } from '../store/modules/setting'
-import { toast } from '../utils/toast'
+import { store } from '@/store'
+import { toast } from '@/utils'
 
 export interface RuntimeInfo {
   app_version: string
@@ -33,12 +21,6 @@ export interface RuntimeInfo {
   arch: string
 }
 
-export interface AppConfig {
-  port: number
-  auto_start: boolean
-  cli_link_enabled: boolean
-}
-
 export interface CliLinkStatus {
   enabled: boolean
   shim_exists: boolean
@@ -47,234 +29,94 @@ export interface CliLinkStatus {
   bin_dir: string
   shim_path: string
 }
-
-/** 分组卡片容器 */
-function SectionCard({ children, className = '' }: { children: ReactNode, className?: string }) {
-  return (
-    <div className={`space-y-3 ${className}`}>
-      {children}
-    </div>
-  )
+export interface AppConfig {
+  port: number
+  auto_start: boolean
+  cli_link_enabled: boolean
 }
 
-/** 分组小节标题 */
-function SectionTitle({ children, action }: { children: ReactNode, action?: ReactNode }) {
-  return (
-    <div className="flex items-center justify-between text-xs font-semibold uppercase tracking-wider text-muted/80 border-b border-line/40 pb-2">
-      <span>{children}</span>
-      {action && <div>{action}</div>}
-    </div>
-  )
-}
-
-/** 信息列表的一行 */
-function InfoRow({ term, children }: { term: string, children: ReactNode }) {
-  return (
-    <div className="flex items-center justify-between gap-2 text-xs py-0.5">
-      <dt className="shrink-0 text-muted font-medium">{term}</dt>
-      <dd className="min-w-0 break-all text-ink text-right font-mono">{children}</dd>
-    </div>
-  )
-}
-
-export default function DebugSidebar() {
+export function DebugSidebar(props: PropsWithChildren) {
   const { t, i18n } = useTranslation()
-  const { sidebarOpen } = useStore(setting)
-  const { serviceRunning, busyAction, preinstall } = useStore(harness)
-  // const { plugins, loading: pluginsLoading, error: pluginsError, refresh: refreshPlugins } = useDshPlugins()
-  const [info, setInfo] = useState<RuntimeInfo | null>(null)
-  const [cliLinkEnabled, setCliLinkEnabled] = useState(true)
-  const [port, setPort] = useState(3080)
-  const [cliStatus, setCliStatus] = useState<CliLinkStatus | null>(null)
-  const [logs, setLogs] = useState('')
-  const [busy, setBusy] = useState<string | null>(null)
+  const { serviceRunning, busyAction, preinstall } = useStore(store.harness)
 
-  async function refreshInfo() {
-    if (busy)
-      return
-    setBusy('refreshInfo')
-    try {
-      setInfo(await invoke<RuntimeInfo>('get_runtime_info'))
-    }
-    catch (err) {
-      console.error('[DebugSidebar] failed to load runtime info:', err)
-    }
-    finally {
-      setBusy(null)
-    }
-  }
+  const [port, setPort] = useState<number>(3080)
 
-  async function refreshConfig() {
-    try {
-      const nextConfig = await invoke<AppConfig>('get_app_config')
-      setPort(nextConfig.port)
-      setCliLinkEnabled(nextConfig.cli_link_enabled)
-    }
-    catch (err) {
-      console.error('[DebugSidebar] failed to load config:', err)
-    }
-  }
+  const { data: info } = useQuery({
+    queryKey: ['info'],
+    queryFn: () => invoke<RuntimeInfo>('get_runtime_info'),
+  })
 
-  async function refreshCliStatus() {
-    try {
-      setCliStatus(await invoke<CliLinkStatus>('get_cli_link_status'))
-    }
-    catch (err) {
-      console.error('[DebugSidebar] failed to load cli link status:', err)
-    }
-  }
+  const { refetch: refreshConfig } = useQuery({
+    queryKey: ['config'],
+    queryFn: async () => {
+      const config = await invoke<AppConfig>('get_app_config')
+      setPort(config.port)
+      return config
+    },
+  })
 
-  async function toggleCliLink(enabled: boolean) {
-    if (busy)
-      return
-    const prev = cliLinkEnabled
-    setBusy('cliLink')
-    setCliLinkEnabled(enabled)
-    try {
-      const nextConfig = await invoke<AppConfig>('update_app_config', { cliLinkEnabled: enabled })
-      setCliLinkEnabled(nextConfig.cli_link_enabled)
-      toast(t(nextConfig.cli_link_enabled ? 'messages.cli_link_enabled' : 'messages.cli_link_disabled'), {})
+  const { data: cliStatus, refetch: refreshCliStatus } = useQuery({
+    queryKey: ['cli_status'],
+    queryFn: () => invoke<CliLinkStatus>('get_cli_link_status'),
+  })
+  const { data: logs, refetch: refreshLogs } = useQuery({
+    queryKey: ['logs'],
+    queryFn: () => invoke<string>('read_service_logs'),
+  })
+
+  const { mutate: onClearLogs } = useMutation({
+    mutationFn: async () => {
+      await invoke('clear_service_logs')
+      await refreshLogs()
+      toast(t('messages.logs_cleared'), {})
+    },
+  })
+
+  const { mutate: onToggleCliLink } = useMutation({
+    mutationFn: async (enabled: boolean) => {
+      await invoke<AppConfig>('update_app_config', { cliLinkEnabled: enabled })
       await refreshCliStatus()
-    }
-    catch (err) {
-      console.error('[DebugSidebar] failed to update cli link enabled:', err)
-      setCliLinkEnabled(prev)
-      toast(t('messages.save_failed'), { variant: 'danger' })
-    }
-    finally {
-      setBusy(null)
-    }
-  }
+    },
+  })
 
-  async function savePort() {
-    if (busy)
-      return
-    if (!Number.isInteger(port) || port < 1 || port > 65535) {
-      toast(t('messages.save_failed'), { variant: 'danger' })
-      return
-    }
-    setBusy('savePort')
-    try {
-      const nextConfig = await invoke<AppConfig>('update_app_config', { port })
-      setPort(nextConfig.port)
+  const { mutate: onCopyServiceUrl } = useMutation({
+    mutationFn: async () => {
+      await invoke('copy_service_url')
+      toast(t('messages.copy_success'), {})
+    },
+  })
+
+  const { mutate: onSavePort } = useMutation({
+    mutationFn: async (port: number) => {
+      await invoke<AppConfig>('update_app_config', { port })
+      await refreshConfig()
       toast(t('messages.port_changed'), {
         variant: 'accent',
         description: t('messages.port_restart_hint'),
         timeout: 10_000,
         actionProps: {
           children: t('app.restart'),
-          onPress: () => { void harness.restart() },
+          onPress: () => store.harness.restart(),
         },
       })
-    }
-    catch (err) {
-      console.error('[DebugSidebar] failed to save port:', err)
-      toast(t('messages.save_failed'), { variant: 'danger' })
-    }
-    finally {
-      setBusy(null)
-    }
-  }
+    },
+  })
 
-  async function refreshLogs() {
-    if (busy)
-      return
-    setBusy('refreshLogs')
-    try {
-      setLogs(await invoke<string>('read_service_logs', { maxBytes: 64 * 1024 }))
-    }
-    catch (err) {
-      console.error('[DebugSidebar] failed to read logs:', err)
-    }
-    finally {
-      setBusy(null)
-    }
-  }
-
-  useEffect(() => {
-    void refreshInfo()
-    void refreshConfig()
-    void refreshCliStatus()
-    void refreshLogs()
-    // eslint-disable-next-line react/exhaustive-deps
-  }, [])
-
-  async function copyUrl() {
-    if (busy)
-      return
-    setBusy('copy')
-    try {
-      await invoke('copy_service_url')
-      toast(t('messages.copy_success'), {})
-    }
-    catch {
-      toast(t('messages.copy_failed'), { variant: 'danger' })
-    }
-    finally {
-      setBusy(null)
-    }
-  }
-
-  async function clearLogs() {
-    if (busy)
-      return
-    setBusy('clearLogs')
-    try {
-      await invoke('clear_service_logs')
-      setLogs('')
-      toast(t('messages.logs_cleared'), {})
-    }
-    catch (err) {
-      console.error('[DebugSidebar] failed to clear logs:', err)
-    }
-    finally {
-      setBusy(null)
-    }
-  }
-
-  async function revealDataDir() {
-    if (busy)
-      return
-    setBusy('revealDataDir')
-    try {
-      await invoke('reveal_data_dir')
-    }
-    catch (err) {
-      console.error('[DebugSidebar] failed to reveal data dir:', err)
-    }
-    finally {
-      setBusy(null)
-    }
-  }
-
-  // /** 打开插件仓库：URL 由 Rust 侧从解析结果解析（不信任前端入参） */
-  // async function openPluginRepo(plugin: DshPlugin) {
-  //   if (busy)
-  //     return
-  //   setBusy('openPluginRepo')
-  //   try {
-  //     await invoke('open_plugin_repo', { id: plugin.id })
-  //   }
-  //   catch (err) {
-  //     console.error('[DebugSidebar] failed to open plugin repo:', err)
-  //   }
-  //   finally {
-  //     setBusy(null)
-  //   }
-  // }
+  const { mutate: onRevealDataDir } = useMutation({
+    mutationFn: () => invoke('reveal_data_dir'),
+  })
 
   return (
-    <Drawer.Root>
-      <Drawer.Backdrop
-        isOpen={sidebarOpen}
-        onOpenChange={open => (open ? setting.toggleSidebar() : setting.closeSidebar())}
-      >
-        <Drawer.Content placement="right">
+    <Drawer>
+      {props.children}
+      <Drawer.Backdrop>
+        <Drawer.Content placement="left">
           <Drawer.Dialog>
-            <Drawer.Body className="space-y-4 relative">
-
-              {/* 核心服务与地址状态 */}
-              <SectionCard>
+            <Drawer.Header className="-mt-2">
+              <Drawer.Heading>{t('app.debug_sidebar_title')}</Drawer.Heading>
+            </Drawer.Header>
+            <Drawer.Body className="space-y-3">
+              <div className="space-y-1.5">
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-semibold uppercase tracking-wider text-muted">
                     {t('ui.connection_status')}
@@ -288,7 +130,6 @@ export default function DebugSidebar() {
                     {serviceRunning ? t('ui.running') : t('ui.stopped')}
                   </Chip>
                 </div>
-
                 <div className="space-y-1.5">
                   <div className="flex gap-1.5">
                     <Input
@@ -304,18 +145,17 @@ export default function DebugSidebar() {
                       isIconOnly
                       className="rounded-md"
 
-                      onPress={copyUrl}
-                      isDisabled={busy === 'copy'}
+                      onPress={() => onCopyServiceUrl()}
                       aria-label={t('buttons.copy')}
                     >
-                      {busy === 'copy' ? <Spinner size="sm" color="current" /> : <Copy className="size-3.5" />}
+                      <Copy className="size-3.5" />
                     </Button>
                     <Button
                       size="sm"
                       variant="ghost"
                       className="rounded-md"
                       isIconOnly
-                      onPress={harness.openBrowser}
+                      onPress={store.harness.openBrowser}
                       isDisabled={busyAction !== null}
                       aria-label={t('app.open_browser')}
                     >
@@ -323,63 +163,33 @@ export default function DebugSidebar() {
                     </Button>
                   </div>
                 </div>
-
-                {/* 服务操作 */}
-                <div className="pt-2 border-t border-line/40 flex items-center gap-2">
-                  {serviceRunning
-                    ? (
-                        <>
-                          <Button
-                            size="sm"
-                            variant="tertiary"
-                            className="flex-1 rounded-md"
-                            onPress={harness.restart}
-                            isDisabled={busyAction !== null}
-                          >
-                            {busyAction === 'restart' ? <Spinner size="sm" color="current" /> : <ArrowRotateRight className="size-3.5" />}
-                            {t('app.restart')}
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="danger"
-                            className="flex-1 rounded-md"
-                            onPress={harness.shutdown}
-                            isDisabled={busyAction !== null}
-                          >
-                            {busyAction === 'shutdown' ? <Spinner size="sm" color="current" /> : <Power className="size-3.5" />}
-                            {t('app.shutdown')}
-                          </Button>
-                        </>
-                      )
-                    : (
-                        <Button
-                          size="sm"
-                          variant="primary"
-                          className="flex-1 rounded-md"
-                          onPress={harness.start}
-                          isDisabled={busyAction !== null}
-                        >
-                          {busyAction === 'start' && <Spinner size="sm" color="current" />}
-                          {t('app.retry')}
-                        </Button>
-                      )}
+              </div>
+              <div className="flex items-center gap-2">
+                <If cond={serviceRunning}>
                   <Button
                     size="sm"
-                    variant="ghost"
-                    className="rounded-md"
-                    isIconOnly
-                    onPress={refreshInfo}
-                    isDisabled={busy === 'refreshInfo'}
-                    aria-label={t('app.refresh')}
+                    variant="tertiary"
+                    className="flex-1 rounded-md"
+                    onPress={store.harness.restart}
+                    isDisabled={busyAction !== null}
                   >
-                    {busy === 'refreshInfo' ? <Spinner size="sm" color="current" /> : <ArrowsRotateRight className="size-3.5" />}
+                    {busyAction === 'restart' ? <Spinner size="sm" color="current" /> : <ArrowRotateRight className="size-3.5" />}
+                    {t('app.restart')}
                   </Button>
-                </div>
-              </SectionCard>
-
-              {/* 应用信息 */}
-              <SectionCard>
-                <SectionTitle>{t('ui.app_info')}</SectionTitle>
+                  <Button
+                    size="sm"
+                    variant="danger"
+                    className="flex-1 rounded-md"
+                    onPress={store.harness.shutdown}
+                    isDisabled={busyAction !== null}
+                  >
+                    {busyAction === 'shutdown' ? <Spinner size="sm" color="current" /> : <Power className="size-3.5" />}
+                    {t('app.shutdown')}
+                  </Button>
+                </If>
+              </div>
+              <div className="border-t border-line/30" />
+              <div>
                 <dl className="space-y-1">
                   <InfoRow term={t('ui.current_version')}>{info?.app_version ?? '-'}</InfoRow>
                   <InfoRow term={t('ui.dsh_version')}>{info?.dsh_version ?? '-'}</InfoRow>
@@ -387,10 +197,10 @@ export default function DebugSidebar() {
                   <InfoRow term="Platform">
                     {info ? `${info.platform} / ${info.arch}` : '-'}
                   </InfoRow>
-                  <div className="flex items-center justify-between gap-2 text-xs pt-1 border-t border-line/30">
-                    <dt className="shrink-0 text-muted font-medium">{t('ui.data_dir')}</dt>
+                  <div className="flex items-center justify-between gap-2 text-xs">
+                    <dt className="shrink-0 min-w-[30%] text-muted font-medium">{t('ui.data_dir')}</dt>
                     <dd className="min-w-0 flex items-center gap-1">
-                      <span className="truncate max-w-[160px] font-mono text-[11px] text-muted/80" title={info?.data_dir ?? '-'}>
+                      <span className="truncate font-mono text-[11px] text-muted/80" title={info?.data_dir ?? '-'}>
                         {info?.data_dir ?? '-'}
                       </span>
                       <Button
@@ -399,27 +209,22 @@ export default function DebugSidebar() {
                         isIconOnly
                         className="size-6 min-w-6 rounded-md"
                         aria-label={t('app.reveal_dir')}
-                        onPress={revealDataDir}
-                        isDisabled={busy === 'revealDataDir'}
+                        onPress={() => onRevealDataDir()}
                       >
-                        {busy === 'revealDataDir' ? <Spinner size="sm" color="current" /> : <Folder className="size-3.5" />}
+                        <Folder className="size-3.5" />
                       </Button>
                     </dd>
                   </div>
                 </dl>
-              </SectionCard>
-
-              {/* 设置 */}
-              <SectionCard>
-                <SectionTitle>{t('ui.settings')}</SectionTitle>
-
-                <div className="space-y-2">
+              </div>
+              <div className="border-t border-line/30" />
+              <div className="space-y-1.5">
+                <div>
                   <div className="flex items-center justify-between">
                     <span className="text-xs font-medium text-ink">{t('ui.cli_link_enabled')}</span>
                     <Switch
-                      isSelected={cliLinkEnabled}
-                      isDisabled={busy === 'cliLink'}
-                      onChange={toggleCliLink}
+                      isSelected={cliStatus?.enabled ?? false}
+                      onChange={onToggleCliLink}
                     >
                       <Switch.Content>
                         <Switch.Control>
@@ -427,200 +232,155 @@ export default function DebugSidebar() {
                         </Switch.Control>
                       </Switch.Content>
                     </Switch>
-
                   </div>
-
                   {cliStatus && (
-                    <div className="rounded-lg border border-line/50 bg-background/50 p-2 text-[11px] space-y-1 text-muted">
-                      <code className="block truncate font-mono text-[10px] text-muted/70">{cliStatus.bin_dir}</code>
-                      <p>{t('ui.cli_link_hint')}</p>
-                      {cliStatus.user_dsh_preserved && (
-                        <p className="font-medium text-ink">{t('ui.cli_link_user_dsh_preserved')}</p>
-                      )}
+                    <div className="flex flex-col">
+                      <If
+                        cond={!cliStatus.user_dsh_preserved}
+                        else={(
+                          <Description className="text-[10px] text-muted/70">
+                            {t('ui.cli_link_user_dsh_preserved')}
+                          </Description>
+                        )}
+                      >
+                        <Description className="text-[10px] text-muted/70">{cliStatus.bin_dir}</Description>
+                        <Description className="text-[10px] text-muted/70">
+                          {t('ui.cli_link_hint')}
+                        </Description>
+                      </If>
                     </div>
                   )}
+                </div>
 
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-xs font-medium text-ink">{t('ui.port')}</span>
-                    <div className="flex items-center gap-1.5">
-                      <Input
-                        type="number"
-                        variant="secondary"
-                        value={String(port)}
-                        onChange={e => setPort(Number(e.target.value))}
-                        className="w-24 rounded-md"
-                        aria-label={t('ui.port')}
-                      />
-                      <Button
-                        size="sm"
-                        variant="primary"
-                        className="rounded-md"
-                        onPress={savePort}
-                        isDisabled={busy === 'savePort'}
-                      >
-                        {busy === 'savePort' ? <Spinner size="sm" color="current" /> : t('buttons.save')}
-                      </Button>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-medium text-ink">{t('ui.language')}</span>
-                    <Select
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-medium text-ink">{t('ui.port')}</span>
+                  <div className="flex items-center gap-1.5">
+                    <Input
+                      type="number"
                       variant="secondary"
-                      selectedKey={i18n.language}
-                      onSelectionChange={key => i18n.changeLanguage(String(key))}
-                      className="w-32 rounded-md"
+                      value={String(port)}
+                      onChange={e => setPort(Number(e.target.value))}
+                      className="w-24 h-8 rounded-md [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                      aria-label={t('ui.port')}
+                    />
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      className="rounded-md h-8"
+                      onPress={() => onSavePort(port)}
                     >
-                      <Select.Trigger>
-                        <Select.Value />
-                        <Select.Indicator />
-                      </Select.Trigger>
-                      <Select.Popover className="rounded-md">
-                        <ListBox>
-                          <ListBox.Item id="zh-CN" textValue="中文">中文</ListBox.Item>
-                          <ListBox.Item id="en-US" textValue="English">English</ListBox.Item>
-                        </ListBox>
-                      </Select.Popover>
-                    </Select>
+                      {t('buttons.save')}
+                    </Button>
                   </div>
                 </div>
-              </SectionCard>
-
-              {/* 预装插件（重新打开预设引导） */}
-              <SectionCard>
-                <SectionTitle>{t('preinstall.settings_title')}</SectionTitle>
-                <p className="text-xs leading-relaxed text-muted">{t('preinstall.settings_hint')}</p>
-                <Button
-                  size="sm"
-                  variant="primary"
-                  className="rounded-md"
-                  onPress={harness.openPreinstall}
-                  isDisabled={busyAction !== null || preinstall.installing}
-                >
-                  {t('preinstall.open_preset')}
-                </Button>
-              </SectionCard>
-
-              {/* 已安装插件（Rust 侧文件监控，变化时实时同步） */}
-              {/* <SectionCard>
-                <SectionTitle
-                  action={(
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 flex-1">
+                    <span className="text-xs font-medium text-ink">{t('preinstall.settings_title')}</span>
+                  </div>
+                  <Tooltip delay={0}>
                     <Button
-                      size="sm"
-                      variant="ghost"
                       isIconOnly
-                      className="size-6 min-w-6"
-                      aria-label={t('app.refresh')}
-                      onPress={refreshPlugins}
-                      isDisabled={pluginsLoading}
+                      size="sm"
+                      className="rounded-md text-xs size-6 text-muted"
+                      variant="ghost"
                     >
-                      {pluginsLoading ? <Spinner size="sm" color="current" /> : <ArrowsRotateRight className="size-3.5" />}
+                      <CircleInfo />
                     </Button>
-                  )}
-                >
-                  {t('plugins.title')}
-                </SectionTitle>
+                    <Tooltip.Content>
+                      <p>{t('preinstall.settings_hint')}</p>
+                    </Tooltip.Content>
+                  </Tooltip>
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    className="rounded-md"
+                    onPress={store.harness.openPreinstall}
+                    isDisabled={busyAction !== null || preinstall.installing}
+                  >
+                    {t('preinstall.open_preset')}
+                  </Button>
+                </div>
 
-                <If cond={pluginsLoading && plugins.length === 0}>
-                  <p className="text-xs text-muted">{t('plugins.loading')}</p>
-                </If>
-                <If cond={pluginsError}>
-                  <p className="text-xs text-danger">{t('plugins.error')}</p>
-                </If>
-                <If cond={!pluginsLoading && !pluginsError && plugins.length === 0}>
-                  <p className="text-xs text-muted">{t('plugins.empty')}</p>
-                </If>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-medium text-ink">{t('ui.language')}</span>
+                  <Select
+                    variant="secondary"
+                    selectedKey={i18n.language}
+                    onSelectionChange={key => i18n.changeLanguage(String(key))}
+                    className="w-[80px]"
+                  >
+                    <Select.Trigger className="rounded-md min-h-8! h-8 py-0 items-center">
+                      <Select.Value />
+                      <Select.Indicator />
+                    </Select.Trigger>
+                    <Select.Popover className="rounded-md">
+                      <ListBox>
+                        <ListBox.Item className="rounded-md min-h-8!" id="zh-CN" textValue="中文">中文</ListBox.Item>
+                        <ListBox.Item className="rounded-md min-h-8!" id="en-US" textValue="English">English</ListBox.Item>
+                      </ListBox>
+                    </Select.Popover>
+                  </Select>
+                </div>
+              </div>
 
-                <ul className="space-y-0.5">
-                  {plugins.map(plugin => (
-                    <li
-                      key={plugin.id}
-                      className="flex items-center justify-between gap-2 border-b border-line/30 py-1 text-xs last:border-b-0"
-                    >
-                      <span className="min-w-0">
-                        <span className="block truncate font-medium text-ink">{plugin.name}</span>
-                        <If cond={plugin.version}>
-                          <span className="block truncate font-mono text-[10px] text-muted/70">
-                            v
-                            {plugin.version}
-                          </span>
-                        </If>
-                      </span>
-                      <span className="flex shrink-0 items-center gap-1">
-                        <If cond={plugin.bundled}>
-                          <Chip size="sm" variant="soft" color="accent" className="font-medium">
-                            {t('plugins.bundled')}
-                          </Chip>
-                        </If>
-                        <If cond={plugin.recommended}>
-                          <Chip size="sm" variant="soft" color="success" className="font-medium">
-                            {t('preinstall.recommend')}
-                          </Chip>
-                        </If>
-                        <If cond={Boolean(plugin.repo_url)}>
-                          <Button
-                            isIconOnly
-                            size="sm"
-                            variant="ghost"
-                            className="size-6 min-w-6 rounded-md"
-                            aria-label={t('preinstall.open_repo', { name: plugin.name })}
-                            onPress={() => openPluginRepo(plugin)}
-                            isDisabled={busy === 'openPluginRepo'}
-                          >
-                            <CircleInfo className="size-3.5" />
-                          </Button>
-                        </If>
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              </SectionCard> */}
+              <div className="border-t border-line/30" />
 
-              {/* 日志 */}
-              <SectionCard>
-                <SectionTitle
-                  action={(
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-medium text-ink">{t('ui.logs')}</span>
+                  <div className="flex gap-1">
                     <Button
-                      size="sm"
-                      variant="ghost"
                       isIconOnly
-                      className="size-6 min-w-6"
-                      aria-label={t('buttons.refresh_logs')}
-                      onPress={refreshLogs}
-                      isDisabled={busy === 'refreshLogs'}
+                      size="sm"
+                      className="rounded-md size-6"
+                      variant="ghost"
+                      onPress={async () => {
+                        await navigator.clipboard.writeText(logs || '')
+                        toast(t('messages.logs_copied'), {})
+                      }}
                     >
-                      {busy === 'refreshLogs' ? <Spinner size="sm" color="current" /> : <ArrowRotateRight className="size-3.5" />}
+                      <Copy className="scale-80" />
                     </Button>
-                  )}
-                >
-                  {t('ui.logs')}
-                </SectionTitle>
-
-                <TextArea
-                  readOnly
-                  variant="secondary"
-                  value={logs || t('ui.no_logs')}
-                  aria-label={t('ui.logs')}
-                  className="min-h-[140px] max-h-[180px] font-mono text-[11px] w-full leading-relaxed"
-                />
-
-                <Button
-                  size="sm"
-                  variant="tertiary"
-                  fullWidth
-                  className="rounded-md"
-                  onPress={clearLogs}
-                  isDisabled={busy === 'clearLogs'}
-                >
-                  {busy === 'clearLogs' && <Spinner size="sm" color="current" />}
-                  {t('buttons.clear_logs')}
-                </Button>
-              </SectionCard>
+                    <Button
+                      isIconOnly
+                      size="sm"
+                      className="rounded-md size-6"
+                      variant="ghost"
+                      onPress={() => refreshLogs()}
+                    >
+                      <ArrowRotateRight className="scale-80" />
+                    </Button>
+                    <Button
+                      isIconOnly
+                      size="sm"
+                      className="rounded-md size-6"
+                      variant="ghost"
+                      onPress={() => onClearLogs()}
+                    >
+                      <TrashBin className="scale-80" />
+                    </Button>
+                  </div>
+                </div>
+                <Surface className="bg-default rounded-md p-2 min-h-[140px] max-h-[180px] font-mono text-[11px] w-full leading-relaxed overflow-auto">
+                  {logs || t('ui.no_logs')}
+                </Surface>
+              </div>
 
             </Drawer.Body>
+            <Drawer.Footer>
+            </Drawer.Footer>
           </Drawer.Dialog>
         </Drawer.Content>
       </Drawer.Backdrop>
-    </Drawer.Root>
+    </Drawer>
+  )
+}
+
+function InfoRow({ term, children }: { term: string, children: ReactNode }) {
+  return (
+    <div className="flex items-center justify-between gap-2 text-xs py-0.5">
+      <dt className="shrink-0 text-muted font-medium">{term}</dt>
+      <dd className="min-w-0 break-all text-ink text-right font-mono">{children}</dd>
+    </div>
   )
 }
