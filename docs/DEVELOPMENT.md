@@ -7,7 +7,7 @@ DeepSeek Harness Desktop is a **Tauri 2 + React 18** app: the UI lives in `src/`
 | Tool | Version |
 | --- | --- |
 | Node.js | 20+ |
-| Rust | 1.77+ |
+| Rust | 1.77.2+ |
 | pnpm | 9+ |
 
 Plus the platform toolchain:
