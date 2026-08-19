@@ -180,6 +180,7 @@ pub fn handler() -> impl Fn(Invoke<Wry>) -> bool + Send + Sync + 'static {
         crate::bridge::cmd::restart_harness,
         crate::bridge::cmd::get_dsh_status,
         crate::bridge::cmd::get_preinstall_plugins,
+        crate::bridge::cmd::get_preinstall_pending,
         crate::bridge::cmd::install_preinstall_plugins,
         crate::bridge::cmd::cancel_preinstall_plugins,
         crate::bridge::cmd::skip_preinstall_plugins,

@@ -167,7 +167,7 @@ pub async fn get_preinstall_plugins(
 }
 
 /// 安装选中的预装插件（`dsh plugin --profile web add <ids...>`），
-/// 进程输出实时通过 `preinstall-log` 事件推送；成功后标记引导完成。
+/// 进程输出实时通过 `preinstall-log` 事件推送；成功后标记引导完成并记录预设指纹。
 #[tauri::command]
 pub async fn install_preinstall_plugins(
     app_handle: AppHandle,
@@ -176,6 +176,9 @@ pub async fn install_preinstall_plugins(
     plugin::install(&app_handle, &ids).await?;
     let mut setting = config::get_store_dat_setting(&app_handle);
     setting.preinstall_done = true;
+    if let Some(hash) = plugin::current_preset_hash(&app_handle) {
+        setting.preset_hash = Some(hash);
+    }
     config::set_store_dat_setting(&app_handle, setting);
     Ok(())
 }
@@ -186,13 +189,23 @@ pub async fn cancel_preinstall_plugins(app_handle: AppHandle) {
     plugin::cancel(&app_handle).await;
 }
 
-/// 跳过预装插件引导：仅记录状态，不再弹出
+/// 跳过预装插件引导：记录状态与预设指纹，之后不再弹出（除非清单内容变更）
 #[tauri::command]
 pub async fn skip_preinstall_plugins(app_handle: AppHandle) -> Result<(), String> {
     let mut setting = config::get_store_dat_setting(&app_handle);
     setting.preinstall_done = true;
+    if let Some(hash) = plugin::current_preset_hash(&app_handle) {
+        setting.preset_hash = Some(hash);
+    }
     config::set_store_dat_setting(&app_handle, setting);
     Ok(())
+}
+
+/// 是否有新的预装插件需要引导：预设清单内容与上次记录不一致（或老用户无基线）。
+/// 资源文件每次安装都被强制覆盖不可比对，只能比对 app-data 里记录的内容指纹。
+#[tauri::command]
+pub fn get_preinstall_pending(app_handle: AppHandle) -> Result<bool, String> {
+    Ok(plugin::preinstall_pending(&app_handle))
 }
 
 /// 在系统浏览器中打开预装插件的仓库地址（仅允许预装清单内的 id）

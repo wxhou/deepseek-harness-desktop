@@ -22,6 +22,11 @@ pub struct Setting {
     /// 预装插件引导是否已完成（确认安装或跳过都算完成，之后不再弹出）
     #[serde(default)]
     pub preinstall_done: bool,
+    /// 上次引导结束时的 `preset-plugins.json` 内容指纹。资源文件每次安装都会被
+    /// 强制覆盖、旧文件不复存在，只能把「上次看到的内容」记在这里，每次启动再比对：
+    /// 内容有变更 → 重新进入预设引导。`None` = 老用户升级（无基线）→ 弹一次建立基线。
+    #[serde(default)]
+    pub preset_hash: Option<String>,
 }
 
 /// 命令行集成默认开启（开发者工具场景，安装完成即可用）
@@ -49,6 +54,7 @@ impl Default for Setting {
             dsh_pkg_tag: None,
             cli_link_enabled: default_cli_link_enabled(),
             preinstall_done: false,
+            preset_hash: None,
         }
     }
 }
