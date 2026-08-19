@@ -23,7 +23,10 @@ pub async fn install(app_handle: &AppHandle, ids: &[String]) -> Result<(), Strin
 
     // 单次读取预设并构建查找表，提升算法效率至 O(N)
     let presets = load_presets(app_handle);
-    let preset_map: HashMap<&str, &str> = presets.iter().map(|p| (p.id.as_str(), p.spec.as_str())).collect();
+    let preset_map: HashMap<&str, &str> = presets
+        .iter()
+        .map(|p| (p.id.as_str(), p.spec.as_str()))
+        .collect();
 
     let mut specs = Vec::with_capacity(ids.len());
     for id in ids {
@@ -53,7 +56,7 @@ pub async fn install(app_handle: &AppHandle, ids: &[String]) -> Result<(), Strin
     ensure_pnpm(app_handle, &window).await?;
 
     // 安装前停止运行中的服务，避免资源冲突
-    if workflow::utils::is_dsh_running(config::get_store_dat_setting(app_handle).port).await {
+    if workflow::has_owned_process() {
         log::info!("Stopping running harness service before installing preinstall plugins");
         if let Err(e) = workflow::stop(app_handle.clone()).await {
             log::warn!("failed to stop harness before preinstall: {e}");
@@ -63,7 +66,12 @@ pub async fn install(app_handle: &AppHandle, ids: &[String]) -> Result<(), Strin
     // 构建环境变量
     let bin_dir = cli::get_bin_dir(app_handle);
     let mut envs = HashMap::from([
-        ("DSH_HOME".to_string(), config::get_dsh_data_path(app_handle).to_string_lossy().into_owned()),
+        (
+            "DSH_HOME".to_string(),
+            config::get_dsh_data_path(app_handle)
+                .to_string_lossy()
+                .into_owned(),
+        ),
         ("DSH_TELEMETRY_DISABLED".to_string(), "1".to_string()),
         ("NO_COLOR".to_string(), "1".to_string()),
     ]);
@@ -72,7 +80,9 @@ pub async fn install(app_handle: &AppHandle, ids: &[String]) -> Result<(), Strin
     if let Some(node_dir) = node.parent() {
         paths.push(node_dir.to_path_buf());
     }
-    paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()));
+    paths.extend(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    ));
 
     if let Ok(joined) = std::env::join_paths(paths) {
         envs.insert("PATH".to_string(), joined.to_string_lossy().into_owned());
@@ -94,7 +104,9 @@ pub async fn install(app_handle: &AppHandle, ids: &[String]) -> Result<(), Strin
     let exit_code = run_plugin_process(&node, &args, &cwd, &envs, &window).await?;
     if exit_code != 0 {
         log::error!("dsh plugin install failed with exit code {exit_code}");
-        return Err(format!("PREINSTALL_FAILED: dsh plugin exited with code {exit_code}"));
+        return Err(format!(
+            "PREINSTALL_FAILED: dsh plugin exited with code {exit_code}"
+        ));
     }
 
     // Windows 极简模式专项修复
@@ -127,6 +139,8 @@ async fn ensure_pnpm(app_handle: &AppHandle, window: &WebviewWindow) -> Result<(
     let buffer = download::download_file(&tracker, url)
         .await
         .map_err(|e| format!("PNPM_DOWNLOAD_FAILED: {e}"))?;
+    download::verify_sha256(&buffer, config::PNPM_SHA256)
+        .map_err(|e| format!("PNPM_INTEGRITY_FAILED: {e}"))?;
     let dest = download::Pnpm.get_install_path(app_handle);
 
     download::ensure_extract(&tracker, name, buffer, dest)
