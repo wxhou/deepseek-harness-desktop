@@ -25,12 +25,6 @@
   <samp><a href="./README.en.md">English</a> · <strong>中文</strong></samp>
 </p>
 
-<p align="center"><strong>English</strong></p>
-<p align="center">
-  <img src="./docs/images/hero-en.png" width="100%" alt="DSH Desktop English promotional banner" />
-</p>
-
-<p align="center"><strong>中文</strong></p>
 <p align="center">
   <img src="./docs/images/hero-zh.png" width="100%" alt="DSH Desktop 中文宣传横幅" />
 </p>
