@@ -377,7 +377,7 @@ pub fn stop_on_exit(_app_handle: tauri::AppHandle, _port: u16) {
 /// 安装环境（Node.js 运行时 + 打包的 Harness 发行版）
 pub async fn install(
     app_handle: &tauri::AppHandle,
-    dsh_latest: Option<download::LatestDshPkg>,
+    mut dsh_latest: Option<download::LatestDshPkg>,
 ) -> Result<(), String> {
     log::info!("Starting installation process");
 
@@ -431,17 +431,10 @@ pub async fn install(
                 task.title()
             ),
         );
-        let url = if index == 1 {
-            dsh_latest
-                .as_ref()
-                .map(|info| info.asset_url.clone())
-                .ok_or_else(|| {
-                    "DSH_INTEGRITY_UNAVAILABLE: trusted release metadata is required for installation"
-                        .to_string()
-                })?
-        } else {
-            task.get_download_url()?
-        };
+        // 下载 URL 对 dsh 也是完全确定可算的（DSH_CORE_URL + 平台文件名），
+        // 无需依赖 GitHub API 元数据；api.github.com 限流/被代理拦截时
+        // （mac 首次启动常见）仍能拿到真实下载地址，避免整次安装被瞬时失败卡死。
+        let url = task.get_download_url()?;
         log::debug!("Download URL: {}", url);
         // 取文件名用于解压类型判定；下载 URL 正常必含 '/'，但这里不 panic，
         // 防御性兜底为空串（后续 ensure_extract 会因无法判定类型而报错返回，
@@ -452,12 +445,45 @@ pub async fn install(
         log::info!("Download completed, file size: {} bytes", buffer.len());
         let expected_digest = match index {
             0 => download::fetch_node_sha256(task.get_download_url()?.as_str()).await?,
-            1 => dsh_latest
-                .as_ref()
-                .map(|info| info.digest.clone())
-                .ok_or_else(|| {
-                    "DSH_INTEGRITY_UNAVAILABLE: trusted release digest is required".to_string()
-                })?,
+            1 => {
+                // dsh 的 SHA-256 digest 只能来自 GitHub release asset 元数据
+                // （安全设计，见 dsh_INTEGRITY_UNAVAILABLE）。首次安装时该元数据
+                // 可能因 api.github.com 限流/网络抖动而缺失（mac 首次启动常见，
+                // issue #31），这里带退避重取，避免启动被瞬时失败卡死。
+                if dsh_latest.is_none() {
+                    for attempt in 0..3 {
+                        match download::fetch_latest_dsh_pkg_info().await {
+                            Ok(info) => {
+                                dsh_latest = Some(info);
+                                break;
+                            }
+                            Err(e) if attempt < 2 => {
+                                log::warn!(
+                                    "Retrying dsh release metadata fetch ({}/3), will retry: {}",
+                                    attempt + 1,
+                                    e
+                                );
+                                tokio::time::sleep(std::time::Duration::from_millis(
+                                    500 * (attempt as u64 + 1),
+                                ))
+                                .await;
+                            }
+                            Err(e) => {
+                                return Err(format!(
+                                    "DSH_INTEGRITY_UNAVAILABLE: 无法获取 Harness 发行版的完整性校验信息（{}），请检查网络后重试",
+                                    e
+                                ));
+                            }
+                        }
+                    }
+                }
+                dsh_latest
+                    .as_ref()
+                    .map(|info| info.digest.clone())
+                    .ok_or_else(|| {
+                        "DSH_INTEGRITY_UNAVAILABLE: trusted release digest is required".to_string()
+                    })?
+            }
             2 => config::PNPM_SHA256.to_string(),
             _ => return Err("INSTALL_TASK_INVALID: unknown install task".to_string()),
         };
