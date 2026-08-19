@@ -25,7 +25,9 @@
   <samp><a href="./README.en.md">English</a> · <strong>中文</strong></samp>
 </p>
 
-![预览](docs/hero.png)
+<p align="center">
+  <img src="./docs/images/hero-zh.png" width="100%" alt="DSH Desktop 中文宣传横幅" />
+</p>
 
 ## 功能
 
