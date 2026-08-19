@@ -62,6 +62,7 @@ export function DebugSidebar(props: PropsWithChildren) {
   const { data: logs, refetch: refreshLogs } = useQuery({
     queryKey: ['logs'],
     queryFn: () => invoke<string>('read_service_logs'),
+    refetchInterval: 5000,
   })
 
   const { mutate: onClearLogs } = useMutation({
