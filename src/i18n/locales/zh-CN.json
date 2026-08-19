@@ -69,6 +69,7 @@
   "download.failed": "Session 日志下载失败",
   "download.show_in_folder": "打开",
   "errors.service_start_timeout": "DeepSeek Harness 启动超时，请检查端口 {{port}} 是否被占用或启动过慢。",
+  "errors.plugin_route_conflict": "检测到插件路由冲突：两个插件重复注册了同一路由。请在「插件」面板卸载最近安装的插件（如 dsh-web-ui-all / dsh-better-sidebar），或在终端执行 dsh plugin --profile web remove <包名> 后重试。",
   "errors.install_verify_failed": "资源包已下载，但安装校验失败。",
   "errors.network_timeout": "网络下载超时，请检查网络连接后重试。",
   "errors.unknown": "未知错误",

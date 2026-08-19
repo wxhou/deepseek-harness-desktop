@@ -23,12 +23,16 @@ const STATUS_ICONS: Record<SetupStatus, IconComponent> = {
  */
 export default function Setup() {
   const { t } = useTranslation()
-  const { status, installer, errorMsg } = useStore(harness)
+  const { status, installer, errorMsg, errorLogs, pluginConflictHint } = useStore(harness)
   const error = status === 'error'
   const installing = status === 'installing'
   const heading = error ? t('status.error') : installer.title || t('status.installing')
   const description = error ? '' : installer.detail || t('status.installing')
   const StatusIcon = STATUS_ICONS[status]
+  // 安装中展示安装日志；错误态展示启动失败时从 dsh 服务日志读取的真实错误行
+  const logs = installing
+    ? installer.logs
+    : (error && errorLogs.length > 0 ? errorLogs : undefined)
 
   return (
     <Loadable
@@ -36,9 +40,13 @@ export default function Setup() {
       title={heading}
       subtitle={error ? undefined : description}
       percentage={installing ? installer.percentage : undefined}
-      logs={installing ? installer.logs : undefined}
+      logs={logs}
       errorMsg={error ? errorMsg : undefined}
       onRetry={error ? harness.boot : undefined}
-    />
+    >
+      {error && pluginConflictHint && (
+        <p className="m-0 text-xs leading-[18px] break-all text-load-muted">{pluginConflictHint}</p>
+      )}
+    </Loadable>
   )
 }

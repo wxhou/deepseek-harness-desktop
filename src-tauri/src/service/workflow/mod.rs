@@ -262,9 +262,19 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
                 OWNED_PROCESS_HANDLE.store(handle_value, Ordering::SeqCst);
                 std::thread::spawn(move || unsafe {
                     use windows_sys::Win32::Foundation::CloseHandle;
-                    use windows_sys::Win32::System::Threading::{WaitForSingleObject, INFINITE};
+                    use windows_sys::Win32::System::Threading::{
+                        GetExitCodeProcess, WaitForSingleObject, INFINITE,
+                    };
                     let process_handle = handle_value as windows_sys::Win32::Foundation::HANDLE;
                     WaitForSingleObject(process_handle, INFINITE);
+                    // 记录退出码：启动即崩溃（插件冲突等）时前端据此快速失败，
+                    // 退出码也便于诊断问题
+                    let mut exit_code: u32 = 0;
+                    if GetExitCodeProcess(process_handle, &mut exit_code) != 0 {
+                        log::warn!("Owned Harness process {pid} exited with code {exit_code}");
+                    } else {
+                        log::warn!("Owned Harness process {pid} exited (exit code unavailable)");
+                    }
                     let _ = OWNED_PROCESS_ID.compare_exchange(
                         pid,
                         0,
@@ -307,7 +317,13 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
                 let stderr = child.stderr.take();
                 OWNED_PROCESS_ID.store(pid, Ordering::SeqCst);
                 std::thread::spawn(move || {
-                    let _ = child.wait();
+                    let code = child.wait().ok().and_then(|status| status.code());
+                    // 记录退出码：启动即崩溃（插件冲突等）时前端据此快速失败
+                    if let Some(code) = code {
+                        log::warn!("Owned Harness process {pid} exited with code {code}");
+                    } else {
+                        log::warn!("Owned Harness process {pid} exited (no exit code)");
+                    }
                     let _ = OWNED_PROCESS_ID.compare_exchange(
                         pid,
                         0,

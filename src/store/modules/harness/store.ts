@@ -15,6 +15,16 @@ import { updater } from '../updater'
 
 const MAX_RETRIES = 8
 const IFRAME_LOAD_TIMEOUT = 20000
+/** 启动失败时从服务日志尾部挑选的原始行上限（ANSI 清洗后按行截断） */
+const LOG_TAIL_MAX_BYTES = 16 * 1024
+/** 日志中常见的错误标记，用于失败时挑出真正的问题行而不是整个堆栈 */
+const ERROR_LINE_MARKERS = /error|duplicate|fatal|panic|throw|✖|exception|failed/i
+
+/** 启动失败错误：附带从 dsh 服务日志中读取的真实错误行与可选的冲突提示 */
+interface StartupError extends Error {
+  logs?: string[]
+  pluginConflictHint?: string
+}
 
 const initialInstaller: InstallerState = {
   title: '',
@@ -35,8 +45,14 @@ function generateTimestampedUrl(baseUrl: string): string {
   return `${baseUrl}${separator}t=${timestamp}`
 }
 
+/** 健康检查结果：healthy 表示服务就绪；notOwned 表示 dsh 进程已退出（启动即崩溃，快速失败信号） */
+interface HealthCheckResult {
+  healthy: boolean
+  notOwned: boolean
+}
+
 /** 通过 Rust 代理探测服务健康状态（超时 8s，网络抖动时重试） */
-async function checkHealthViaProxy(): Promise<boolean> {
+async function checkHealthViaProxy(): Promise<HealthCheckResult> {
   try {
     const timeoutPromise = new Promise<never>((_, reject) => {
       setTimeout(() => reject(new Error('health check timeout')), 8000)
@@ -53,21 +69,62 @@ async function checkHealthViaProxy(): Promise<boolean> {
       || lower.includes('ok')
     ) {
       console.warn('[Harness] health check passed:', result)
-      return true
+      return { healthy: true, notOwned: false }
     }
     console.warn('[Harness] health check returned:', result)
-    return false
+    return { healthy: false, notOwned: false }
   }
   catch (err) {
     const message = String(err)
+    if (message.includes('HARNESS_NOT_OWNED')) {
+      // dsh 进程已退出（典型如插件冲突导致启动即崩溃），继续等只会白白耗完
+      // 8 轮超时，让调用方立刻结束重试并展示日志里的真实错误。
+      console.warn('[Harness] dsh process exited during startup, failing fast')
+      return { healthy: false, notOwned: true }
+    }
     if (message.includes('502') || message.includes('Bad Gateway')) {
       console.warn('[Harness] transient 502 during health check, retrying')
     }
     else {
       console.error('[Harness] health check failed:', err)
     }
-    return false
+    return { healthy: false, notOwned: false }
   }
+}
+
+/** 读取服务日志尾部（去掉 ANSI 转义与空行），启动失败时展示真实错误 */
+async function readServiceLogTail(): Promise<string[]> {
+  try {
+    const raw = await invoke<string>('read_service_logs', { maxBytes: LOG_TAIL_MAX_BYTES })
+    return raw
+      .split(/\r?\n/)
+      .map(line => line.replace(/\x1b\[[0-9;]*m/g, '').trim())
+      .filter(Boolean)
+  }
+  catch (err) {
+    console.error('[Harness] failed to read service logs:', err)
+    return []
+  }
+}
+
+/** 从日志行中挑出真正的错误行（命中错误标记，最多 8 行）；没有命中则退回最后 8 行 */
+function pickErrorLines(lines: string[]): string[] {
+  const errored = lines.filter(line => ERROR_LINE_MARKERS.test(line)).slice(0, 8)
+  return errored.length > 0 ? errored : lines.slice(-8)
+}
+
+/** 失败时把服务日志的真实错误行与冲突提示挂到错误对象上 */
+async function attachStartupDiagnostics(err: unknown): Promise<StartupError> {
+  const startupError = err as StartupError
+  if (!startupError.logs) {
+    const lines = await readServiceLogTail()
+    startupError.logs = pickErrorLines(lines)
+    // 识别插件路由冲突（如 `duplicate prefix route "/sidebar/api"`），给出可操作的提示
+    if (lines.join('\n').includes('duplicate prefix route')) {
+      startupError.pluginConflictHint = i18next.t('errors.plugin_route_conflict')
+    }
+  }
+  return startupError
 }
 
 /**
@@ -83,6 +140,10 @@ export const harness = defineStore({
     status: 'ready' as SetupStatus,
     installer: initialInstaller,
     errorMsg: '',
+    /** 启动失败时从 dsh 服务日志中读取的真实错误行（Loadable 错误态日志面板） */
+    errorLogs: [] as string[],
+    /** 识别到插件路由冲突时的针对性提示（Loadable children 展示） */
+    pluginConflictHint: '',
     /** 预装插件引导状态：列表/安装进度/日志/错误 */
     preinstall: {
       plugins: [] as PreinstallPlugin[],
@@ -155,29 +216,40 @@ export const harness = defineStore({
     async launchAndWait() {
       this.status = 'ready'
       this.installer = initialInstaller
+      this.errorLogs = []
+      this.pluginConflictHint = ''
       this.serviceHealthy = false
       this.iframeLoaded = false
       this.iframeError = false
-      await invoke('launch_harness')
-      this.serviceRunning = true
-      // 后端遇到端口占用时会自动递增并持久化端口，启动后重新读取真实地址。
-      const runtimeInfo = await invoke<{ service_url: string }>('get_runtime_info')
-      this.serviceUrl = runtimeInfo.service_url
-      this.iframeSrc = generateTimestampedUrl(runtimeInfo.service_url)
+      try {
+        await invoke('launch_harness')
+        this.serviceRunning = true
+        // 后端遇到端口占用时会自动递增并持久化端口，启动后重新读取真实地址。
+        const runtimeInfo = await invoke<{ service_url: string }>('get_runtime_info')
+        this.serviceUrl = runtimeInfo.service_url
+        this.iframeSrc = generateTimestampedUrl(runtimeInfo.service_url)
 
-      let healthy = false
-      for (let attempt = 0; attempt < MAX_RETRIES && !healthy; attempt++) {
-        healthy = await checkHealthViaProxy()
-        if (!healthy) {
-          await new Promise(resolve => setTimeout(resolve, 2000))
+        let healthy = false
+        let notOwned = false
+        for (let attempt = 0; attempt < MAX_RETRIES && !healthy && !notOwned; attempt++) {
+          const result = await checkHealthViaProxy()
+          healthy = result.healthy
+          notOwned = result.notOwned
+          if (!healthy && !notOwned) {
+            await new Promise(resolve => setTimeout(resolve, 2000))
+          }
         }
+        if (!healthy) {
+          throw new Error(
+            i18next.t('errors.service_start_timeout', { port: new URL(this.serviceUrl).port || '3080' }),
+          )
+        }
+        this.serviceHealthy = true
       }
-      if (!healthy) {
-        throw new Error(
-          i18next.t('errors.service_start_timeout', { port: new URL(this.serviceUrl).port || '3080' }),
-        )
+      catch (err) {
+        // 失败时附上服务日志里的真实错误行，供错误界面展示而不是只显示超时文案
+        throw await attachStartupDiagnostics(err)
       }
-      this.serviceHealthy = true
     },
 
     /** 启动流程：检测环境/安装依赖 → 拉起服务 → 已安装时后台检查更新 */
@@ -237,7 +309,8 @@ export const harness = defineStore({
         if (token !== bootToken)
           return
         console.error('[Harness] startup failed:', err)
-        this.fail(String(err))
+        const startupError = await attachStartupDiagnostics(err)
+        this.fail(String(startupError), startupError.logs, startupError.pluginConflictHint)
       }
       finally {
         unlistenInstall?.()
@@ -251,8 +324,10 @@ export const harness = defineStore({
     },
 
     /** 进入错误态（供本模块与 updater 模块共用） */
-    fail(message: string) {
+    fail(message: string, logs?: string[], pluginConflictHint?: string) {
       this.errorMsg = message
+      this.errorLogs = logs ?? []
+      this.pluginConflictHint = pluginConflictHint ?? ''
       this.status = 'error'
       this.serviceRunning = false
     },
@@ -295,6 +370,8 @@ export const harness = defineStore({
       this.serviceRunning = false
       this.status = 'error'
       this.errorMsg = i18next.t('ui.stopped')
+      this.errorLogs = []
+      this.pluginConflictHint = ''
     },
 
     /** 服务未运行时点击"重试"：重新拉起服务并等待健康检查 */
