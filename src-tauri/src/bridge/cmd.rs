@@ -2,6 +2,7 @@ use crate::config;
 use crate::service::cli;
 use crate::service::download::{self, Installable};
 use crate::service::plugin;
+use crate::service::update;
 use crate::service::workflow;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_clipboard_manager::ClipboardExt;
@@ -38,19 +39,57 @@ pub async fn install_dependencies(app_handle: AppHandle) -> Result<(), String> {
     let dsh_files_ok = download::Dsh.check_installed(&app_handle);
     let dsh_latest = download::fetch_latest_dsh_pkg_info().await;
 
-    let dsh_ok = match &dsh_latest {
-        Ok(latest) => {
-            dsh_files_ok
-                && config::get_dsh_pkg_commit(&app_handle).as_deref()
-                    == Some(latest.commit.as_str())
+    // 已安装文件在盘时，用 resolve_update 甄别「记录滞后」与「真更新」：
+    // 记录滞后（HealUpToDate）只修正 store 记录、绝不整包重下。否则会把一个
+    // 可用的 node_modules 整目录删除重解压，Windows 上原生模块 DLL 锁/重解压
+    // 很容易留下破损安装，导致启动报找不到 @deepseek-ai/dsh-client-ui-settings
+    // 或 HARNESS_NOT_FOUND。仅在真更新（UpdateAvailable）时才允许重新下载。
+    let dsh_need_install = match &dsh_latest {
+        Ok(latest) if dsh_files_ok => {
+            let record_commit = config::get_dsh_pkg_commit(&app_handle);
+            let record_tag = config::get_dsh_pkg_tag(&app_handle);
+            let installed_version = config::get_dsh_version(&app_handle);
+            // 老记录没有 tag，反查 pkg 仓库 tags 列表确认记录对应的发布版本；
+            // 反查失败时由 resolve_update 回退到“以实际文件为准”的保守分支
+            let legacy_tags = if record_tag.is_none() {
+                download::fetch_dsh_pkg_tags().await.unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            match download::resolve_update(
+                record_commit.as_deref(),
+                record_tag.as_deref(),
+                installed_version.as_deref(),
+                latest,
+                &legacy_tags,
+            ) {
+                // 安装文件已是最新 release，只是记录滞后：修正记录后下次
+                // 启动直接走 commit 快速比对，不再误判、也绝不整包重下
+                download::UpdateCheck::UpToDate
+                | download::UpdateCheck::HealUpToDate => {
+                    if record_commit.as_deref() != Some(latest.commit.as_str()) {
+                        log::info!(
+                            "Installed Harness files already at latest release, healing stale record: {} ({})",
+                            latest.tag,
+                            latest.commit
+                        );
+                        config::set_dsh_pkg_commit(&app_handle, latest.commit.clone());
+                        config::set_dsh_pkg_tag(&app_handle, latest.tag.clone());
+                    }
+                    false
+                }
+                download::UpdateCheck::UpdateAvailable => true,
+            }
         }
+        // 核心文件缺失（首次安装或目录被清空）→ 需要安装
+        Ok(_) => true,
         Err(e) => {
             // 网络不可用或 GitHub API 限流时保留本地安装，不阻塞启动
             log::warn!(
                 "Failed to check latest dsh release info, keeping local install: {}",
                 e
             );
-            dsh_files_ok
+            !dsh_files_ok
         }
     };
 
@@ -59,7 +98,7 @@ pub async fn install_dependencies(app_handle: AppHandle) -> Result<(), String> {
     // 需一并纳入"已就绪"判定，缺失时由 workflow::install 按任务补齐。
     let pnpm_ok = download::Pnpm.check_installed(&app_handle);
 
-    if node_ok && dsh_ok && pnpm_ok {
+    if node_ok && !dsh_need_install && pnpm_ok {
         log::debug!("Dependencies already installed and up to date, skipping installation");
         let mut setting = config::get_store_dat_setting(&app_handle);
         if !setting.installed {
@@ -167,7 +206,7 @@ pub async fn get_preinstall_plugins(
 }
 
 /// 安装选中的预装插件（`dsh plugin --profile web add <ids...>`），
-/// 进程输出实时通过 `preinstall-log` 事件推送；成功后标记引导完成。
+/// 进程输出实时通过 `preinstall-log` 事件推送；成功后标记引导完成并记录预设指纹。
 #[tauri::command]
 pub async fn install_preinstall_plugins(
     app_handle: AppHandle,
@@ -176,6 +215,9 @@ pub async fn install_preinstall_plugins(
     plugin::install(&app_handle, &ids).await?;
     let mut setting = config::get_store_dat_setting(&app_handle);
     setting.preinstall_done = true;
+    if let Some(hash) = plugin::current_preset_hash(&app_handle) {
+        setting.preset_hash = Some(hash);
+    }
     config::set_store_dat_setting(&app_handle, setting);
     Ok(())
 }
@@ -186,13 +228,23 @@ pub async fn cancel_preinstall_plugins(app_handle: AppHandle) {
     plugin::cancel(&app_handle).await;
 }
 
-/// 跳过预装插件引导：仅记录状态，不再弹出
+/// 跳过预装插件引导：记录状态与预设指纹，之后不再弹出（除非清单内容变更）
 #[tauri::command]
 pub async fn skip_preinstall_plugins(app_handle: AppHandle) -> Result<(), String> {
     let mut setting = config::get_store_dat_setting(&app_handle);
     setting.preinstall_done = true;
+    if let Some(hash) = plugin::current_preset_hash(&app_handle) {
+        setting.preset_hash = Some(hash);
+    }
     config::set_store_dat_setting(&app_handle, setting);
     Ok(())
+}
+
+/// 是否有新的预装插件需要引导：预设清单内容与上次记录不一致（或老用户无基线）。
+/// 资源文件每次安装都被强制覆盖不可比对，只能比对 app-data 里记录的内容指纹。
+#[tauri::command]
+pub fn get_preinstall_pending(app_handle: AppHandle) -> Result<bool, String> {
+    Ok(plugin::preinstall_pending(&app_handle))
 }
 
 /// 在系统浏览器中打开预装插件的仓库地址（仅允许预装清单内的 id）
@@ -375,4 +427,44 @@ pub async fn toggle_sidebar() -> Result<bool, String> {
 #[tauri::command]
 pub fn get_dsh_theme(app_handle: AppHandle) -> config::DshTheme {
     config::get_dsh_theme(&app_handle)
+}
+
+/// 检查桌面端自身是否有新版本（含安装包是否已下载）
+#[tauri::command]
+pub async fn check_desktop_update(
+    app_handle: AppHandle,
+) -> Result<Option<update::DesktopUpdateInfo>, String> {
+    update::check(&app_handle).await
+}
+
+/// 下载桌面端新版本安装包；已下载则直接返回。进度通过 `desktop-update-progress` 事件推送
+#[tauri::command]
+pub async fn download_desktop_update(
+    app_handle: AppHandle,
+) -> Result<update::DesktopUpdateInfo, String> {
+    update::download(&app_handle).await
+}
+
+/// 打开已下载的桌面端安装包（exe/msi/dmg...，交给系统默认处理器）
+#[tauri::command]
+pub async fn open_desktop_installer(app_handle: AppHandle, path: String) -> Result<(), String> {
+    update::open_installer(&app_handle, path).await
+}
+
+/// 关于对话框信息（版本 / 发布时间 / 版权 / 仓库）
+#[tauri::command]
+pub async fn get_desktop_about() -> Result<update::DesktopAboutInfo, String> {
+    Ok(update::about().await)
+}
+
+/// 在系统浏览器中打开任意 http(s) 链接（更新说明 / 关于对话框仓库链接等）
+#[tauri::command]
+pub async fn open_external_url(app_handle: AppHandle, url: String) -> Result<(), String> {
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return Err(format!("EXTERNAL_URL_INVALID: {url}"));
+    }
+    app_handle
+        .opener()
+        .open_url(url, None::<&str>)
+        .map_err(|e| e.to_string())
 }

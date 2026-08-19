@@ -22,6 +22,12 @@ The first-run wizard / sidebar preset list is driven by `preset-plugins.json`
 change needed to add a preset**). To propose a new preset plugin, open a PR
 that adds one entry to the JSON array:
 
+> **Note on "new preset" detection**: the file ships with the installer and is
+> force-overwritten on every install, so the app records a fingerprint of its
+> content into the user-data settings after the wizard ends (install or skip)
+> and re-opens the wizard on the next launch when the content differs. No extra
+> action is needed when adding an entry.
+
 ```json
 {
   "id": "npm-package-name",

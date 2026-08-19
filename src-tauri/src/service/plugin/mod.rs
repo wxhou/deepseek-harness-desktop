@@ -9,6 +9,11 @@
 //! 预设清单存放在随安装包分发的 `resources/preset-plugins.json`：社区新增推荐插件
 //! 只需在该 JSON 中追加一项并提交 PR，无需改动 Rust 代码；界面与安装逻辑自动生效。
 //!
+//! **重新进入引导的判定**：该 JSON 随安装包发布、每次安装都被强制覆盖，旧文件不可比对，
+//! 因此引导结束（确认/跳过）时把文件内容指纹（FNV-1a）写入 app-data 的 `.store.dat`；
+//! 每次启动重新计算当前指纹，不一致（清单有变更）即重新进入预设引导；老用户无基线时
+//! 弹一次建立基线（见 [`preset::preinstall_pending`]）。
+//!
 //! 模块划分（参考 `service/cli/`、`service/download/`）：
 //! - [`preset`]：预设清单读取与解析（`resources/preset-plugins.json`）
 //! - [`installed`]：profile 内已安装插件检测（解析 package.json 的依赖与 bundles）
@@ -28,4 +33,5 @@ pub use cancel::cancel;
 pub use install::install;
 pub use installed::{list, PreinstallPlugin};
 pub use preset::repo_url_of;
+pub(crate) use preset::{current_preset_hash, preinstall_pending};
 pub use watch::DshPlugin;

@@ -7,7 +7,7 @@ DeepSeek Harness Desktop 是 **Tauri 2 + React 18** 应用：前端位于 `src/`
 | 工具 | 版本 |
 | --- | --- |
 | Node.js | 20+ |
-| Rust | 1.77+ |
+| Rust | 1.77.2+ |
 | pnpm | 9+ |
 
 以及平台编译工具链：

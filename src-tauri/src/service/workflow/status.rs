@@ -19,7 +19,8 @@ pub fn get_status_lock() -> &'static Mutex<Status> {
 }
 
 pub fn set_status(status: Status) {
-    *get_status_lock().lock().unwrap() = status;
+    // 中毒安全：忽略此前 panic 造成的锁中毒，避免连锁 panic 导致进程退出
+    *get_status_lock().lock().unwrap_or_else(|e| e.into_inner()) = status;
 }
 
 pub fn emit_status(app_handle: &AppHandle) {
@@ -28,5 +29,5 @@ pub fn emit_status(app_handle: &AppHandle) {
 }
 
 pub fn get_status() -> Status {
-    get_status_lock().lock().unwrap().clone()
+    get_status_lock().lock().unwrap_or_else(|e| e.into_inner()).clone()
 }

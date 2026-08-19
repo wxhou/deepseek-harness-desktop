@@ -7,6 +7,8 @@ use serde::Deserialize;
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
 
+use crate::config;
+
 /// 预设插件清单文件名
 const PRESET_PLUGINS_FILE: &str = "preset-plugins.json";
 
@@ -18,6 +20,11 @@ pub struct PreinstallPluginInfo {
     pub id: String,
     /// 传给 `dsh plugin add` 的依赖形式（npm 包名或 git 依赖形式）
     pub spec: String,
+    /// 安装进 profile 后实际出现在 `dependencies`/`bundles` 里的包名。
+    /// 默认与 `id` 相同；仅当 npm 包名与预设 id 不一致时（如 scoped 包
+    /// `@scope/name`）才需要显式指定，供“已安装”检测使用。
+    #[serde(default)]
+    pub package: Option<String>,
     pub name: String,
     pub description: String,
     pub repo_url: String,
@@ -98,6 +105,40 @@ pub fn repo_url_of(app_handle: &AppHandle, id: &str) -> Option<String> {
         .map(|p| p.repo_url)
 }
 
+/// FNV-1a 64 位哈希（无外部依赖，跨平台稳定）
+fn fnv1a(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in bytes {
+        hash ^= u64::from(*b);
+        hash = hash.wrapping_mul(0x100_0000_01b3);
+    }
+    hash
+}
+
+/// 当前 `preset-plugins.json` 内容指纹（十六进制 FNV-1a）；文件缺失/不可读返回 None
+pub(crate) fn current_preset_hash(app_handle: &AppHandle) -> Option<String> {
+    let path = preset_plugins_path(app_handle)?;
+    let raw = std::fs::read(&path).ok()?;
+    Some(format!("{:016x}", fnv1a(&raw)))
+}
+
+/// 是否需要进入预装插件引导：
+/// - 引导从未完成（首启/中途退出）→ 需要
+/// - 老用户升级无指纹基线（文件在）→ 弹一次建立基线
+/// - 有基线且内容已变更 → 需要
+/// - 文件缺失视为无变化，避免每次启动都弹空引导
+pub(crate) fn preinstall_pending(app_handle: &AppHandle) -> bool {
+    let setting = config::get_store_dat_setting(app_handle);
+    if !setting.preinstall_done {
+        return true;
+    }
+    match (setting.preset_hash.as_deref(), current_preset_hash(app_handle)) {
+        (None, Some(_)) => true,
+        (Some(prev), Some(cur)) => prev != cur,
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -167,5 +208,53 @@ mod tests {
         assert_eq!(found, dir.join(PRESET_PLUGINS_FILE));
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn fnv1a_matches_known_vectors() {
+        // FNV-1a 64-bit 标准测试向量
+        assert_eq!(fnv1a(b""), 0xcbf29ce484222325);
+        assert_eq!(fnv1a(b"a"), 0xaf63dc4c8601ec8c);
+        assert_eq!(fnv1a(b"foobar"), 0x85944171f73967e8);
+    }
+
+    #[test]
+    fn same_content_same_hash_appended_comma_changes_hash() {
+        let a = r#"[{"id":"x","spec":"y","name":"X","description":"","repoUrl":"u"}]"#;
+        let b = r#"[{"id":"x","spec":"y","name":"X","description":"","repoUrl":"u"},]"#;
+        assert_eq!(fnv1a(a.as_bytes()), fnv1a(a.as_bytes()));
+        assert_ne!(fnv1a(a.as_bytes()), fnv1a(b.as_bytes()));
+    }
+
+    #[test]
+    fn pending_decision_matrix() {
+        // 未完成引导 → 一定需要
+        assert!(preinstall_pending_for_test(false, None, Some("h1")));
+        assert!(preinstall_pending_for_test(false, Some("h1"), Some("h1")));
+        // 老用户升级：无基线且文件在 → 弹一次建立基线
+        assert!(preinstall_pending_for_test(true, None, Some("h1")));
+        // 基线一致 → 不弹
+        assert!(!preinstall_pending_for_test(true, Some("h1"), Some("h1")));
+        // 内容变更 → 弹
+        assert!(preinstall_pending_for_test(true, Some("h1"), Some("h2")));
+        // 文件缺失：视为无变化不弹（有基线或老用户都不弹）
+        assert!(!preinstall_pending_for_test(true, Some("h1"), None));
+        assert!(!preinstall_pending_for_test(true, None, None));
+    }
+
+    /// 纯函数版 pending 判定（便于单测，不依赖 AppHandle）
+    fn preinstall_pending_for_test(
+        preinstall_done: bool,
+        recorded: Option<&str>,
+        current: Option<&str>,
+    ) -> bool {
+        if !preinstall_done {
+            return true;
+        }
+        match (recorded, current) {
+            (None, Some(_)) => true,
+            (Some(prev), Some(cur)) => prev != cur,
+            _ => false,
+        }
     }
 }

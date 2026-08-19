@@ -205,7 +205,6 @@ export const harness = defineStore({
         // 已安装过则跳过安装界面，避免每次启动都闪现"正在安装依赖..."
         const config = await invoke<{
           installed: boolean
-          preinstall_done: boolean
         }>('get_app_config')
 
         // 仅首次使用需要检测环境/安装依赖；之后直接进入页面
@@ -215,10 +214,11 @@ export const harness = defineStore({
           await invoke('install_dependencies')
         }
 
-        // 预装插件引导：首次安装完成或老版本升级后出现（装完/跳过后才拉起服务）。
-        // 注意：老用户升级后 installed 已为 true，但 preinstall_done 未置位，
-        // 此时也能看到新增的预装插件列表。
-        if (!config.preinstall_done) {
+        // 预装插件引导：首次安装、老版本升级（无指纹基线）或 preset-plugins.json
+        // 内容变更（社区新增推荐插件）时重新进入预设流程，装完/跳过后才拉起服务。
+        // preset-plugins.json 随安装包发布、每次安装被强制覆盖，旧文件不可比对，
+        // 由 Rust 侧记录内容指纹到 app-data（.store.dat），启动时比对是否有变更。
+        if (await invoke<boolean>('get_preinstall_pending')) {
           this.status = 'preinstall'
           await this.loadPreinstallPlugins()
           return

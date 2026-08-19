@@ -1,6 +1,6 @@
 [package]
 name = "deepseek-harness-desktop"
-version = "0.5.1"
+version = "0.6.4"
 description = "Desktop application for DeepSeek Harness (dsh)"
 authors = [ "deepseek-harness-desktop contributors" ]
 edition = "2021"
@@ -25,6 +25,7 @@ tauri = { version = "2", features = [
   "image-png",
   "devtools"
 ] }
+tauri-plugin-single-instance = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-store = "2"

@@ -8,6 +8,7 @@ use crate::config;
 use crate::service::download;
 use crate::service::workflow::utils::{is_port_in_use, spawn_output_readers};
 use std::collections::HashMap;
+
 #[cfg(windows)]
 use std::ffi::OsString;
 use std::fs;
@@ -371,6 +372,7 @@ pub async fn install(
     if has_owned_process() {
         log::info!("Stopping running Harness service before installation");
         stop(app_handle.clone()).await?;
+
     }
 
     let window = app_handle
@@ -425,7 +427,10 @@ pub async fn install(
             task.get_download_url()?
         };
         log::debug!("Download URL: {}", url);
-        let name = url.split('/').next_back().unwrap().to_string();
+        // 取文件名用于解压类型判定；下载 URL 正常必含 '/'，但这里不 panic，
+        // 防御性兜底为空串（后续 ensure_extract 会因无法判定类型而报错返回，
+        // 不再让进程崩溃）。
+        let name = url.rsplit('/').next().unwrap_or("").to_string();
         log::debug!("File name: {}", name);
         let buffer = download::download_file(&tracker, url).await?;
         log::info!("Download completed, file size: {} bytes", buffer.len());

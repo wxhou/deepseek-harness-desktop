@@ -8,12 +8,15 @@ import {
   Square,
   Xmark,
 } from '@gravity-ui/icons'
-import { Button } from '@heroui/react'
+import { Button, Description, Dropdown, Label } from '@heroui/react'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { useTranslation } from 'react-i18next'
 import { If } from 'react-if-lite'
+import { useStore } from 'valtio-define'
 import { useDshPlugins } from '../hooks/use-dsh-plugins'
 import { useIframeTauri } from '../hooks/use-iframe-tauri'
+import { desktopUpdate } from '../store/modules/desktop-update'
+import { DebugSidebar } from './debug-sidebar'
 
 /**
  * 壳层窗口顶部导航栏（44px，常驻）：
@@ -50,9 +53,9 @@ export default function Navbar({ iframeRef }: NavbarProps) {
   const { t } = useTranslation()
   const { plugins } = useDshPlugins()
   const { sidebarCollapsed, canGoBack, canGoForward, sendNav } = useIframeTauri(iframeRef)
+  const { updateInfo } = useStore(desktopUpdate)
   // 仅当 dsh-tauri 插件启用（已安装）时显示左侧导航控件
   const tauriEnabled = plugins.some(plugin => plugin.id === TAURI_PLUGIN_ID)
-
   function handleWindowAction(action: 'minimize' | 'maximize' | 'background') {
     const appWindow = getCurrentWindow()
     switch (action) {
@@ -69,8 +72,15 @@ export default function Navbar({ iframeRef }: NavbarProps) {
     }
   }
 
+  function handleHelpAction(key: string) {
+    if (key === 'check-update')
+      void desktopUpdate.openUpdateDialog()
+    else if (key === 'about')
+      void desktopUpdate.openAbout()
+  }
+
   return (
-    <div className="relative flex h-11 w-full flex-none select-none items-center gap-0.5 border-b border-line bg-canvas px-1.5 dark:bg-[#1b1b1c]">
+    <div className="relative flex h-11 w-full flex-none select-none items-center gap-0.5 border-b border-line px-1.5 bg-[#f9fafb] dark:bg-[#1b1b1c]">
       <If cond={iframeRef != null && tauriEnabled}>
         <Button
           className="rounded-lg size-7"
@@ -110,6 +120,54 @@ export default function Navbar({ iframeRef }: NavbarProps) {
         >
           <ArrowRight />
         </Button>
+        <div className="ml-1">
+          <DebugSidebar>
+            <Button
+              className="rounded-lg h-6 text-xs px-1.5"
+              size="sm"
+              variant="ghost"
+              aria-label={t('app.expand_sidebar')}
+            >
+              {t('app.debug')}
+            </Button>
+          </DebugSidebar>
+          <Dropdown>
+            <Button
+              className="rounded-lg h-6 text-xs px-1.5"
+              size="sm"
+              variant="ghost"
+              aria-label={t('app.expand_sidebar')}
+            >
+              {t('app.help')}
+            </Button>
+            <Dropdown.Popover className="rounded-md w-5!">
+              <Dropdown.Menu>
+                <Dropdown.Item
+                  className="rounded-md"
+                  id="check-update"
+                  textValue={t('menu.check_update')}
+                  onAction={() => handleHelpAction('check-update')}
+                >
+                  <span className="flex w-full items-center justify-between gap-3">
+                    <Label>{t('menu.check_update')}</Label>
+                    <If cond={updateInfo != null}>
+                      <Description>{t('menu.new_version')}</Description>
+                    </If>
+                  </span>
+                </Dropdown.Item>
+                <Dropdown.Item
+                  className="rounded-md"
+                  id="about"
+                  textValue={t('menu.about')}
+                  onAction={() => handleHelpAction('about')}
+                >
+                  <Label>{t('menu.about')}</Label>
+                </Dropdown.Item>
+              </Dropdown.Menu>
+            </Dropdown.Popover>
+          </Dropdown>
+
+        </div>
       </If>
 
       {/* 拖拽区：Tauri 原生拖拽（仅此元素带 data-tauri-drag-region，按钮不受影响） */}

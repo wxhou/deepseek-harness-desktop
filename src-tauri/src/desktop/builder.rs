@@ -140,12 +140,13 @@ pub fn build_main_window(app: &tauri::AppHandle<Wry>) -> tauri::Result<tauri::We
     });
 
     // 非 Windows（macOS/Linux）没有 WebView2 的 FrameCreated/ContentLoading 流程，
-    // 直接用 Tauri 的 initialization_script_for_all_frames 把通知桥与导航桥注入
-    // 所有 frame（两个脚本均带 window.__dsh_*_bridge__ 幂等守卫，重复注入安全）。
+    // 直接用 Tauri 的 initialization_script_for_all_frames 把通知桥、导航桥与样式桥注入
+    // 所有 frame（脚本均带 window.__dsh_*_bridge__ 幂等守卫，重复注入安全）。
     #[cfg(not(windows))]
     let webview_builder = webview_builder
         .initialization_script_for_all_frames(crate::desktop::notification::NOTIFICATION_SHIM_JS)
-        .initialization_script_for_all_frames(crate::desktop::nav::NAV_SHIM_JS);
+        .initialization_script_for_all_frames(crate::desktop::nav::NAV_SHIM_JS)
+        .initialization_script_for_all_frames(crate::desktop::style::IFRAME_STYLES_JS);
 
     let webview_window = webview_builder.build()?;
 
@@ -180,6 +181,7 @@ pub fn handler() -> impl Fn(Invoke<Wry>) -> bool + Send + Sync + 'static {
         crate::bridge::cmd::restart_harness,
         crate::bridge::cmd::get_dsh_status,
         crate::bridge::cmd::get_preinstall_plugins,
+        crate::bridge::cmd::get_preinstall_pending,
         crate::bridge::cmd::install_preinstall_plugins,
         crate::bridge::cmd::cancel_preinstall_plugins,
         crate::bridge::cmd::skip_preinstall_plugins,
@@ -199,6 +201,11 @@ pub fn handler() -> impl Fn(Invoke<Wry>) -> bool + Send + Sync + 'static {
         crate::bridge::cmd::set_language,
         crate::bridge::cmd::toggle_sidebar,
         crate::bridge::cmd::get_dsh_theme,
+        crate::bridge::cmd::check_desktop_update,
+        crate::bridge::cmd::download_desktop_update,
+        crate::bridge::cmd::open_desktop_installer,
+        crate::bridge::cmd::get_desktop_about,
+        crate::bridge::cmd::open_external_url,
         crate::desktop::notification::show_native_notification,
     ]
 }
@@ -220,6 +227,13 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
                 let _ = window.hide();
             }
         })
+        // 单例模式：多次双击图标（或重复启动）时不会新开窗口，而是把
+        // 已存在的（可能已隐藏到托盘）主窗口调到前台，实现“单例 + 复用后台窗口”。
+        // 该回调在首次启动时也会以当前进程的参数触发一次（幂等，仅 show/focus），
+        // 之后每次二次启动都会派发到这里，重新展示后台运行的主窗口。
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            crate::core::utils::show_main_window(app);
+        }))
         // Opener plugin
         .plugin(tauri_plugin_opener::init())
         // Notification plugin（Windows 上以 tauri-winrt-notification 实现点击回调，
