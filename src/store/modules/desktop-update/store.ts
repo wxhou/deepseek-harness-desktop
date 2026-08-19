@@ -51,6 +51,8 @@ export const desktopUpdate = defineStore({
      * 检查是否有新版本。
      * 轮询与「检查更新」共用；仅在 tag 变化时更新 updateInfo，
      * 既避免重复弹 toast，也让菜单「存在新版本」指示实时反映。
+     * 网络失败/限流时抛出错误（不吞掉），由调用方决定如何提示——
+     * 绝不能把「检查失败」误报成「已是最新」。
      */
     async check(): Promise<DesktopUpdateInfo | null> {
       if (this.checking)
@@ -66,10 +68,6 @@ export const desktopUpdate = defineStore({
           this.updateInfo = null
         }
         return info
-      }
-      catch (err) {
-        console.warn('[DesktopUpdate] check skipped:', err)
-        return this.updateInfo
       }
       finally {
         this.checking = false
@@ -90,15 +88,21 @@ export const desktopUpdate = defineStore({
       }
     },
 
-    /** 打开更新对话框（「检查更新」菜单）：先检查，有更新才弹框，否则提示已是最新 */
+    /** 打开更新对话框（「检查更新」菜单）：先检查，有更新才弹框；检查失败提示错误而非「已是最新」 */
     async openUpdateDialog() {
-      if (!this.updateInfo)
-        await this.check()
-      if (this.updateInfo) {
-        this.updateDialogOpen = true
+      try {
+        if (!this.updateInfo)
+          await this.check()
+        if (this.updateInfo) {
+          this.updateDialogOpen = true
+        }
+        else {
+          toast(i18next.t('update.up_to_date'), { variant: 'default' })
+        }
       }
-      else {
-        toast(i18next.t('update.up_to_date'), { variant: 'default' })
+      catch (err) {
+        console.warn('[DesktopUpdate] check failed:', err)
+        toast(i18next.t('update.check_failed'), { variant: 'danger' })
       }
     },
 

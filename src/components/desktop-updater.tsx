@@ -17,11 +17,11 @@ export default function DesktopUpdater() {
   const { t } = useTranslation()
   const { updateInfo, dismissedTag, downloading, updateDialogOpen } = useStore(desktopUpdate)
 
-  // 低频静默检查新版本（实时查询，无本地缓存）
+  // 低频静默检查新版本（实时查询，无本地缓存）；后台失败静默，不打扰用户
   useEffect(() => {
-    void desktopUpdate.check()
+    void desktopUpdate.check().catch(() => {})
     const timer = setInterval(() => {
-      void desktopUpdate.check()
+      void desktopUpdate.check().catch(() => {})
     }, POLL_INTERVAL)
     return () => clearInterval(timer)
   }, [])

@@ -6,7 +6,8 @@
 //! 设计考量：
 //! - 每次「检查更新」都实时向 GitHub 查询最新 Release（不做缓存），保证看到的
 //!   永远是最新发布，不会因上传期间的旧结果而误判「已是最新」。
-//! - 注意未认证 API 限流 60 次/小时/IP，前端轮询需放低频以免触发 403。
+//! - 通过 GitHub 的 **HTML/atom 页面**（releases.atom、expanded_assets）而非
+//!   api.github.com 查询，绕开未认证 API 60 次/小时/IP 的限流。
 //! - 安装包下载到 AppData/updates 目录；已存在则视为「已下载」，不再重复拉取。
 //! - 打开安装器（exe/msi/dmg 等）交给系统默认处理器（ShellExecute/LaunchServices）。
 
@@ -17,9 +18,7 @@ use futures_util::StreamExt;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_opener::OpenerExt;
 
-/// 桌面端 GitHub 仓库 API 地址（未认证限流 60 次/小时/IP）
-const GITHUB_API: &str = "https://api.github.com/repos/hairyf/deepseek-harness-desktop";
-/// 仓库主页（关于对话框展示）
+/// 仓库主页（同时用于构造 atom / expanded_assets / 下载地址）
 const REPO_URL: &str = "https://github.com/hairyf/deepseek-harness-desktop";
 /// 版权信息（与 tauri.conf.json bundle.copyright 保持一致）
 const COPYRIGHT: &str = "Copyright © 2026 Deepseek Harness Desktop contributors";
@@ -67,11 +66,11 @@ fn is_newer(latest: &str, current: &str) -> bool {
     a.len() > b.len()
 }
 
-/// 选择当前平台对应的安装包资产（名称, 下载 URL）。
+/// 选择当前平台对应的安装包资产文件名。
 ///
 /// 优先级由各平台偏好扩展名顺序决定：Windows 优先 msi（其次 exe/nsis），
 /// macOS 选 dmg，Linux 选 AppImage（其次 deb/rpm）。
-fn pick_asset(assets: &[serde_json::Value]) -> Option<(String, String)> {
+fn pick_asset(assets: &[String]) -> Option<String> {
     #[cfg(target_os = "windows")]
     let prefs = [".msi", ".exe"];
     #[cfg(target_os = "macos")]
@@ -79,84 +78,120 @@ fn pick_asset(assets: &[serde_json::Value]) -> Option<(String, String)> {
     #[cfg(target_os = "linux")]
     let prefs = [".AppImage", ".deb", ".rpm"];
 
-    let mut best: Option<(usize, String, String)> = None;
-    for asset in assets {
-        let Some(name) = asset.get("name").and_then(|v| v.as_str()) else {
-            continue;
-        };
+    let mut best: Option<(usize, String)> = None;
+    for name in assets {
         let Some(idx) = prefs.iter().position(|p| name.ends_with(p)) else {
             continue;
         };
-        let Some(url) = asset.get("browser_download_url").and_then(|v| v.as_str()) else {
-            continue;
-        };
         let rank = prefs.len() - idx; // 越靠前优先级越高
-        if best.as_ref().is_none_or(|(r, _, _)| rank > *r) {
-            best = Some((rank, name.to_string(), url.to_string()));
+        if best.as_ref().is_none_or(|(r, _)| rank > *r) {
+            best = Some((rank, name.clone()));
         }
     }
-    best.map(|(_, name, url)| (name, url))
+    best.map(|(_, name)| name)
 }
 
-/// 请求 GitHub 最新 Release 原始 JSON（不做缓存，每次实时拉取）。
-async fn fetch_latest_release_json() -> Result<serde_json::Value, String> {
-    let client = reqwest::Client::builder()
+/// 构造带统一 UA 的 HTTP 客户端（并发小、超时短）。
+fn http_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
         .user_agent("deepseek-harness-desktop")
         .timeout(Duration::from_secs(5))
         .build()
-        .map_err(|e| format!("UPDATE_CLIENT: {e}"))?;
-    client
-        .get(format!("{GITHUB_API}/releases/latest"))
-        .send()
-        .await
-        .map_err(|e| format!("UPDATE_REQ: {e}"))?
-        .error_for_status()
-        .map_err(|e| format!("UPDATE_REQ: {e}"))?
-        .json()
-        .await
-        .map_err(|e| format!("UPDATE_PARSE: {e}"))
+        .map_err(|e| format!("UPDATE_CLIENT: {e}"))
 }
 
-/// 查询最新 Release（无缓存，每次实时检查）。
+/// 定位 `marker` 之后到 `end_marker` 之间的内容（用于轻量解析 atom/HTML）。
+fn find_token<'a>(s: &'a str, marker: &str, end_marker: &str) -> Option<&'a str> {
+    let start = s.find(marker)? + marker.len();
+    let end = s[start..].find(end_marker).map(|e| start + e)?;
+    Some(&s[start..end])
+}
+
+/// 从 releases.atom 解析最新 release 的 (tag, 发布时间)。
+///
+/// 不走 api.github.com，故不受未认证限流约束。
+async fn fetch_latest_meta() -> Result<(String, String), String> {
+    let body = http_client()?
+        .get(format!("{REPO_URL}/releases.atom"))
+        .send()
+        .await
+        .map_err(|e| format!("UPDATE_ATOM: {e}"))?
+        .error_for_status()
+        .map_err(|e| format!("UPDATE_ATOM: {e}"))?
+        .text()
+        .await
+        .map_err(|e| format!("UPDATE_ATOM: {e}"))?;
+
+    // 取第一条 <entry> 作为最新 release
+    let entry = body
+        .find("<entry>")
+        .and_then(|p| body[p..].find("</entry>").map(|e| &body[p..p + e]))
+        .unwrap_or(&body);
+    let tag = find_token(entry, "releases/tag/", "\"")
+        .ok_or_else(|| "UPDATE_PARSE: missing tag in atom feed".to_string())?
+        .to_string();
+    let published_at = find_token(entry, "<updated>", "</updated>")
+        .unwrap_or_default()
+        .to_string();
+    Ok((tag, published_at))
+}
+
+/// 从 expanded_assets 页面 HTML 中提取给定 tag 的全部资产文件名（纯函数，便于测试）。
+fn extract_asset_names(html: &str, tag: &str) -> Vec<String> {
+    let needle = format!("releases/download/{tag}/");
+    let mut names = Vec::new();
+    let mut start = 0;
+    while let Some(pos) = html[start..].find(&needle) {
+        let after = start + pos + needle.len();
+        let end = html[after..].find('"').map(|e| after + e).unwrap_or(html.len());
+        names.push(html[after..end].to_string());
+        start = end;
+    }
+    names
+}
+
+/// 从 release 的 expanded_assets 页面解析全部安装包资产文件名。
+///
+/// 不走 api.github.com，故不受未认证限流约束。
+async fn fetch_asset_names(tag: &str) -> Result<Vec<String>, String> {
+    let body = http_client()?
+        .get(format!("{REPO_URL}/releases/expanded_assets/{tag}"))
+        .send()
+        .await
+        .map_err(|e| format!("UPDATE_ASSETS: {e}"))?
+        .error_for_status()
+        .map_err(|e| format!("UPDATE_ASSETS: {e}"))?
+        .text()
+        .await
+        .map_err(|e| format!("UPDATE_ASSETS: {e}"))?;
+    Ok(extract_asset_names(&body, tag))
+}
+
+/// 查询最新 Release（无缓存，每次实时检查，走 HTML/atom 而非 api.github.com）。
 ///
 /// 返回 `Ok(Some(LatestRelease))` 表示有更新且匹配到当前平台安装包；
-/// `Ok(None)` 表示无更新（或未匹配到资产）。网络失败/限流返回 Err。
+/// `Ok(None)` 表示无更新（或未匹配到资产）。网络失败返回 Err。
 async fn fetch_latest_release() -> Result<Option<LatestRelease>, String> {
-    let release = fetch_latest_release_json().await?;
-    let tag_name = release
-        .get("tag_name")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .to_string();
-    let published_at = release
-        .get("published_at")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .to_string();
-    let version = tag_name.trim_start_matches('v').to_string();
+    let (tag, published_at) = fetch_latest_meta().await?;
+    let version = tag.trim_start_matches('v').to_string();
+    if !is_newer(&version, &current_version()) {
+        return Ok(None);
+    }
 
-    let assets = release
-        .get("assets")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
-    let asset = pick_asset(&assets);
+    let names = fetch_asset_names(&tag).await?;
+    let Some(asset_name) = pick_asset(&names) else {
+        return Ok(None);
+    };
 
-    // 有更新且匹配到资产才视为「可更新」
-    Ok(if is_newer(&version, &current_version()) {
-        match asset {
-            Some((name, url)) => Some(LatestRelease {
-                version: version.clone(),
-                tag: tag_name.clone(),
-                published_at: published_at.clone(),
-                url,
-                asset_name: name,
-            }),
-            None => None,
-        }
-    } else {
-        None
-    })
+    // 下载地址由 tag + 资产名直接构造，无需 API
+    let url = format!("{REPO_URL}/releases/download/{tag}/{asset_name}");
+    Ok(Some(LatestRelease {
+        version,
+        tag,
+        published_at,
+        url,
+        asset_name,
+    }))
 }
 
 /// 安装包存放路径（AppData/updates/<asset_name>）
@@ -308,14 +343,7 @@ pub struct DesktopAboutInfo {
 /// 关于信息：版本来自编译常量，发布时间每次实时查询最新 Release（不缓存），
 /// 查询失败则留空、不影响展示。
 pub async fn about() -> DesktopAboutInfo {
-    let published_at = match fetch_latest_release_json().await {
-        Ok(json) => json
-            .get("published_at")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string(),
-        Err(_) => String::new(),
-    };
+    let published_at = fetch_latest_meta().await.map(|(_, p)| p).unwrap_or_default();
     DesktopAboutInfo {
         version: current_version(),
         published_at,
@@ -355,28 +383,42 @@ mod tests {
 
     #[test]
     fn pick_asset_prefers_matching_suffix() {
-        let mk = |name: &str, url: &str| {
-            serde_json::json!({ "name": name, "browser_download_url": url })
-        };
+        let mk = |name: &str| name.to_string();
         #[cfg(target_os = "windows")]
         {
-            let assets = vec![
-                mk("app-x86_64-setup.exe", "https://x/exe"),
-                mk("app.msi", "https://x/msi"),
-            ];
-            let (name, url) = pick_asset(&assets).unwrap();
-            assert_eq!(name, "app.msi");
-            assert_eq!(url, "https://x/msi");
+            let assets: Vec<String> = vec![mk("app-x86_64-setup.exe"), mk("app.msi")];
+            assert_eq!(pick_asset(&assets).as_deref(), Some("app.msi"));
         }
         #[cfg(target_os = "macos")]
         {
-            let assets = vec![mk("app.dmg", "https://x/dmg"), mk("app-x86_64.tar.gz", "https://x/tgz")];
-            let (name, url) = pick_asset(&assets).unwrap();
-            assert_eq!(name, "app.dmg");
-            assert_eq!(url, "https://x/dmg");
+            let assets: Vec<String> = vec![mk("app.dmg"), mk("app-x86_64.tar.gz")];
+            assert_eq!(pick_asset(&assets).as_deref(), Some("app.dmg"));
         }
-        let no_match: Vec<serde_json::Value> = vec![mk("README.md", "https://x/readme")];
+        let no_match: Vec<String> = vec![mk("README.md")];
         assert!(pick_asset(&no_match).is_none());
         assert!(pick_asset(&[]).is_none());
+    }
+
+    #[test]
+    fn find_token_extracts_between_markers() {
+        let s = r#"<link rel="alternate" href="https://github.com/x/releases/tag/v0.6.6"/>"#;
+        assert_eq!(find_token(s, "releases/tag/", "\""), Some("v0.6.6"));
+        let s2 = "<updated>2026-08-19T09:27:38Z</updated>";
+        assert_eq!(find_token(s2, "<updated>", "</updated>"), Some("2026-08-19T09:27:38Z"));
+        assert_eq!(find_token("no marker", "releases/tag/", "\""), None);
+    }
+
+    #[test]
+    fn extract_asset_names_parses_download_links() {
+        let tag = "v0.6.6";
+        let html = r#"
+            <a href="/hairyf/deepseek-harness-desktop/releases/download/v0.6.6/x64-setup.exe">x</a>
+            <a href="/hairyf/deepseek-harness-desktop/releases/download/v0.6.6/x64_en-US.msi">y</a>
+            <a href="/hairyf/deepseek-harness-desktop/releases/download/v0.6.5/old.dmg">z</a>
+        "#;
+        let names = extract_asset_names(html, tag);
+        assert_eq!(names, vec!["x64-setup.exe", "x64_en-US.msi"]);
+        assert!(extract_asset_names(html, "v9.9.9").is_empty());
+        assert!(extract_asset_names("", tag).is_empty());
     }
 }
