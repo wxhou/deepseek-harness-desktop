@@ -279,10 +279,16 @@ export const harness = defineStore({
           installed: boolean
         }>('get_app_config')
 
-        // 仅首次使用需要检测环境/安装依赖；之后直接进入页面
+        // 仅首次使用需要检测环境/安装依赖；之后直接进入页面。
+        // 桌面端自更新（MSI 强杀进程）后 store 可能被复位/损坏显示未安装，
+        // 但运行时文件已全部在盘——此时跳过安装/下载界面，install_dependencies
+        // 内部自愈补记 installed 后直接启动，避免自动重开时闪现误导用户的界面。
         if (!config.installed) {
-          this.status = 'installing'
-          this.installer = { ...initialInstaller, title: i18next.t('status.installing') }
+          const ready = await invoke<boolean>('runtime_ready')
+          if (!ready) {
+            this.status = 'installing'
+            this.installer = { ...initialInstaller, title: i18next.t('status.installing') }
+          }
           await invoke('install_dependencies')
         }
 

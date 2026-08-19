@@ -301,6 +301,19 @@ pub async fn get_runtime_info(app_handle: AppHandle) -> Result<config::RuntimeIn
     Ok(config::runtime_info(&app_handle, port))
 }
 
+/// 运行时文件是否已全部在盘（Node / Dsh / pnpm 三件套，纯本地检查、无网络）。
+///
+/// 判定条件与 `install_dependencies` 的「启动自愈」捷径完全一致：桌面端自更新
+/// （MSI 强杀进程）后 store 可能被复位或损坏显示「未安装」，但运行时文件其实
+/// 已就绪——此时前端跳过安装/下载界面，交给 install_dependencies 内部自愈
+/// 补记 installed 后直接启动，避免自动重开时闪现误导用户的安装界面。
+#[tauri::command]
+pub fn runtime_ready(app_handle: AppHandle) -> bool {
+    download::Nodejs.check_installed(&app_handle)
+        && download::Dsh.check_installed(&app_handle)
+        && download::Pnpm.check_installed(&app_handle)
+}
+
 /// 当前桌面端配置
 #[tauri::command]
 pub async fn get_app_config(app_handle: AppHandle) -> Result<config::Setting, String> {
