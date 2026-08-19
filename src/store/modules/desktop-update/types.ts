@@ -1,6 +1,9 @@
 /** Rust 侧 check_desktop_update 返回的桌面端新版本信息 */
 export interface DesktopUpdateInfo {
+  /** 最新可用版本号（无 v 前缀） */
   version: string
+  /** 当前已安装版本号（无 v 前缀） */
+  currentVersion: string
   tag: string
   published_at: string
   url: string

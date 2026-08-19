@@ -203,7 +203,10 @@ fn installer_path(app_handle: &AppHandle, asset_name: &str) -> Result<PathBuf, S
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DesktopUpdateInfo {
+    /// 最新可用版本号（无 `v` 前缀）
     pub version: String,
+    /// 当前已安装版本号（无 `v` 前缀）
+    pub current_version: String,
     pub tag: String,
     pub published_at: String,
     pub url: String,
@@ -221,6 +224,7 @@ pub async fn check(app_handle: &AppHandle) -> Result<Option<DesktopUpdateInfo>, 
             let downloaded = path.exists();
             Ok(Some(DesktopUpdateInfo {
                 version: r.version,
+                current_version: current_version(),
                 tag: r.tag,
                 published_at: r.published_at,
                 url: r.url,

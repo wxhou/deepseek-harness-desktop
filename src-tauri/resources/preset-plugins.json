@@ -46,6 +46,7 @@
   {
     "id": "dsh-session-context-menu",
     "spec": "github:baihejiangnan/dsh-session-context-menu",
+    "package": "@baihejiangnan/dsh-session-context-menu",
     "name": "DSH Session Context Menu",
     "description": "Right-click context menu for the DSH app shell — quick actions for conversations, workspaces, inputs, and links.",
     "repoUrl": "https://github.com/baihejiangnan/dsh-session-context-menu",
