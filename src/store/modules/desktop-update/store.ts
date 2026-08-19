@@ -124,6 +124,19 @@ export const desktopUpdate = defineStore({
     },
 
     /**
+     * toast「立即更新」：打开更新对话框并开始下载，避免静默下载无反馈。
+     * 对话框内 `downloading` 状态会展示下载进度条；下载完成自动打开安装器并关闭对话框。
+     */
+    async updateNow() {
+      if (!this.updateInfo)
+        await this.check()
+      if (!this.updateInfo)
+        return
+      this.updateDialogOpen = true
+      await this.downloadAndOpen()
+    },
+
+    /**
      * 下载并打开安装包：已下载则直接打开；
      * 否则监听进度流式下载，完成后自动打开安装器。
      */

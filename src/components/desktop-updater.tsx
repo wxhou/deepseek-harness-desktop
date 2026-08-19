@@ -40,7 +40,8 @@ export default function DesktopUpdater() {
         children: t('update.now'),
         onPress: () => {
           toast.clear()
-          void desktopUpdate.downloadAndOpen()
+          // 打开更新对话框并开始下载，对话框内展示下载进度
+          void desktopUpdate.updateNow()
         },
         variant: 'tertiary',
       },
