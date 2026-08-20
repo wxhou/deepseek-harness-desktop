@@ -17,6 +17,10 @@ use crate::desktop::window::on_page_load;
 
 /// setup app
 pub fn setup(app_handle: tauri::AppHandle) {
+    // 启动前清扫上次崩溃残留的孤儿 Harness（端口/PID 双重确认，见
+    // workflow::sweep_orphan_harness），避免新实例一路漂移端口
+    crate::service::workflow::sweep_orphan_harness(&app_handle);
+
     // 启动进程监控（tick 检测 dsh 服务状态）
     crate::service::scheduler::start(&app_handle);
 

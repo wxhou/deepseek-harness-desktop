@@ -70,6 +70,24 @@ fn terminate_owned_process() {
             unsafe { CloseHandle(handle) };
             return;
         }
+        kill_pid_tree(pid);
+        unsafe {
+            WaitForSingleObject(handle, 5_000);
+            CloseHandle(handle);
+        }
+    }
+
+    #[cfg(unix)]
+    {
+        kill_pid_tree(pid);
+    }
+}
+
+/// 结束进程树（Windows `taskkill /PID <pid> /T /F`；Unix 负 PID 进程组，与
+/// 启动时 `process_group(0)` 对应）。调用方需先确认 PID 确实指向目标进程。
+fn kill_pid_tree(pid: u32) {
+    #[cfg(windows)]
+    {
         let mut cmd = Command::new("taskkill");
         cmd.args(["/PID", &pid.to_string(), "/T", "/F"]);
         use std::os::windows::process::CommandExt;
@@ -77,11 +95,7 @@ fn terminate_owned_process() {
         cmd.stdout(Stdio::null());
         cmd.stderr(Stdio::null());
         if let Err(e) = cmd.output() {
-            log::error!("Failed to stop owned Harness process {pid}: {e}");
-        }
-        unsafe {
-            WaitForSingleObject(handle, 5_000);
-            CloseHandle(handle);
+            log::error!("Failed to stop Harness process tree {pid}: {e}");
         }
     }
 
@@ -97,6 +111,104 @@ fn terminate_owned_process() {
 
 pub fn has_owned_process() -> bool {
     OWNED_PROCESS_ID.load(Ordering::SeqCst) != 0
+}
+
+// ---------------------------------------------------------------------------
+// 孤儿 Harness 清扫：崩溃/强杀残留实例的识别与回收（issue #34 关联现象）
+// ---------------------------------------------------------------------------
+
+/// 孤儿清扫用的 PID/端口标记文件路径（$DSH_HOME/.harness.pid，两行：PID、端口）。
+///
+/// 应用被强杀（崩溃、任务管理器结束等）时无法执行退出清理，其 Harness 子进程
+/// 会继续占用端口；下一次启动只能一路漂移端口（3080→3081→…）并触发服务端
+/// "already running"，表现为应用"坏掉"。启动前据此文件识别并清理这类残留。
+fn harness_pid_path(app_handle: &tauri::AppHandle) -> std::path::PathBuf {
+    config::get_dsh_data_path(app_handle).join(".harness.pid")
+}
+
+/// 记录本次启动的 Harness PID 与端口，供下次启动清扫孤儿用。
+fn persist_harness_pid(app_handle: &tauri::AppHandle, pid: u32, port: u16) {
+    let path = harness_pid_path(app_handle);
+    if let Some(dir) = path.parent() {
+        let _ = fs::create_dir_all(dir);
+    }
+    let _ = fs::write(&path, format!("{pid}\n{port}\n"));
+}
+
+/// 启动前清扫上次崩溃残留的孤儿 Harness。端口与 PID 双重确认后才动手：
+/// - 标记进程已死 → 仅清理陈旧标记；
+/// - 端口占用者正是标记中的 PID → 本应用残留，结束其进程树并清标记；
+/// - 其余情况（标记不可解析、端口被其他程序占用、无法探测占用者）一律不动，
+///   绝不凭端口猜进程、绝不杀未知进程。
+pub fn sweep_orphan_harness(app_handle: &tauri::AppHandle) {
+    if has_owned_process() {
+        return;
+    }
+    let pid_file = harness_pid_path(app_handle);
+    let Ok(text) = fs::read_to_string(&pid_file) else { return; };
+    let mut lines = text.lines();
+    let (Some(pid), Some(port)) = (
+        lines.next().and_then(|l| l.trim().parse::<u32>().ok()),
+        lines.next().and_then(|l| l.trim().parse::<u16>().ok()),
+    ) else {
+        // 标记内容不可解析：陈旧垃圾，清掉即可
+        let _ = fs::remove_file(&pid_file);
+        return;
+    };
+    if !is_port_in_use(port) {
+        // 端口已释放：残留实例早已自行退出，仅清理标记
+        let _ = fs::remove_file(&pid_file);
+        return;
+    }
+    if port_owner_pid(port) != Some(pid) {
+        // 端口占用者不是我们落盘的进程（或探测不到）：可能是其他程序，不动
+        return;
+    }
+    log::warn!("Sweeping orphaned Harness process {pid} (port {port}) left by a previous session");
+    kill_pid_tree(pid);
+    let _ = fs::remove_file(&pid_file);
+}
+
+/// 占用指定端口的进程 PID（LISTENING 状态）。
+/// - Windows：`netstat -ano` 解析；
+/// - Unix：`lsof -ti tcp:<port>`，不可用时返回 None。
+/// 返回 None 视为"无法确认"，调用方不会因此杀任何进程。
+fn port_owner_pid(port: u16) -> Option<u32> {
+    #[cfg(windows)]
+    {
+        let output = Command::new("netstat").arg("-ano").output().ok()?;
+        let text = String::from_utf8_lossy(&output.stdout);
+        let needle = format!(":{port} ");
+        for line in text.lines() {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            if fields.len() < 5 || fields[0] != "TCP" {
+                continue;
+            }
+            // 本地地址列（如 127.0.0.1:3080 / [::1]:3080）以 :<port> 结尾
+            if !fields[1].ends_with(&needle) {
+                continue;
+            }
+            if fields[3] == "LISTENING" {
+                return fields[4].parse().ok();
+            }
+        }
+        None
+    }
+    #[cfg(not(windows))]
+    {
+        // lsof 在 macOS 默认可用、Linux 常缺失；缺失时跳过清扫（返回 None）
+        let output = Command::new("lsof")
+            .args(["-ti", &format!("tcp:{port}")])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .next()
+            .and_then(|l| l.trim().parse().ok())
+    }
 }
 
 /// Windows RedirectionGuard（错误码 448 = ERROR_UNTRUSTED_MOUNT_POINT）逃逸重拉的标记路径。
@@ -413,6 +525,8 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
                 "Harness process started successfully: pid={pid}, port={}",
                 setting.port
             );
+            // 记录 PID+端口供下次启动清扫崩溃残留的孤儿实例（见 sweep_orphan_harness）
+            persist_harness_pid(&app_handle, pid, setting.port);
             spawn_output_readers(stdout, stderr, log_path);
             Ok(())
         }
@@ -429,6 +543,8 @@ pub async fn stop(app_handle: tauri::AppHandle) -> Result<(), String> {
     // 重置启动守卫，确保后续 launch 可以重新拉起；仅结束持有的根进程树。
     LAUNCH_GUARD.store(false, Ordering::SeqCst);
     terminate_owned_process();
+    // 清理孤儿清扫标记：正常停止的实例不应被下次启动当作残留
+    let _ = fs::remove_file(harness_pid_path(&app_handle));
 
     // 给系统一点时间释放端口 (重要！)
     tokio::time::sleep(std::time::Duration::from_millis(800)).await;
@@ -441,8 +557,10 @@ pub async fn stop(app_handle: tauri::AppHandle) -> Result<(), String> {
 /// 应用退出时同步回收 Harness 进程。
 ///
 /// 退出路径上不更新状态、不做异步等待，只结束当前应用持有的 Harness 进程树。
-pub fn stop_on_exit(_app_handle: tauri::AppHandle, _port: u16) {
+pub fn stop_on_exit(app_handle: tauri::AppHandle, _port: u16) {
     terminate_owned_process();
+    // 正常退出路径同样清理清扫标记（崩溃路径才需要下次启动清扫）
+    let _ = fs::remove_file(harness_pid_path(&app_handle));
 }
 
 /// 安装环境（Node.js 运行时 + 打包的 Harness 发行版）。
