@@ -495,32 +495,44 @@ fn github_client() -> Result<reqwest::Client, String> {
         .map_err(|e| format!("Failed to create HTTP client: {}", e))
 }
 
+/// 访问 api.github.com 的 GET 请求（所有 API 调用统一走这里）。
+///
+/// 带 GitHub 未认证限流（403）冷却：冷却期内直接返回 Err（由调用方走兜底来源），
+/// 命中 403 时记录冷却开始。返回的 `reqwest::Response` 已通过 `error_for_status`，
+/// 403 已被拦截并标记冷却，不会作为普通错误继续向下传输。
+async fn github_api_get(
+    client: &reqwest::Client,
+    url: &str,
+) -> Result<reqwest::Response, String> {
+    if crate::service::download::github_api::rate_limited() {
+        return Err("GitHub API rate limited (cached, using fallback sources)".to_string());
+    }
+    let res = client.get(url).send().await.map_err(|e| e.to_string())?;
+    if res.status() == reqwest::StatusCode::FORBIDDEN {
+        crate::service::download::github_api::mark_rate_limited();
+        return Err(format!("GitHub API rate limited: HTTP {}", res.status()));
+    }
+    res.error_for_status().map_err(|e| e.to_string())
+}
+
 /// 拉取最新 release 的 JSON（含 tag、资产、摘要）。
 async fn fetch_releases_latest(client: &reqwest::Client) -> Result<serde_json::Value, String> {
-    client
-        .get(format!("{DSH_PKG_GITHUB_API}/releases/latest"))
-        .send()
+    github_api_get(client, &format!("{DSH_PKG_GITHUB_API}/releases/latest"))
         .await
-        .map_err(|e| format!("Failed to request latest release: {}", e))?
-        .error_for_status()
-        .map_err(|e| format!("Latest release request failed: {}", e))?
+        .map_err(|e| format!("Latest release request failed: {e}"))?
         .json()
         .await
-        .map_err(|e| format!("Failed to parse latest release response: {}", e))
+        .map_err(|e| format!("Failed to parse latest release response: {e}"))
 }
 
 /// 通过 commits 端点把 release tag 解析为完整 commit hash。
 async fn fetch_tag_commit(client: &reqwest::Client, tag: &str) -> Result<String, String> {
-    let commit: serde_json::Value = client
-        .get(format!("{DSH_PKG_GITHUB_API}/commits/{tag}"))
-        .send()
+    let commit: serde_json::Value = github_api_get(client, &format!("{DSH_PKG_GITHUB_API}/commits/{tag}"))
         .await
-        .map_err(|e| format!("Failed to request release commit: {}", e))?
-        .error_for_status()
-        .map_err(|e| format!("Release commit request failed: {}", e))?
+        .map_err(|e| format!("Release commit request failed: {e}"))?
         .json()
         .await
-        .map_err(|e| format!("Failed to parse release commit response: {}", e))?;
+        .map_err(|e| format!("Failed to parse release commit response: {e}"))?;
     commit
         .get("sha")
         .and_then(|v| v.as_str())
@@ -632,10 +644,17 @@ pub async fn fetch_latest_dsh_pkg_info() -> Result<LatestDshPkg, String> {
     let api_release = match fetch_releases_latest(&client).await {
         Ok(release) => Some(release),
         Err(e) => {
-            log::warn!(
-                "GitHub API latest release unavailable ({}), falling back to atom feed",
-                e
-            );
+            // 限流冷却期内不重复打 403 警告（进入冷却时已提示一次），静默走兜底
+            if crate::service::download::github_api::rate_limited() {
+                log::debug!(
+                    "GitHub API latest release unavailable (rate-limited), using fallback sources: {e}"
+                );
+            } else {
+                log::warn!(
+                    "GitHub API latest release unavailable ({}), falling back to atom feed",
+                    e
+                );
+            }
             None
         }
     };
@@ -654,11 +673,17 @@ pub async fn fetch_latest_dsh_pkg_info() -> Result<LatestDshPkg, String> {
     let commit = match fetch_tag_commit(&client, &tag_name).await {
         Ok(sha) => sha,
         Err(e) => {
-            log::warn!(
-                "Failed to resolve commit for tag {} ({}), using build-id fallback",
-                tag_name,
-                e
-            );
+            if crate::service::download::github_api::rate_limited() {
+                log::debug!(
+                    "GitHub API commit resolution rate-limited, using build-id fallback"
+                );
+            } else {
+                log::warn!(
+                    "Failed to resolve commit for tag {} ({}), using build-id fallback",
+                    tag_name,
+                    e
+                );
+            }
             commit_fallback_from_tag(&tag_name)
         }
     };
@@ -811,22 +836,16 @@ pub fn resolve_update(
 /// 仅在更新判定需要反查“无 tag 的老记录”时调用，失败时由调用方回退到
 /// “以实际文件为准”的保守分支。
 pub async fn fetch_dsh_pkg_tags() -> Result<Vec<(String, String)>, String> {
-    let client = reqwest::Client::builder()
-        .user_agent("deepseek-harness-desktop")
-        .timeout(std::time::Duration::from_secs(5))
-        .build()
-        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
-
-    let tags: serde_json::Value = client
-        .get(format!("{}/tags?per_page=100", DSH_PKG_GITHUB_API))
-        .send()
-        .await
-        .map_err(|e| format!("Failed to request release tags: {}", e))?
-        .error_for_status()
-        .map_err(|e| format!("Release tags request failed: {}", e))?
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse release tags response: {}", e))?;
+    let client = github_client()?;
+    let tags: serde_json::Value = github_api_get(
+        &client,
+        &format!("{}/tags?per_page=100", DSH_PKG_GITHUB_API),
+    )
+    .await
+    .map_err(|e| format!("Release tags request failed: {e}"))?
+    .json()
+    .await
+    .map_err(|e| format!("Failed to parse release tags response: {e}"))?;
 
     Ok(tags
         .as_array()
