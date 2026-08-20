@@ -106,30 +106,27 @@ mod imp {
     }
 
     /// 幂等地写入 web profile 的 `cordis.patch.yml` 挂载行。
+    ///
+    /// 用 YAML 库整体改写顶层数组，而非字符串拼接：新增的顶层 `- insert:`
+    /// 元素由库序列化，避免手拼格式错乱。**代价**：库往返会丢弃文件中的用户
+    /// 注释（评审已确认接受），但顶层数组语义保持不变（loader 只读数组结构）。
     fn ensure_patch(profile: &Path) -> Result<(), String> {
         let patch_path = profile.join("cordis.patch.yml");
         let existing = fs::read_to_string(&patch_path).unwrap_or_default();
 
+        let mut doc = parse_patch_list(&existing)?;
+        let seq = match &mut doc {
+            serde_yaml::Value::Sequence(seq) => seq,
+            _ => unreachable!("parse_patch_list only returns a sequence"),
+        };
         // 已挂载则跳过（幂等）。
-        if existing.contains(PATCH_MARKER) {
+        if seq.iter().any(block_is_ours) {
             return Ok(());
         }
+        seq.push(plugin_insert_entry());
 
-        // dsh 可能以“流式空列表 `[]` + 注释头”初始化该文件；块式条目直接追到
-        // `[]` 后面会产生非法 YAML（“end of the stream or a document separator
-        // is expected”），因此先把单独成行的 `[]` 去掉再追加。
-        let cleaned = existing
-            .lines()
-            .filter(|line| line.trim() != "[]")
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        let mut out = cleaned;
-        if !out.trim().is_empty() && !out.ends_with('\n') {
-            out.push('\n');
-        }
-        out.push_str(PATCH_ENTRY);
-
+        let out = serde_yaml::to_string(&doc)
+            .map_err(|e| format!("PATCH_RENDER_FAILED: {e}"))?;
         write_file(&patch_path, &out).map_err(|e| format!("PATCH_WRITE_FAILED: {e}"))
     }
 
@@ -137,12 +134,11 @@ mod imp {
     ///
     /// 场景：插件经 `dsh plugin remove` 卸载后，我们写入的挂载行不会随依赖被清掉，
     /// loader 会去挂载一个不存在的包（`Cannot find package`）导致 harness 启动/热加载
-    /// 报错。因此在「插件未装入」时把对应的顶层 `- insert:` 条目整块删掉，其余条目
-    /// 与注释原样保留。无该行时无操作。
+    /// 报错。因此在「插件未装入」时把顶层数组中属于本插件的条目整块删掉，其余条目
+    /// 原样保留。无该块时无操作。
     ///
-    /// 自愈保证：若删掉的块是文件里唯一的实际内容（剩下只有注释/空行），补写 `[]`——
-    /// 纯注释的 YAML 解析为 `null`，`parsePatchList` 会抛「必须是顶层数组」直接崩掉
-    /// 启动；prune 必须保证输出始终是 loader 可加载的顶层数组。
+    /// 自愈保证：删除后若数组为空，序列化结果自然是 `[]`（而非纯注释/空——那是
+    /// YAML `null`，`parsePatchList` 会抛「必须是顶层数组」直接崩掉启动）。
     fn prune_patch_if_uninstalled(profile: &Path) -> Result<(), String> {
         let patch_path = profile.join("cordis.patch.yml");
         let existing = match fs::read_to_string(&patch_path) {
@@ -150,68 +146,29 @@ mod imp {
             Err(_) => return Ok(()), // 无 patch 文件则无需清理
         };
 
-        if !existing.contains(PATCH_MARKER) {
+        let doc = match parse_patch_list(&existing) {
+            Ok(d) => d,
+            Err(_) => return Ok(()), // 无法解析为数组则不动原文件
+        };
+        let serde_yaml::Value::Sequence(seq) = doc else {
+            return Ok(());
+        };
+        if !seq.iter().any(block_is_ours) {
             return Ok(());
         }
 
-        // 逐行扫描，删掉「顶层 `- insert:` 且其缩进子块内含 PATCH_MARKER」的那一段。
-        // 顶层条目以行首（无缩进）的 `- ` 开头为界；其后续缩进行归属同一块。
-        let mut lines: Vec<&str> = existing.lines().collect();
-        let mut i = 0usize;
-        while i < lines.len() {
-            let is_top_level = !lines[i].starts_with(char::is_whitespace)
-                && lines[i].trim_start().starts_with("- ");
-            if !is_top_level {
-                i += 1;
-                continue;
-            }
-            // 收集该顶层条目的块（自身 + 后续缩进行）
-            let block: Vec<&str> = {
-                let mut b = vec![lines[i]];
-                let mut j = i + 1;
-                while j < lines.len() {
-                    let is_indent = lines[j].starts_with(' ') || lines[j].starts_with('\t');
-                    let is_comment = lines[j].trim_start().starts_with('#');
-                    if is_indent && !is_comment {
-                        b.push(lines[j]);
-                        j += 1;
-                    } else {
-                        break;
-                    }
-                }
-                b
-            };
-            // 是否为我们的 install 块
-            let is_ours = block.iter().any(|l| l.contains(PATCH_MARKER));
-            if is_ours {
-                // 删除块（含尾部空行），保持其余内容与注释完整
-                let remove_start = i;
-                let remove_end = i + block.len();
-                lines.drain(remove_start..remove_end);
-                // 若块后紧跟空行，一并去掉，避免粘连出异常空行
-                if remove_start < lines.len() && lines[remove_start].trim().is_empty() {
-                    lines.remove(remove_start);
-                }
-                break;
-            }
-            i += block.len();
-        }
-
-        let out = lines.join("\n");
-        let out = out.trim_end_matches('\n');
-        let mut out = format!("{out}\n");
-        // 自愈：清理后若只剩注释/空内容，补 `[]` 保证是合法顶层数组
-        let has_content = out
-            .lines()
-            .any(|line| !line.trim().is_empty() && !line.trim().starts_with('#'));
-        if !has_content {
-            out.push_str("[]\n");
-        }
+        let retained: Vec<serde_yaml::Value> =
+            seq.into_iter().filter(|el| !block_is_ours(el)).collect();
+        let out = serde_yaml::to_string(&serde_yaml::Value::Sequence(retained))
+            .map_err(|e| format!("PATCH_RENDER_FAILED: {e}"))?;
         write_file(&patch_path, &out).map_err(|e| format!("PATCH_PRUNE_FAILED: {e}"))
     }
 
     /// 修复 dsh 可能留下的“仅注释”patch scaffold：YAML 解析为 `null` 而非
     /// 顶层数组，加载器（`parsePatchList`）会直接抛错导致 harness 启动失败。
+    ///
+    /// TODO(v1): 移除该自愈逻辑（旧版遗留的`仅注释/空` scaffold 修复），v1 起
+    /// 直接按干净顶层数组处理。
     ///
     /// 幂等：文件不存在或已有实际内容（条目或 `[]`）时不动；仅注释/空则补 `[]`。
     fn ensure_patch_scaffold(profile: &Path) -> Result<(), String> {
@@ -219,19 +176,55 @@ mod imp {
         let Ok(existing) = fs::read_to_string(&patch_path) else {
             return Ok(());
         };
-        let has_content = existing
-            .lines()
-            .any(|line| !line.trim().is_empty() && !line.trim().starts_with('#'));
-        if has_content {
+        // 空串或纯注释解析为 `null` 才是需要修复的状态；其余内容（数组/映射）
+        // 保持原样，不做无谓改写。
+        let repair = if existing.trim().is_empty() {
+            true
+        } else {
+            match serde_yaml::from_str::<serde_yaml::Value>(&existing) {
+                Ok(v) => v.is_null(),
+                Err(_) => false, // 非空但非法 YAML：当前行为保持原样
+            }
+        };
+        if !repair {
             return Ok(());
         }
 
-        let mut out = existing;
-        if !out.is_empty() && !out.ends_with('\n') {
-            out.push('\n');
-        }
-        out.push_str("[]\n");
+        // 用库生成合法的空顶层数组，保证 loader 可加载。
+        let out = serde_yaml::to_string(&serde_yaml::Value::Sequence(Vec::new()))
+            .map_err(|e| format!("PATCH_RENDER_FAILED: {e}"))?;
         write_file(&patch_path, &out).map_err(|e| format!("PATCH_WRITE_FAILED: {e}"))
+    }
+
+    /// 把 `cordis.patch.yml` 文本解析为顶层数组 `Value`；空/纯注释视为空数组。
+    fn parse_patch_list(content: &str) -> Result<serde_yaml::Value, String> {
+        if content.trim().is_empty() {
+            return Ok(serde_yaml::Value::Sequence(Vec::new()));
+        }
+        let doc: serde_yaml::Value = serde_yaml::from_str(content)
+            .map_err(|e| format!("PATCH_PARSE_FAILED: {e}"))?;
+        match &doc {
+            serde_yaml::Value::Sequence(_) => Ok(doc),
+            serde_yaml::Value::Null => Ok(serde_yaml::Value::Sequence(Vec::new())),
+            _ => Err("PATCH_NOT_ARRAY: cordis.patch.yml must be a top-level array".to_string()),
+        }
+    }
+
+    /// 顶层数组元素是否为本插件的 `- insert:` 挂载块（按注入标记字符串判定）。
+    fn block_is_ours(el: &serde_yaml::Value) -> bool {
+        serde_yaml::to_string(el)
+            .map(|s| s.contains(PATCH_MARKER))
+            .unwrap_or(false)
+    }
+
+    /// 生成本插件的顶层 `- insert:` 挂载元素（解析自 `PATCH_ENTRY` 模板）。
+    fn plugin_insert_entry() -> serde_yaml::Value {
+        let seq: serde_yaml::Value = serde_yaml::from_str(PATCH_ENTRY)
+            .expect("PATCH_ENTRY must remain valid YAML");
+        match seq {
+            serde_yaml::Value::Sequence(mut s) => s.remove(0),
+            other => other,
+        }
     }
 
     /// 在本机查找 Git Bash 可执行文件（环境变量优先，其次常见安装路径）。
@@ -476,11 +469,10 @@ mod imp {
 
             prune_patch_if_uninstalled(&dir).unwrap();
             let out = std::fs::read_to_string(&patch).unwrap();
-            // 只删我们的块：其余条目与注释原样保留
+            // 只删我们的块：其余条目原样保留（库往返会丢弃注释）
             assert!(!out.contains("win-terminal-inspector"));
             assert!(!out.contains("insert:"));
             assert!(out.contains("some-row"));
-            assert!(out.contains("# user comments"));
 
             // 幂等：再次调用内容不变
             prune_patch_if_uninstalled(&dir).unwrap();
@@ -505,9 +497,9 @@ mod imp {
 
             prune_patch_if_uninstalled(&dir).unwrap();
             let out = std::fs::read_to_string(&patch).unwrap();
-            // 标记行被删、注释保留、并补回可加载的 `[]`
+            // 标记块被删，剩余为空数组 → 序列化为 `[]`（loader 可加载的顶层数组；
+            // 库往返丢弃注释，但数组语义自愈成立）
             assert!(!out.contains("win-terminal-inspector"));
-            assert!(out.contains("# Your patch layer"));
             assert!(out.contains("[]\n"));
 
             // 幂等：再次调用内容不变

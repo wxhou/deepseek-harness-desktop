@@ -18,6 +18,7 @@ use crate::service::workflow;
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::PathBuf;
+use serde_yaml::{Mapping, Value};
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 
 use super::installed::{PREINSTALL_PROFILE, profile_dir};
@@ -316,10 +317,18 @@ fn profile_workspace_path(app_handle: &AppHandle) -> PathBuf {
 
 /// 把新的 `allowBuilds` 键合并写回 profile 的 `pnpm-workspace.yaml`。
 ///
-/// dsh 的 `initProfile` 仅在文件缺失时创建（其模板无 `allowBuilds`），因此桌面端
-/// 自行维护该块：缺失时按 dsh 模板补建基础设置并追加 `allowBuilds`；已有时按键
-/// 去重合并。git depPath 键含 `@`/`/`/`:`/`#`，按 YAML 单引号标量写入避免误解析；
-/// `false` 不应出现于此（我们只放行）。重复写入同一键是无害的（幂等）。
+/// 用 YAML 库（serde_yaml）整体改写而非字符串拼接，避免格式错乱：
+/// - 键（git depPath 含 `@`/`/`/`:`/`#`）由库自动按需加引号，不再手工拼；
+/// - 已存在的同名键会被就地覆盖，不会残留占位值。
+///
+/// TODO(v1): 移除对旧版损坏文件（issue #49）的自愈逻辑。v1 起只解析干净配置，
+/// `apply_allow_build_keys` 中解析失败后的「同键去重再解析」与
+/// `collapse_allow_builds_duplicates` 一并删除。
+///
+/// 防御性修复：旧版本用字符串拼接可能留下「重复映射键」的损坏文件
+/// （最多见的是 `node-pty: set this to true or false` 占位行与真正的
+/// `'node-pty': true` 并存，见 issue #49）。此处解析失败时先做一次
+/// `allowBuilds` 同键去重再解析，把损坏文件自愈回合法 YAML。
 fn add_allow_build_keys(app_handle: &AppHandle, keys: &[String]) -> Result<(), String> {
     let path = profile_workspace_path(app_handle);
     let dir = path
@@ -327,62 +336,154 @@ fn add_allow_build_keys(app_handle: &AppHandle, keys: &[String]) -> Result<(), S
         .ok_or("PREINSTALL_BAD_PROFILE_DIR: no profile dir")?;
     std::fs::create_dir_all(dir).map_err(|e| format!("PREINSTALL_MKDIR: {e}"))?;
 
-    let mut content = if path.exists() {
+    let content = if path.exists() {
         std::fs::read_to_string(&path)
             .map_err(|e| format!("PREINSTALL_READ_WORKSPACE: {e}"))?
     } else {
-        // 与 dsh `initProfile` 生成的基础模板保持一致（尚无 allowBuilds）
+        // 与 dsh `initProfile` 生成的基础模板保持一致（尚无 allowBuilds）。
         "packages:\n  - .\n\nnodeLinker: hoisted\nautoInstallPeers: false\n".to_string()
     };
 
-    let has_allow_builds = content
-        .lines()
-        .any(|l| l.trim_start().starts_with("allowBuilds:"));
-    if !has_allow_builds {
-        if !content.ends_with('\n') {
-            content.push('\n');
-        }
-        content.push_str("allowBuilds:\n");
+    let rendered = apply_allow_build_keys(&content, keys)?;
+    if rendered == content {
+        return Ok(()); // 无变化（所有键已就位），避免无意义写盘
     }
 
-    // 收集已有 `  <key>: true` 条目（含单引号形式），避免重复。基础模板里
-    // 的 `packages`/`nodeLinker`/`autoInstallPeers` 等行不会以 `: true` 结尾，
-    // 天然被排除。
-    let existing: Vec<String> = content
-        .lines()
-        .filter_map(|l| {
-            let trimmed = l.trim_start();
-            if trimmed.len() == l.len() {
-                return None; // 非缩进行（顶层键）不参与
+    log::info!("pnpm-workspace.yaml rewritten with allowBuilds {keys:?} at {}", path.display());
+    std::fs::write(&path, rendered).map_err(|e| format!("PREINSTALL_WRITE_WORKSPACE: {e}"))
+}
+
+/// 把新的 `allowBuilds` 键合并进 `pnpm-workspace.yaml` 文本并返回新文本。
+///
+/// 用 YAML 库（serde_yaml）整体改写而非字符串拼接，避免格式错乱：
+/// - 键（git depPath 含 `@`/`/`/`:`/`#`）由库自动按需加引号，不再手工拼；
+/// - 已存在的同名键会被就地覆盖为 `true`，不会残留占位值，也不会产生重复键。
+///
+/// 防御性修复：旧版本用字符串拼接可能留下「重复映射键」的损坏文件
+/// （最多见的是 `node-pty: set this to true or false` 占位行与真正的
+/// `'node-pty': true` 并存，见 issue #49）。此处先尝试严格解析；解析失败时
+/// 做一次 `allowBuilds` 同键去重再解析，把损坏文件自愈回合法 YAML。
+fn apply_allow_build_keys(content: &str, keys: &[String]) -> Result<String, String> {
+    // 先尝试严格解析。旧的损坏文件（重复映射键）严格解析会失败：
+    // 把 `allowBuilds` 内同名键去重（保留最后写入的值）后再解析，自愈损坏状态。
+    let mut repaired = false;
+    let mut doc: Value = match serde_yaml::from_str(content) {
+        Ok(v) => v,
+        Err(first_err) => {
+            let normalized = collapse_allow_builds_duplicates(content);
+            if normalized == content {
+                return Err(format!(
+                    "PREINSTALL_WORKSPACE_INVALID_YAML: {first_err}"
+                ));
             }
-            let suffix = trimmed.strip_suffix(": true")?;
-            let key = suffix.trim().trim_matches(['\'', '"']);
-            if key.is_empty() || key.contains(':') {
-                return None;
-            }
-            Some(key.to_string())
-        })
-        .collect();
+            repaired = true;
+            serde_yaml::from_str(&normalized).map_err(|e| {
+                format!("PREINSTALL_WORKSPACE_INVALID_YAML: {e}")
+            })?
+        }
+    };
+
+    // 空/注释-only 内容解析为 `Value::Null`，视为全新空配置（pnpm-workspace.yaml
+    // 可加载的最小映射）；其余非映射内容才是真正的损坏。
+    if doc.is_null() {
+        doc = Value::Mapping(Mapping::new());
+    }
+
+    let map = doc.as_mapping_mut().ok_or_else(|| {
+        "PREINSTALL_WORKSPACE_NOT_MAP: pnpm-workspace.yaml must be a mapping".to_string()
+    })?;
+
+    let allow_key = Value::String("allowBuilds".to_string());
+    if !map.contains_key(&allow_key) {
+        map.insert(allow_key.clone(), Value::Mapping(Mapping::new()));
+    }
+    let allow_builds = map
+        .get_mut(&allow_key)
+        .and_then(Value::as_mapping_mut)
+        .ok_or_else(|| {
+            "PREINSTALL_WORKSPACE_ALLOWBUILDS_NOT_MAP: allowBuilds must be a mapping".to_string()
+        })?;
 
     let mut dirty = false;
     for key in keys {
-        if existing.iter().any(|k| k == key) {
-            continue;
+        let k = Value::String(key.clone());
+        if allow_builds.get(&k) == Some(&Value::Bool(true)) {
+            continue; // 已是 true，幂等跳过
         }
-        // 单引号包裹键：git depPath 含 `:`/`#`/`@`，裸写会让 YAML 误解析
-        content.push_str(&format!("  '{}': true\n", key.replace('\'', "''")));
+        // 直接覆盖旧值（含占位值/旧 false），由库负责按需加引号
+        allow_builds.insert(k, Value::Bool(true));
         dirty = true;
     }
-    if !dirty {
-        return Ok(());
+    if !dirty && !repaired {
+        return Ok(content.to_string());
+    }
+    // 有键新增，或损坏文件已被自愈归一化——两种都要落回解析后的完整文档，
+    // 否则会把损坏的原始文本原样返回。
+
+    serde_yaml::to_string(&doc).map_err(|e| format!("PREINSTALL_WORKSPACE_RENDER: {e}"))
+}
+
+/// 把损坏的 `allowBuilds` 映射（同一键出现多次）去重为合法 YAML。
+///
+/// 仅作为旧版字符串拼接遗留损坏（重复映射键，见 issue #49）的兜底归一化：
+/// 扫描 `allowBuilds:` 之后、下一个顶层键之前的缩进 `key: value` 行，同一键
+/// 只保留最后一次出现的行（与 YAML「后者覆盖前者」语义一致），其余行原样保留。
+fn collapse_allow_builds_duplicates(content: &str) -> String {
+    let lines: Vec<&str> = content.lines().collect();
+    let mut in_allow = false;
+    // 记录（键 → 该键所有行的索引），用于去重
+    let mut key_indexes: HashMap<String, Vec<usize>> = HashMap::new();
+    let mut order: Vec<String> = Vec::new();
+
+    for (idx, line) in lines.iter().enumerate() {
+        let trimmed = line.trim_start();
+        if trimmed == "allowBuilds:" {
+            in_allow = true;
+            continue;
+        }
+        if in_allow {
+            let is_indent = line.starts_with(' ') || line.starts_with('\t');
+            let is_comment = trimmed.starts_with('#');
+            if !is_indent || is_comment {
+                in_allow = false; // 遇到顶层键或注释即离开 allowBuilds
+                continue;
+            }
+            // 缩进的 `key: value` 行 → 提取键（冒号前）
+            if let Some(col) = trimmed.find(':') {
+                let key = trimmed[..col].trim().trim_matches(['\'', '"']);
+                if !key.is_empty() {
+                    if !key_indexes.contains_key(key) {
+                        order.push(key.to_string());
+                    }
+                    key_indexes.entry(key.to_string()).or_default().push(idx);
+                }
+            }
+        }
     }
 
-    std::fs::write(&path, content).map_err(|e| format!("PREINSTALL_WRITE_WORKSPACE: {e}"))
+    // 每个键只保留最后一个出现行，其余标记删除
+    let mut keep: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    for key in &order {
+        if let Some(idxs) = key_indexes.get(key) {
+            if let Some(&last) = idxs.last() {
+                keep.insert(last);
+            }
+        }
+    }
+    let mut out: Vec<&str> = Vec::with_capacity(lines.len());
+    for (idx, line) in lines.iter().enumerate() {
+        if key_indexes.values().any(|v| v.contains(&idx)) && !keep.contains(&idx) {
+            continue; // 是被去重掉的重复键行
+        }
+        out.push(line);
+    }
+    // 避免重复键里夹带的空行粘连成异常空行：去掉去重区（allowBuilds 段）的连续空行
+    out.join("\n")
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_allow_line_key, parse_allowlist_keys};
+    use super::{apply_allow_build_keys, collapse_allow_builds_duplicates, extract_allow_line_key, parse_allowlist_keys};
 
     #[test]
     fn parse_git_dep_path_key() {
@@ -419,5 +520,90 @@ allowBuilds:
         // 无缩进（顶层键）不应被当作白名单条目
         assert_eq!(extract_allow_line_key("packages:"), None);
         assert_eq!(extract_allow_line_key("allowBuilds:"), None);
+    }
+
+    // ---- 归并写回 pnpm-workspace.yaml（issue #49 回归）----
+
+    /// 从渲染结果里解析出单一 `allowBuilds` 映射，便于断言。
+    fn allow_builds_map(yaml: &str) -> serde_yaml::Mapping {
+        let doc: serde_yaml::Value = serde_yaml::from_str(yaml).expect("output must be valid YAML");
+        doc.get("allowBuilds")
+            .and_then(serde_yaml::Value::as_mapping)
+            .expect("allowBuilds must be a mapping")
+            .clone()
+    }
+
+    #[test]
+    fn apply_adds_new_key_when_absent() {
+        let base = "packages:\n  - .\n\nnodeLinker: hoisted\nautoInstallPeers: false\n";
+        // 无 allowBuilds 时首次写入
+        let out = apply_allow_build_keys(base, &["node-pty".to_string()]).unwrap();
+        let map = allow_builds_map(&out);
+        assert_eq!(map.get("node-pty"), Some(&serde_yaml::Value::Bool(true)));
+        // 顶级基础设置被保留
+        let doc: serde_yaml::Value = serde_yaml::from_str(&out).unwrap();
+        assert!(doc.get("packages").is_some());
+        assert!(doc.get("nodeLinker").is_some());
+    }
+
+    #[test]
+    fn apply_is_idempotent_and_does_not_duplicate() {
+        // 已放行的键再次写入：结果不变（幂等、不产生重复键）
+        let base = "packages:\n  - .\nnodeLinker: hoisted\nautoInstallPeers: false\nallowBuilds:\n  node-pty: true\n";
+        let out = apply_allow_build_keys(base, &["node-pty".to_string()]).unwrap();
+        assert_eq!(out, base);
+    }
+
+    #[test]
+    fn apply_quotes_git_dep_path_keys() {
+        let dep = "dsh-better-sidebar@git+ssh://git@github.com/omdsh-dev/DSH-better-sidebar.git#6c89".to_string();
+        // 空内容也能生成合法配置
+        let out = apply_allow_build_keys("", &[dep.clone()]).unwrap();
+        let map = allow_builds_map(&out);
+        assert_eq!(map.get(&serde_yaml::Value::String(dep)), Some(&serde_yaml::Value::Bool(true)));
+        // 库负责正确加引号，键原样（含 @ / : / #）可回读
+        let doc: serde_yaml::Value = serde_yaml::from_str(&out).unwrap();
+        assert_eq!(
+            doc["allowBuilds"][&serde_yaml::Value::String(
+                "dsh-better-sidebar@git+ssh://git@github.com/omdsh-dev/DSH-better-sidebar.git#6c89".to_string()
+            )],
+            serde_yaml::Value::Bool(true)
+        );
+    }
+
+    #[test]
+    fn apply_overwrites_placeholder_value_without_duplicate() {
+        // 关键回归：旧版字符串拼接可能留下占位键 `node-pty: set this to true or false`
+        // 与真实键并存。若解析保留重复键，或解析失败被去重兜底，最终都必须只保留
+        // 一个 `node-pty: true`（不允许重复映射键）。
+        let corrupted =
+            "allowBuilds:\n  'dsh-better-sidebar@https://code...': true\n  node-pty: set this to true or false\n  'node-pty': true\n";
+        let out = apply_allow_build_keys(corrupted, &["node-pty".to_string()]).unwrap();
+        let map = allow_builds_map(&out);
+        // 恰好只有一个 node-pty 键，值是 true（覆盖了占位值）
+        assert_eq!(map.get("node-pty"), Some(&serde_yaml::Value::Bool(true)));
+        // 序列化后全局不允许再出现“重复键”的等价行（node-pty 只出现一次）
+        let node_pty_keys = out
+            .lines()
+            .filter(|l| l.trim_start().starts_with("node-pty") || l.trim_start().starts_with("'node-pty'"))
+            .count();
+        assert_eq!(node_pty_keys, 1);
+    }
+
+    #[test]
+    fn collapse_dedupes_allow_builds_keys() {
+        let corrupted =
+            "packages:\n  - .\nallowBuilds:\n  node-pty: set this to true or false\n  'node-pty': true\n  keep: true\n";
+        let normalized = collapse_allow_builds_duplicates(corrupted);
+        // 重复的 node-pty 只剩最后一个（值 true），同键不再重复
+        let node_pty = normalized
+            .lines()
+            .filter(|l| l.trim_start().starts_with("node-pty") || l.trim_start().starts_with("'node-pty'"))
+            .count();
+        assert_eq!(node_pty, 1);
+        assert!(normalized.contains("keep"));
+        // 去重结果必须是合法 YAML，且能被后续解析
+        let out = apply_allow_build_keys(&normalized, &["node-pty".to_string()]).unwrap();
+        assert_eq!(allow_builds_map(&out).get("node-pty"), Some(&serde_yaml::Value::Bool(true)));
     }
 }
