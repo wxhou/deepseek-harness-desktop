@@ -1,6 +1,6 @@
 import type { PropsWithChildren, ReactNode } from 'react'
-import { ArrowRotateRight, ArrowUpRightFromSquare, CircleInfo, Copy, Folder, Power, TrashBin } from '@gravity-ui/icons'
-import { Button, Chip, Description, Drawer, Input, ListBox, Select, Spinner, Surface, Switch, Tooltip } from '@heroui/react'
+import { ArrowRotateRight, ArrowUpRightFromSquare, ChevronRight, CircleInfo, Copy, Folder, Power, TrashBin } from '@gravity-ui/icons'
+import { Button, Chip, Description, Drawer, Input, Link, ListBox, Select, Spinner, Surface, Switch, Tooltip } from '@heroui/react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { invoke } from '@tauri-apps/api/core'
 import { useState } from 'react'
@@ -38,6 +38,7 @@ export interface AppConfig {
 export function DebugSidebar(props: PropsWithChildren) {
   const { t, i18n } = useTranslation()
   const { serviceRunning, busyAction, preinstall } = useStore(store.harness)
+  const { updateInfo } = useStore(store.updater)
 
   const [port, setPort] = useState<number>(3080)
 
@@ -193,7 +194,16 @@ export function DebugSidebar(props: PropsWithChildren) {
               <div>
                 <dl className="space-y-1">
                   <InfoRow term={t('ui.current_version')}>{info?.app_version ?? '-'}</InfoRow>
-                  <InfoRow term={t('ui.dsh_version')}>{info?.dsh_version ?? '-'}</InfoRow>
+                  <InfoRow term={t('ui.dsh_version')}>
+                    <span>{info?.dsh_version ?? '-'}</span>
+                    <If cond={updateInfo}>
+                      <Link className="ml-2 text-[10px] text-[rgb(65,118,230)]" onClick={store.updater.showToast}>
+                        存在新版本
+                        <ChevronRight className="scale-75" />
+                      </Link>
+                    </If>
+
+                  </InfoRow>
                   <InfoRow term={t('ui.node_version')}>{info?.node_version ? `v${info.node_version}` : '-'}</InfoRow>
                   <InfoRow term="Platform">
                     {info ? `${info.platform} / ${info.arch}` : '-'}

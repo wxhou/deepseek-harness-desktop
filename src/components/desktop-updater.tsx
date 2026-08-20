@@ -45,6 +45,7 @@ export default function DesktopUpdater() {
         },
         variant: 'tertiary',
       },
+      timeout: 0,
       placement: 'bottom end',
       description: t('update.desktop_new'),
       variant: 'default',
