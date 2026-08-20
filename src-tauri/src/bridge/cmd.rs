@@ -444,21 +444,27 @@ pub async fn clear_service_logs(app_handle: AppHandle) -> Result<(), String> {
 ///
 /// 服务日志来自 `logs/dsh-web.log`，运行日志来自 `logs/desktop.log`
 /// （桌面端自身 `logger::init` 每次启动落盘，见 logger/mod.rs）。
+/// 每段取末尾最多 `MAX_LINES` 行，避免粘贴内容超出 GitHub issue 长度上限。
 #[tauri::command]
 pub async fn read_run_logs(app_handle: AppHandle) -> Result<String, String> {
+    const MAX_LINES: usize = 100;
+
     let base = config::get_base_dir(&app_handle);
     let service = config::get_service_log_path(&app_handle);
     let desktop = base.join("logs").join("desktop.log");
 
-    let read = |path: &std::path::Path| -> String {
+    let read_tail = |path: &std::path::Path| -> String {
         if !path.exists() {
             return String::new();
         }
-        std::fs::read_to_string(path).unwrap_or_default()
+        let content = std::fs::read_to_string(path).unwrap_or_default();
+        let lines: Vec<&str> = content.lines().collect();
+        let start = lines.len().saturating_sub(MAX_LINES);
+        lines[start..].join("\n")
     };
 
-    let service_text = read(&service);
-    let desktop_text = read(&desktop);
+    let service_text = read_tail(&service);
+    let desktop_text = read_tail(&desktop);
 
     Ok(format!(
         "### 服务日志\n\n{}\n\n### 运行日志\n\n{}",
