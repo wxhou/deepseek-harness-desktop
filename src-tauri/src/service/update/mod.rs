@@ -66,29 +66,58 @@ fn is_newer(latest: &str, current: &str) -> bool {
     a.len() > b.len()
 }
 
+/// 根据资产文件名判断其架构匹配度，用于同扩展名下挑选正确架构的安装包：
+/// - `2`：与当前运行架构完全匹配（如 `_x64.dmg` / `_aarch64.dmg` / `_amd64.deb`）
+/// - `1`：通用包（`universal`），任何架构都可用
+/// - `0`：不匹配或文件名未携带架构信息（作为兜底仍可尝试）
+fn arch_rank(name: &str) -> i8 {
+    let lower = name.to_lowercase();
+    if lower.contains("universal") {
+        return 1;
+    }
+    #[cfg(target_arch = "aarch64")]
+    let markers = ["aarch64", "arm64", "apple-silicon", "-arm", "_arm"];
+    #[cfg(target_arch = "x86_64")]
+    let markers = ["x86_64", "amd64", "x64", "intel", "-x86", "_x86"];
+    if markers.iter().any(|k| lower.contains(k)) {
+        2
+    } else {
+        0
+    }
+}
+
 /// 选择当前平台对应的安装包资产文件名。
 ///
-/// 优先级由各平台偏好扩展名顺序决定：Windows 优先 msi（其次 exe/nsis），
-/// macOS 选 dmg，Linux 选 AppImage（其次 deb/rpm）。
+/// 选择规则分两层：先按平台偏好扩展名排序，同扩展名下再按架构匹配度挑选。
+/// - Windows 优先 NSIS setup.exe（其次 msi）：NSIS 不会像 MSI 那样由
+///   RestartManager 强杀旧进程并在安装完成后自动重开应用，避免应用在旧进程
+///   被强杀、运行文件瞬时缺失的窗口被自动拉起，从而误触发核心重下载。
+/// - macOS 选 dmg，并按架构区分，避免 Intel 芯片 Mac 下载到 M 芯片
+///   （aarch64）的安装包（issue #33）。
+/// - Linux 选 AppImage（其次 deb/rpm），同样按架构匹配。
 fn pick_asset(assets: &[String]) -> Option<String> {
     #[cfg(target_os = "windows")]
-    let prefs = [".msi", ".exe"];
+    let prefs = [".exe", ".msi"];
     #[cfg(target_os = "macos")]
     let prefs = [".dmg"];
     #[cfg(target_os = "linux")]
     let prefs = [".AppImage", ".deb", ".rpm"];
 
-    let mut best: Option<(usize, String)> = None;
+    let mut best: Option<(usize, i8, String)> = None;
     for name in assets {
         let Some(idx) = prefs.iter().position(|p| name.ends_with(p)) else {
             continue;
         };
-        let rank = prefs.len() - idx; // 越靠前优先级越高
-        if best.as_ref().is_none_or(|(r, _)| rank > *r) {
-            best = Some((rank, name.clone()));
+        let rank = prefs.len() - idx; // 扩展名优先级：越靠前越高
+        let ar = arch_rank(name); // 架构匹配度：同扩展名下优先选匹配架构
+        if best
+            .as_ref()
+            .is_none_or(|(r, a, _)| rank > *r || (rank == *r && ar > *a))
+        {
+            best = Some((rank, ar, name.clone()));
         }
     }
-    best.map(|(_, name)| name)
+    best.map(|(_, _, name)| name)
 }
 
 /// 构造带统一 UA 的 HTTP 客户端（并发小、超时短）。
@@ -386,8 +415,9 @@ mod tests {
         let mk = |name: &str| name.to_string();
         #[cfg(target_os = "windows")]
         {
-            let assets: Vec<String> = vec![mk("app-x86_64-setup.exe"), mk("app.msi")];
-            assert_eq!(pick_asset(&assets).as_deref(), Some("app.msi"));
+            // NSIS setup.exe 优先于 msi（避免 MSI 的 RestartManager 强杀+自动重开）
+            let assets: Vec<String> = vec![mk("app-x86_64-setup.exe"), mk("app-x64_en-US.msi")];
+            assert_eq!(pick_asset(&assets).as_deref(), Some("app-x86_64-setup.exe"));
         }
         #[cfg(target_os = "macos")]
         {
@@ -397,6 +427,54 @@ mod tests {
         let no_match: Vec<String> = vec![mk("README.md")];
         assert!(pick_asset(&no_match).is_none());
         assert!(pick_asset(&[]).is_none());
+    }
+
+    #[test]
+    fn arch_rank_matches_host_and_universal() {
+        // 通用包任何架构都可用
+        assert_eq!(arch_rank("Deepseek.Harness.Desktop-universal.dmg"), 1);
+        // 按编译目标分支断言，保证 CI 在任意架构上都能通过
+        #[cfg(target_arch = "aarch64")]
+        {
+            assert_eq!(arch_rank("Deepseek.Harness.Desktop_0.6.6_aarch64.dmg"), 2);
+            assert_eq!(arch_rank("Deepseek.Harness.Desktop_0.6.6_x64.dmg"), 0);
+        }
+        #[cfg(target_arch = "x86_64")]
+        {
+            assert_eq!(arch_rank("Deepseek.Harness.Desktop_0.6.6_x64.dmg"), 2);
+            assert_eq!(arch_rank("Deepseek.Harness.Desktop_0.6.6_amd64.AppImage"), 2);
+            assert_eq!(arch_rank("Deepseek.Harness.Desktop-0.6.6-1.x86_64.rpm"), 2);
+            assert_eq!(arch_rank("Deepseek.Harness.Desktop_0.6.6_aarch64.dmg"), 0);
+        }
+        // 未携带架构信息的文件名作为兜底（0）
+        assert_eq!(arch_rank("app.dmg"), 0);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn pick_asset_prefers_host_arch_dmg() {
+        let mk = |name: &str| name.to_string();
+        // aarch64 与 x64 并存（与真实发布资产命名一致）：选当前架构匹配的包
+        let assets: Vec<String> = vec![
+            mk("Deepseek.Harness.Desktop_0.6.6_aarch64.dmg"),
+            mk("Deepseek.Harness.Desktop_0.6.6_x64.dmg"),
+        ];
+        let picked = pick_asset(&assets).unwrap();
+        #[cfg(target_arch = "aarch64")]
+        assert_eq!(picked, "Deepseek.Harness.Desktop_0.6.6_aarch64.dmg");
+        #[cfg(target_arch = "x86_64")]
+        assert_eq!(picked, "Deepseek.Harness.Desktop_0.6.6_x64.dmg");
+        // 通用包优于与本机架构不匹配的包（用「非本机架构」的名字构造，任意架构成立）
+        #[cfg(target_arch = "aarch64")]
+        let wrong = "Deepseek.Harness.Desktop_0.6.6_x64.dmg";
+        #[cfg(target_arch = "x86_64")]
+        let wrong = "Deepseek.Harness.Desktop_0.6.6_aarch64.dmg";
+        let assets: Vec<String> = vec![
+            wrong.to_string(),
+            "Deepseek.Harness.Desktop_0.6.6-universal.dmg".to_string(),
+        ];
+        let picked = pick_asset(&assets).unwrap();
+        assert_eq!(picked, "Deepseek.Harness.Desktop_0.6.6-universal.dmg");
     }
 
     #[test]
