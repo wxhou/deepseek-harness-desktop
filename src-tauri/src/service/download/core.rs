@@ -37,14 +37,13 @@ pub async fn download_file<'a, R: Runtime>(
     // 偶发中途断流（连接被重置、chunked body 提前结束，表现为"error decoding
     // response body"），这类瞬时错误重试通常即可成功。重试时带 Range 头从
     // 上次断点续传（CDN 支持 206），避免每次都从头下载 38MB。
-    // 最多 MAX_DOWNLOAD_ATTEMPTS 次，失败退避递增（2s/4s）。
-    const MAX_DOWNLOAD_ATTEMPTS: usize = 3;
+    // 最多 MAX_DOWNLOAD_ATTEMPTS 次，失败退避递增（2s/4s/8s/8s）。
+    const MAX_DOWNLOAD_ATTEMPTS: usize = 5;
     // buffer 由外层持有：每次尝试在已有字节基础上续传/追加，成功后整体返回
     let mut buffer: Vec<u8> = Vec::new();
-    let mut last_error: Option<String> = None;
     for attempt in 1..=MAX_DOWNLOAD_ATTEMPTS {
         if attempt > 1 {
-            let delay = Duration::from_secs(1 << (attempt - 1));
+            let delay = Duration::from_secs((1 << (attempt - 1)).min(8));
             log::warn!(
                 "Download attempt {}/{} failed, retrying in {}s (resume from {} bytes)",
                 attempt - 1,
@@ -68,11 +67,15 @@ pub async fn download_file<'a, R: Runtime>(
                     MAX_DOWNLOAD_ATTEMPTS,
                     e
                 );
-                last_error = Some(e);
             }
         }
     }
-    Err(last_error.unwrap_or_else(|| format!("DOWNLOAD_FAILED: {url}")))
+    // 全部尝试失败：只把可读的中文提示暴露给界面（原始传输错误保留在日志，
+    // 避免 "error decoding response body" 这类底层信息直接糊在界面上）。
+    Err(format!(
+        "DOWNLOAD_INTERRUPTED: 下载中断（网络传输被重置），已自动重试 {MAX_DOWNLOAD_ATTEMPTS} 次仍失败，已下载约 {:.1} MB，请检查网络后重试",
+        buffer.len() as f64 / 1_000_000.0
+    ))
 }
 
 /// 单次下载尝试：发起 GET 请求并把响应体流式读入 `buffer`。
