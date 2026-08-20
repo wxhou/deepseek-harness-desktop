@@ -28,6 +28,14 @@ use super::process::{run_plugin_process, PreinstallLogPayload, PREINSTALL_LOG_EV
 /// 传递构建包名），多个 git 插件 / 多个原生依赖各占一次，上限封顶防死循环。
 const MAX_ALLOW_LIST_RETRIES: usize = 8;
 
+/// 可安全用于插件安装的用户 pnpm 最低主版本。
+///
+/// pnpm 10+ 才从 `pnpm-workspace.yaml` 读取 `autoInstallPeers`（9 及更早只读
+/// `.npmrc`），且 10+ 移除了 workspace-root 安装门槛（`ERR_PNPM_ADDING_TO_ROOT`
+/// 是 8/9 行为）。低于此版本时插件安装必须改用捆绑版 pnpm，否则会出现
+/// 自动合成 peer 后 `No matching version found for @deepseek-ai/...` 的假失败。
+const MIN_TRUSTED_PNPM_MAJOR: u32 = 10;
+
 /// 校验并安装选中的预装插件：`dsh plugin --profile web add <ids...>`
 pub async fn install(app_handle: &AppHandle, ids: &[String]) -> Result<(), String> {
     if ids.is_empty() {
@@ -65,8 +73,8 @@ pub async fn install(app_handle: &AppHandle, ids: &[String]) -> Result<(), Strin
         .get_webview_window("main")
         .ok_or("WINDOW_NOT_FOUND: main window missing")?;
 
-    // 按需补齐捆绑 pnpm
-    ensure_pnpm(app_handle, &window).await?;
+    // 选定/补齐安装用的 pnpm：返回是否应强制使用捆绑版（版本感知，见 ensure_pnpm）
+    let prefer_bundled_pnpm = ensure_pnpm(app_handle, &window).await?;
 
     // 安装前停止运行中的服务，避免资源冲突
     if workflow::has_owned_process() {
@@ -88,6 +96,14 @@ pub async fn install(app_handle: &AppHandle, ids: &[String]) -> Result<(), Strin
         ("DSH_TELEMETRY_DISABLED".to_string(), "1".to_string()),
         ("NO_COLOR".to_string(), "1".to_string()),
     ]);
+    // 用户 pnpm 过旧/不可探测时强制 pnpm shim 优先捆绑版，避免 8/9 的
+    // autoInstallPeers 语义与 workspace-root gate 破坏插件安装（见 ensure_pnpm）
+    if prefer_bundled_pnpm {
+        envs.insert(
+            "DSH_PREFER_BUNDLED_PNPM".to_string(),
+            "1".to_string(),
+        );
+    }
 
     let mut paths = vec![bin_dir];
     if let Some(node_dir) = node.parent() {
@@ -109,10 +125,11 @@ pub async fn install(app_handle: &AppHandle, ids: &[String]) -> Result<(), Strin
         OsString::from(PREINSTALL_PROFILE),
         OsString::from("add"),
     ];
-    args.extend(specs.into_iter().map(OsString::from));
+    args.extend(specs.iter().map(|s| OsString::from(s.as_str())));
 
     let cwd = config::get_dsh_install_path(app_handle);
-    log::info!("Running dsh plugin install for {ids:?}");
+    // 日志打印实际传给 dsh 的 spec（此前打印 id 会误导排查：安装用的是 spec）
+    log::info!("Running dsh plugin install for {specs:?}");
 
     // `dsh plugin add` 在 profile 目录里驱动 pnpm。pnpm v11 会拦下 git 托管
     // 插件的 prepare 构建与传递原生依赖（见模块头注），其允许键不可预知，因此
@@ -163,10 +180,33 @@ pub async fn install(app_handle: &AppHandle, ids: &[String]) -> Result<(), Strin
     Ok(())
 }
 
-/// 确保捆绑 pnpm 已安装
-async fn ensure_pnpm(app_handle: &AppHandle, window: &WebviewWindow) -> Result<(), String> {
-    if download::Pnpm.check_installed(app_handle) {
-        return Ok(());
+/// 确保插件安装使用的 pnpm 可用，返回是否应强制使用捆绑版
+/// （true 时调用方注入 `DSH_PREFER_BUNDLED_PNPM=1`，pnpm shim 优先捆绑版）。
+///
+/// 版本感知策略，避免给已装正确 pnpm 的用户增加下载步骤：
+/// - 捆绑版已存在 → 直接用捆绑版（零额外下载，确定性最强）；
+/// - 用户 pnpm 主版本 ≥ MIN_TRUSTED_PNPM_MAJOR → 复用用户 pnpm，零额外步骤；
+/// - 用户 pnpm 过旧（8/9：不读 pnpm-workspace.yaml 的 autoInstallPeers、有
+///   workspace-root gate；corepack shim 在 Node 24 上还会 ERR_INVALID_THIS 崩溃）
+///   或版本不可探测 → 下载捆绑版并强制使用。
+async fn ensure_pnpm(app_handle: &AppHandle, window: &WebviewWindow) -> Result<bool, String> {
+    if config::get_pnpm_binary_path(app_handle).exists() {
+        return Ok(true);
+    }
+
+    match user_pnpm_major_version(app_handle) {
+        Some(major) if major >= MIN_TRUSTED_PNPM_MAJOR => {
+            log::info!("Reusing user-installed pnpm (major {major}) for plugin install");
+            return Ok(false);
+        }
+        Some(major) => {
+            log::warn!(
+                "User pnpm major {major} < {MIN_TRUSTED_PNPM_MAJOR} (missing autoInstallPeers/workspace-root semantics), downloading bundled pnpm"
+            );
+        }
+        None => {
+            log::warn!("User pnpm version not detectable (broken/blocked shim?), downloading bundled pnpm");
+        }
     }
 
     let _ = window.emit(
@@ -196,7 +236,22 @@ async fn ensure_pnpm(app_handle: &AppHandle, window: &WebviewWindow) -> Result<(
             line: "[pnpm] bundled pnpm ready".to_string(),
         },
     );
-    Ok(())
+    Ok(true)
+}
+
+/// 用户 pnpm 主版本号（解析 `pnpm --version` 首个点分字段）；不存在或不可运行
+/// （corepack shim 在 Node 24 上 ERR_INVALID_THIS 崩溃等）返回 None。
+fn user_pnpm_major_version(app_handle: &AppHandle) -> Option<u32> {
+    let pnpm = cli::find_user_pnpm(app_handle)?;
+    let output = std::process::Command::new(&pnpm)
+        .arg("--version")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    stdout.split('.').next()?.trim().parse::<u32>().ok()
 }
 
 /// 从 pnpm 失败输出中解析需写入 `allowBuilds` 的键集合：
