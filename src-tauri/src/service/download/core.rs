@@ -295,11 +295,37 @@ async fn remove_path_if_exists(path: &Path) -> Result<(), String> {
     }
 }
 
+/// 重试式重命名：等待 Windows 文件锁释放（os error 32 随进程句柄释放而消失）。
+///
+/// 结束 dsh/node 进程树后，子进程加载进内存的 DLL 句柄释放存在短暂滞后
+/// （与 remove_dir_with_retry 相同的场景），紧跟其后的目录重命名可能一次失败。
+/// 这里轮询重试，最长约 10 秒；重试仍失败才返回底层错误交由调用方映射。
+async fn rename_with_retry(from: &Path, to: &Path) -> Result<(), std::io::Error> {
+    const MAX_ATTEMPTS: u32 = 40;
+    const RETRY_DELAY: Duration = Duration::from_millis(250);
+
+    for attempt in 1..=MAX_ATTEMPTS {
+        match fs::rename(from, to) {
+            Ok(()) => return Ok(()),
+            Err(e) if attempt < MAX_ATTEMPTS => {
+                log::warn!(
+                    "Rename {:?} -> {:?} failed (attempt {attempt}/{MAX_ATTEMPTS}), file may be locked: {e}",
+                    from,
+                    to
+                );
+                tokio::time::sleep(RETRY_DELAY).await;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    unreachable!("rename_with_retry loop always returns")
+}
+
 /// 将已经完整解压并验证结构的临时目录切换为正式目录；切换失败时恢复旧版本。
 async fn commit_staged_install(staging: &Path, dest: &Path, backup: &Path) -> Result<(), String> {
     // 上次若恰好在“旧目录改名为备份”后崩溃，先恢复旧版本再进行本次切换。
     if !dest.exists() && backup.exists() {
-        fs::rename(backup, dest).map_err(|e| {
+        rename_with_retry(backup, dest).await.map_err(|e| {
             format!(
                 "INSTALL_RECOVERY_FAILED: {} -> {}: {e}",
                 backup.display(),
@@ -310,7 +336,7 @@ async fn commit_staged_install(staging: &Path, dest: &Path, backup: &Path) -> Re
     remove_path_if_exists(backup).await?;
     let had_previous = dest.exists();
     if had_previous {
-        fs::rename(dest, backup).map_err(|e| {
+        rename_with_retry(dest, backup).await.map_err(|e| {
             format!(
                 "INSTALL_BACKUP_FAILED: {} -> {}: {e}",
                 dest.display(),
@@ -318,7 +344,7 @@ async fn commit_staged_install(staging: &Path, dest: &Path, backup: &Path) -> Re
             )
         })?;
     }
-    if let Err(e) = fs::rename(staging, dest) {
+    if let Err(e) = rename_with_retry(staging, dest).await {
         if had_previous {
             let _ = fs::rename(backup, dest);
         }
