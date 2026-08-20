@@ -173,6 +173,12 @@ fn validate_download_url(url: &str) -> Result<(), String> {
                 | "github.com"
                 | "release-assets.githubusercontent.com"
                 | "objects.githubusercontent.com"
+                // 国内镜像：npmmirror 系列（node dist 会 302 到 cdn.npmmirror.com）
+                // 与 ghfast.top 中转（GitHub Release 内容原样透传）
+                | "npmmirror.com"
+                | "cdn.npmmirror.com"
+                | "registry.npmmirror.com"
+                | "ghfast.top"
         )
     );
     if parsed.scheme() != "https" || !trusted_host {
@@ -826,6 +832,14 @@ mod tests {
         assert!(validate_download_url("https://registry.npmjs.org/pnpm/-/pnpm.tgz").is_ok());
         assert!(validate_download_url("http://nodejs.org/dist/file.zip").is_err());
         assert!(validate_download_url("https://example.com/file.zip").is_err());
+        // 国内镜像源（含 npmmirror 302 后的最终落地域名）
+        assert!(validate_download_url("https://npmmirror.com/mirrors/node/v22/file.zip").is_ok());
+        assert!(validate_download_url("https://cdn.npmmirror.com/binaries/node/v22/file.zip").is_ok());
+        assert!(validate_download_url("https://registry.npmmirror.com/pnpm/-/pnpm.tgz").is_ok());
+        assert!(validate_download_url(
+            "https://ghfast.top/https://github.com/hairyf/deepseek-harness-pkg/releases/latest/download/deepseek-harness-pkg-windows.zip"
+        )
+        .is_ok());
     }
 
     #[tokio::test]

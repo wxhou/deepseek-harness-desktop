@@ -6,9 +6,17 @@ pub const NODE_VERSION: &str = "v22.22.0";
 /// Node.js 官方下载地址
 pub const NODE_BASE_URL: &str = "https://nodejs.org/dist/";
 
+/// Node.js 镜像下载地址（npmmirror，302 重定向至 cdn.npmmirror.com）
+pub const NODE_MIRROR_BASE_URL: &str = "https://npmmirror.com/mirrors/node/";
+
 /// 打包的 DeepSeek Harness 发行版下载地址（GitHub Release）
 pub const DSH_CORE_URL: &str =
     "https://github.com/hairyf/deepseek-harness-pkg/releases/latest/download/";
+
+/// 打包的 DeepSeek Harness 发行版镜像下载地址（ghfast.top 中转 GitHub Release，
+/// 直接拼接官方 URL，下载内容一致、仍可做 SHA-256 完整性校验）
+pub const DSH_MIRROR_CORE_URL: &str =
+    "https://ghfast.top/https://github.com/hairyf/deepseek-harness-pkg/releases/latest/download/";
 
 /// 捆绑的 pnpm 版本（与 deepseek-harness-pkg 的 packageManager: pnpm@11.7.0 对齐）
 pub const PNPM_VERSION: &str = "11.7.0";
@@ -17,6 +25,9 @@ pub const PNPM_SHA256: &str = "deafa7ec98a1218b6a047289b92fbe2395c1e22d3495bb711
 
 /// pnpm 官方 npm registry tarball 下载地址前缀（纯 JS 发行，全平台同一 URL）
 pub const PNPM_BASE_URL: &str = "https://registry.npmjs.org/pnpm/-/";
+
+/// pnpm 镜像下载地址前缀（npmmirror registry，302 重定向至 cdn.npmmirror.com）
+pub const PNPM_MIRROR_BASE_URL: &str = "https://registry.npmmirror.com/pnpm/-/";
 
 /// Harness 服务地址与默认端口
 pub const DSH_HOST: &str = "http://127.0.0.1";

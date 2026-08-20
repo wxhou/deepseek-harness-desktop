@@ -6,6 +6,7 @@ use tauri::{AppHandle, Manager, Runtime};
 
 use super::constants::*;
 use super::format::get_dsh_service_url;
+use super::{detect_region, Region};
 use super::utils::search_node_binary;
 
 /// 获取 App Data 基础目录
@@ -14,6 +15,14 @@ pub fn get_base_dir<R: Runtime>(app_handle: &AppHandle<R>) -> PathBuf {
         .path()
         .app_data_dir()
         .expect("Failed to resolve app data directory")
+}
+
+/// Node.js 官方/镜像下载前缀：国内走 npmmirror，其他直连 nodejs.org
+fn node_base_url(region: Region) -> &'static str {
+    match region {
+        Region::Domestic => NODE_MIRROR_BASE_URL,
+        Region::Overseas => NODE_BASE_URL,
+    }
 }
 
 /// Node.js 运行时下载地址
@@ -29,7 +38,16 @@ pub fn get_node_download_url() -> Result<String, String> {
         _ => return Err(format!("Unsupported platform: {} {}", os, arch)),
     };
 
-    Ok(format!("{}/{}/{}", NODE_BASE_URL, NODE_VERSION, filename))
+    Ok(format!("{}/{}/{}", node_base_url(detect_region()), NODE_VERSION, filename))
+}
+
+/// 打包的 DeepSeek Harness 发行版官方/镜像下载前缀：
+/// 国内走 ghfast.top 中转 GitHub Release，其他直连 GitHub
+fn dsh_core_base_url(region: Region) -> &'static str {
+    match region {
+        Region::Domestic => DSH_MIRROR_CORE_URL,
+        Region::Overseas => DSH_CORE_URL,
+    }
 }
 
 /// 打包的 DeepSeek Harness 发行版下载地址
@@ -46,7 +64,7 @@ pub fn get_dsh_download_url() -> Result<String, String> {
         _ => return Err(format!("Unsupported platform: {} {}", os, arch)),
     };
 
-    Ok(format!("{}{}", DSH_CORE_URL, filename))
+    Ok(format!("{}{}", dsh_core_base_url(detect_region()), filename))
 }
 
 /// 在 PATH 及常见安装目录中查找 node 可执行文件（不校验版本）
@@ -185,9 +203,17 @@ pub fn get_pnpm_binary_path<R: Runtime>(app_handle: &AppHandle<R>) -> PathBuf {
     get_pnpm_install_path(app_handle).join(PNPM_ENTRY_RELATIVE)
 }
 
+/// pnpm 官方/镜像下载前缀：国内走 npmmirror registry，其他直连 npmjs.org
+fn pnpm_base_url(region: Region) -> &'static str {
+    match region {
+        Region::Domestic => PNPM_MIRROR_BASE_URL,
+        Region::Overseas => PNPM_BASE_URL,
+    }
+}
+
 /// pnpm 下载地址（纯 JS 发行，全平台同一 URL）
 pub fn get_pnpm_download_url() -> String {
-    format!("{}pnpm-{}.tgz", PNPM_BASE_URL, PNPM_VERSION)
+    format!("{}pnpm-{}.tgz", pnpm_base_url(detect_region()), PNPM_VERSION)
 }
 
 /// Harness 发行版清单路径
@@ -304,5 +330,42 @@ pub fn runtime_info<R: Runtime>(app: &AppHandle<R>, port: u16) -> RuntimeInfo {
             .into_owned(),
         platform: env::consts::OS.to_string(),
         arch: env::consts::ARCH.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn node_base_url_switches_on_region() {
+        assert_eq!(node_base_url(Region::Overseas), NODE_BASE_URL);
+        assert_eq!(node_base_url(Region::Domestic), NODE_MIRROR_BASE_URL);
+    }
+
+    #[test]
+    fn dsh_base_url_switches_on_region() {
+        assert_eq!(dsh_core_base_url(Region::Overseas), DSH_CORE_URL);
+        assert_eq!(dsh_core_base_url(Region::Domestic), DSH_MIRROR_CORE_URL);
+    }
+
+    #[test]
+    fn pnpm_base_url_switches_on_region() {
+        assert_eq!(pnpm_base_url(Region::Overseas), PNPM_BASE_URL);
+        assert_eq!(pnpm_base_url(Region::Domestic), PNPM_MIRROR_BASE_URL);
+    }
+
+    #[test]
+    fn download_urls_keep_platform_filename_shape() {
+        // 无论哪个地域，URL 都以 https 开头并保留平台文件名（镜像只是换前缀）
+        let node = get_node_download_url().expect("node url");
+        assert!(node.starts_with("https://"));
+        let filename = node.rsplit('/').next().expect("node url filename");
+        assert!(filename.starts_with(&format!("node-{}", NODE_VERSION)));
+        assert!(filename.ends_with(".zip") || filename.ends_with(".tar.gz"));
+
+        let dsh = get_dsh_download_url().expect("dsh url");
+        assert!(dsh.starts_with("https://"));
+        assert!(dsh.ends_with(".zip"));
     }
 }
