@@ -295,10 +295,13 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
         }
     }
 
-    // 日志文件（前端日志面板读取）
+    // 日志文件（前端日志面板读取）。
+    // 每次真实启动前轮转：只保留最近 3 次启动的日志，旧文件后退为
+    // `dsh-web.log.1` / `dsh-web.log.2`，避免单文件随多次启动无限增长。
     let log_path = config::get_service_log_path(&app_handle);
     fs::create_dir_all(log_path.parent().unwrap_or(std::path::Path::new(".")))
         .map_err(|e| format!("create log dir failed: {e}"))?;
+    utils::rotate_service_log(&log_path, 3);
 
     log::info!("Starting Harness process");
 
