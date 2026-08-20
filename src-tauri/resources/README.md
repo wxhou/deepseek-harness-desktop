@@ -9,11 +9,28 @@ directory (the Tauri app-data dir for identifier
 - `runtime/` — the bundled Node.js runtime (downloaded on first run)
 - `dependencies/dsh/` — the packaged DeepSeek Harness distribution (downloaded from the
   `hairyf/deepseek-harness-pkg` release feed)
-- `data/dsh/` — the isolated `$DSH_HOME` used by the running `dsh` process
+- `data/dsh/` — **legacy** `$DSH_HOME` location (pre-migration builds only; see below)
 - `logs/` — application and `dsh` service logs
 - `.store.dat` — desktop settings (port, auto-start, language, etc.)
 
 No manual Node.js or pnpm installation is required.
+
+## `$DSH_HOME` — shared with the official Node.js install
+
+The user data directory (`$DSH_HOME`) used by the running `dsh` process follows
+the **official dsh convention** (`${DSH_HOME:-$HOME/.dsh}`): the `DSH_HOME`
+environment variable when set, otherwise `~/.dsh`
+(`C:\Users\<you>\.dsh` on Windows). This way the desktop app and a
+`npm i -g @deepseek-ai/dsh` install share the same profiles, sessions, settings
+and credentials — no data switching needed.
+
+On the first launch of a build that introduced this change, the app
+**migrates** any existing legacy data from `%APPDATA%/.../data/dsh` into the
+new `$DSH_HOME` (recursive merge, newer mtime wins; `node_modules` trees are
+skipped — they are regenerated on boot). The legacy directory is removed after
+a successful migration, and the one-shot migration is recorded in `.store.dat`
+(`dsh_home_migrated`). Migration failures are non-fatal: legacy data stays in
+place and the migration retries on the next launch.
 
 ## Preset plugins — `preset-plugins.json`
 

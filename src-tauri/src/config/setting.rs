@@ -27,6 +27,10 @@ pub struct Setting {
     /// 内容有变更 → 重新进入预设引导。`None` = 老用户升级（无基线）→ 弹一次建立基线。
     #[serde(default)]
     pub preset_hash: Option<String>,
+    /// 旧版 AppData `data/dsh` → 官方 `$DSH_HOME`（~/.dsh）数据迁移是否已完成。
+    /// 幂等标记：迁移成功并删除旧目录后置位，避免重复合并。
+    #[serde(default)]
+    pub dsh_home_migrated: bool,
 }
 
 /// 命令行集成默认开启（开发者工具场景，安装完成即可用）
@@ -55,6 +59,7 @@ impl Default for Setting {
             cli_link_enabled: default_cli_link_enabled(),
             preinstall_done: false,
             preset_hash: None,
+            dsh_home_migrated: false,
         }
     }
 }

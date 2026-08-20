@@ -4,7 +4,7 @@ use crate::service::download::{self, Installable};
 use crate::service::plugin;
 use crate::service::update;
 use crate::service::workflow;
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 use tauri_plugin_clipboard_manager::ClipboardExt;
 use tauri_plugin_opener::OpenerExt;
 
@@ -405,27 +405,26 @@ pub fn reveal_in_folder(path: String) -> Result<(), String> {
         .map_err(|e| format!("REVEAL_FAILED: {e}"))
 }
 
-/// 在系统文件管理器中打开数据目录
+/// 在系统文件管理器中打开数据目录（官方 $DSH_HOME，即 ~/.dsh）
 #[tauri::command]
 pub async fn reveal_data_dir(app_handle: AppHandle) -> Result<(), String> {
-    let app_data_dir = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?;
+    let dsh_home = config::get_dsh_data_path(&app_handle);
+    // 目录可能尚未创建（全新安装），先建好再打开，避免资源管理器报路径不存在
+    std::fs::create_dir_all(&dsh_home).map_err(|e| e.to_string())?;
 
     if cfg!(windows) {
         std::process::Command::new("explorer")
-            .arg(&app_data_dir)
+            .arg(&dsh_home)
             .spawn()
             .map_err(|e| e.to_string())?;
     } else if cfg!(target_os = "macos") {
         std::process::Command::new("open")
-            .arg(&app_data_dir)
+            .arg(&dsh_home)
             .spawn()
             .map_err(|e| e.to_string())?;
     } else {
         std::process::Command::new("xdg-open")
-            .arg(&app_data_dir)
+            .arg(&dsh_home)
             .spawn()
             .map_err(|e| e.to_string())?;
     }

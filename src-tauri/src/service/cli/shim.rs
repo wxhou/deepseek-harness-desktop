@@ -198,10 +198,10 @@ pub fn escape_path_sh(path: &Path) -> String {
 // dsh shim
 // ---------------------------------------------------------------------------
 
-/// Windows `dsh.cmd` 内容。`app_dir` 为应用数据目录（绝对路径，生成时写死）。
-pub fn build_cmd_shim(app_dir: &Path) -> String {
+/// Windows `dsh.cmd` 内容。`app_dir` 为应用数据目录（绝对路径，生成时写死），
+/// `dsh_home` 为官方 `$DSH_HOME`（`~/.dsh`，生成时写死，与桌面端/官方一致）。
+pub fn build_cmd_shim(app_dir: &Path, dsh_home: &Path) -> String {
     let dsh_bin = app_dir.join("dependencies/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js");
-    let dsh_home = app_dir.join("data/dsh");
 
     format!(
         r#"@echo off
@@ -236,9 +236,8 @@ exit /b 1
 }
 
 /// Windows `dsh.ps1` 内容
-pub fn build_ps1_shim(app_dir: &Path) -> String {
+pub fn build_ps1_shim(app_dir: &Path, dsh_home: &Path) -> String {
     let dsh_bin = app_dir.join("dependencies/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js");
-    let dsh_home = app_dir.join("data/dsh");
 
     format!(
         r#"# DeepSeek Harness Desktop - dsh command shim (generated)
@@ -268,9 +267,8 @@ exit $LASTEXITCODE
 
 /// Unix `dsh` shell 脚本内容（POSIX sh）
 #[cfg(not(windows))]
-pub fn build_sh_shim(app_dir: &Path) -> String {
+pub fn build_sh_shim(app_dir: &Path, dsh_home: &Path) -> String {
     let dsh_bin = app_dir.join("dependencies/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js");
-    let dsh_home = app_dir.join("data/dsh");
 
     format!(
         r#"#!/bin/sh
@@ -502,6 +500,7 @@ pub fn user_dsh_preserved(bin_dir: &Path) -> bool {
 /// 同名 `dsh`/`pnpm` 一律保留不动，避免覆盖用户自己的安装与配置。
 pub fn write_shims(app_handle: &AppHandle, bin_dir: &Path) -> Result<(), String> {
     let app_dir = config::get_base_dir(app_handle);
+    let dsh_home = config::get_dsh_data_path(app_handle);
     fs::create_dir_all(bin_dir).map_err(|e| format!("create bin dir failed: {e}"))?;
 
     // 写入单个 shim：若目标已存在且非本应用生成，则跳过不覆盖（保留用户文件）。
@@ -523,14 +522,14 @@ pub fn write_shims(app_handle: &AppHandle, bin_dir: &Path) -> Result<(), String>
 
     #[cfg(windows)]
     {
-        write_if_ours!(SHIM_CMD_NAME, build_cmd_shim(&app_dir));
-        write_if_ours!(SHIM_PS1_NAME, build_ps1_shim(&app_dir));
+        write_if_ours!(SHIM_CMD_NAME, build_cmd_shim(&app_dir, &dsh_home));
+        write_if_ours!(SHIM_PS1_NAME, build_ps1_shim(&app_dir, &dsh_home));
         write_if_ours!(PNPM_SHIM_CMD_NAME, build_pnpm_cmd_shim(&app_dir));
         write_if_ours!(PNPM_SHIM_PS1_NAME, build_pnpm_ps1_shim(&app_dir));
     }
     #[cfg(not(windows))]
     {
-        write_if_ours!(SHIM_SH_NAME, build_sh_shim(&app_dir));
+        write_if_ours!(SHIM_SH_NAME, build_sh_shim(&app_dir, &dsh_home));
         write_if_ours!(PNPM_SHIM_SH_NAME, build_pnpm_sh_shim(&app_dir));
         // 仅对本应用生成/覆盖过的 shim 设置可执行位；保留的用户文件不动
         for name in [SHIM_SH_NAME, PNPM_SHIM_SH_NAME] {
@@ -558,19 +557,29 @@ mod tests {
         }
     }
 
+    /// 官方 $DSH_HOME（~/.dsh）
+    fn sample_dsh_home() -> PathBuf {
+        if cfg!(windows) {
+            PathBuf::from(r"C:\Users\test\.dsh")
+        } else {
+            PathBuf::from("/home/test/.dsh")
+        }
+    }
+
     #[test]
     fn cmd_shim_contains_baked_paths() {
-        let content = build_cmd_shim(&sample_app_dir());
+        let content = build_cmd_shim(&sample_app_dir(), &sample_dsh_home());
         assert!(content.contains(r"C:\Users\test\AppData\Roaming"));
         assert!(content.contains("dependencies/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js"));
-        assert!(content.contains("data/dsh"));
+        assert!(content.contains(r"C:\Users\test\.dsh"));
+        assert!(!content.contains("data/dsh"));
         assert!(content.contains("%*"));
     }
 
     #[test]
     fn cmd_shim_escapes_percent() {
         let dir = PathBuf::from(r"C:\Users\100%test\AppData\Roaming\io.github.hairyf.deepseek-harness-desktop");
-        let content = build_cmd_shim(&dir);
+        let content = build_cmd_shim(&dir, &sample_dsh_home());
         assert!(content.contains("100%%test"));
         assert!(!content.contains(r#"set "APP_DIR=C:\Users\100%test""#));
     }
@@ -617,13 +626,15 @@ mod tests {
     #[test]
     fn ps1_shim_escapes_quotes() {
         let dir = PathBuf::from(r"C:\Users\o'brien\AppData\Roaming\io.github.hairyf.deepseek-harness-desktop");
-        let content = build_ps1_shim(&dir);
+        let content = build_ps1_shim(&dir, &sample_dsh_home());
         assert!(content.contains(r"o''brien"));
+        // dsh_home 同样走 ps1 转义
+        assert!(content.contains(r"C:\Users\test\.dsh"));
     }
 
     #[test]
     fn cmd_shim_prefers_user_dsh() {
-        let content = build_cmd_shim(&sample_app_dir());
+        let content = build_cmd_shim(&sample_app_dir(), &sample_dsh_home());
         assert!(content.contains("USER_DSH"));
         assert!(content.contains(r#"call "%USER_DSH%" %*"#));
         assert!(content.contains("SELF_PREFIX"));
@@ -635,7 +646,7 @@ mod tests {
 
     #[test]
     fn ps1_shim_prefers_user_dsh() {
-        let content = build_ps1_shim(&sample_app_dir());
+        let content = build_ps1_shim(&sample_app_dir(), &sample_dsh_home());
         assert!(content.contains("Get-Command dsh -All"));
         assert!(content.contains("$userDsh.Source"));
         assert!(content.contains("$PSScriptRoot"));
@@ -649,7 +660,7 @@ mod tests {
     fn sh_shim_prefers_user_dsh() {
         #[cfg(not(windows))]
         {
-            let content = build_sh_shim(&sample_app_dir());
+            let content = build_sh_shim(&sample_app_dir(), &sample_dsh_home());
             assert!(content.contains(r#"exec "$dir/dsh" "$@""#));
             assert!(content.contains("SELF_DIR"));
             // 用户 dsh 优先 > 注入 DSH_HOME
@@ -675,9 +686,9 @@ mod tests {
 
         // 本应用生成的 shim -> 不是 foreign，可覆盖
         #[cfg(not(windows))]
-        let generated = build_sh_shim(&sample_app_dir());
+        let generated = build_sh_shim(&sample_app_dir(), &sample_dsh_home());
         #[cfg(windows)]
-        let generated = build_cmd_shim(&sample_app_dir());
+        let generated = build_cmd_shim(&sample_app_dir(), &sample_dsh_home());
         std::fs::write(&user_dsh, generated).unwrap();
         assert!(!is_foreign_file(&user_dsh), "generated shim must not be foreign");
 

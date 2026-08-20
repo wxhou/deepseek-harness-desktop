@@ -221,9 +221,33 @@ pub fn get_dsh_package_json_path<R: Runtime>(app_handle: &AppHandle<R>) -> PathB
     get_dsh_install_path(app_handle).join(DSH_MANIFEST_RELATIVE)
 }
 
-/// Harness 用户数据目录（$DSH_HOME）
-pub fn get_dsh_data_path(app_handle: &tauri::AppHandle) -> PathBuf {
-    get_base_dir(app_handle).join("data").join(DSH_DATA_DIR_NAME)
+/// 用户主目录（Windows 取 `%USERPROFILE%`，Unix 取 `$HOME`）。
+///
+/// 不使用 dirs crate（未引入该依赖），与官方 dsh 的 `$HOME/.dsh` 语义保持一致。
+fn user_home_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    let key = "USERPROFILE";
+    #[cfg(not(windows))]
+    let key = "HOME";
+    std::env::var_os(key).map(PathBuf::from)
+}
+
+/// Harness 用户数据目录（$DSH_HOME）。
+///
+/// 与官方 dsh（`${DSH_HOME:-$HOME/.dsh}`）保持一致：
+/// - 环境变量 `DSH_HOME` 非空时优先使用；
+/// - 否则默认 `~/.dsh`（Windows `%USERPROFILE%\.dsh`，Unix `$HOME/.dsh`）。
+///
+/// 桌面版与官方 node 安装共用同一份数据：两边数据互通、无需切换。
+pub fn get_dsh_data_path<R: Runtime>(_app_handle: &AppHandle<R>) -> PathBuf {
+    if let Some(home) = std::env::var_os("DSH_HOME") {
+        if !home.is_empty() {
+            return PathBuf::from(home);
+        }
+    }
+    user_home_dir()
+        .map(|home| home.join(".dsh"))
+        .unwrap_or_else(|| PathBuf::from(".dsh"))
 }
 
 /// dsh 服务日志文件路径
@@ -322,7 +346,8 @@ pub fn runtime_info<R: Runtime>(app: &AppHandle<R>, port: u16) -> RuntimeInfo {
         dsh_version: get_dsh_version(app),
         node_version: get_active_node_version(),
         service_url: get_dsh_service_url(port),
-        data_dir: app_data_dir.clone(),
+        // 用户数据所在目录 = 官方 $DSH_HOME（~/.dsh），不再是 AppData
+        data_dir: get_dsh_data_path(app).to_string_lossy().into_owned(),
         log_path: PathBuf::from(&app_data_dir)
             .join("logs")
             .join("dsh-web.log")

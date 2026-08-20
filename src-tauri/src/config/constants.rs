@@ -46,7 +46,8 @@ pub const DSH_MANIFEST_RELATIVE: &str = "package.json";
 pub const PNPM_CORE_DIR: &str = "pnpm";
 pub const PNPM_ENTRY_RELATIVE: &str = "bin/pnpm.cjs";
 
-/// 数据目录名（$DSH_HOME 的相对目录）
+/// 旧版数据目录名：迁移前 $DSH_HOME 位于 `{app_data}/data/dsh`，
+/// 现仅用于 legacy 路径识别（见 service::migrate）。新 $DSH_HOME = 官方 `~/.dsh`。
 pub const DSH_DATA_DIR_NAME: &str = "dsh";
 
 /// 简单 Store 持久化

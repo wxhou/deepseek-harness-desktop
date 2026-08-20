@@ -21,6 +21,14 @@ pub fn setup(app_handle: tauri::AppHandle) {
     // workflow::sweep_orphan_harness），避免新实例一路漂移端口
     crate::service::workflow::sweep_orphan_harness(&app_handle);
 
+    // 旧版 AppData data/dsh → 官方 $DSH_HOME（~/.dsh）数据迁移。
+    // 必须在 sweep 之后（先杀掉占用文件句柄的残留 dsh 进程）、scheduler/
+    // auto_start 之前（迁移完成前不启动 dsh）。失败仅告警不阻断：旧数据
+    // 原地保留，下次启动重试。
+    if let Err(e) = crate::service::migrate::migrate(&app_handle) {
+        log::warn!("dsh home migration deferred (old data kept): {e}");
+    }
+
     // 启动进程监控（tick 检测 dsh 服务状态）
     crate::service::scheduler::start(&app_handle);
 
