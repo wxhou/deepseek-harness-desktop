@@ -124,75 +124,75 @@ export default function Navbar({ iframeRef }: NavbarProps) {
         >
           <ArrowLeft />
         </Button>
-
-        <Button
-          className="rounded-lg size-7"
-          isIconOnly
-          size="sm"
-          variant="ghost"
-          aria-label={t('nav.forward')}
-          isDisabled={!canGoForward}
-          onPress={() => { sendNav('page:next') }}
-        >
-          <ArrowRight />
-        </Button>
-        <div className="ml-1">
-          <DebugSidebar>
-            <Button
-              className="rounded-lg h-6 text-xs px-1.5"
-              size="sm"
-              variant="ghost"
-              aria-label={t('app.expand_sidebar')}
-            >
-              {t('app.debug')}
-            </Button>
-          </DebugSidebar>
-          <Dropdown>
-            <Button
-              className="rounded-lg h-6 text-xs px-1.5"
-              size="sm"
-              variant="ghost"
-              aria-label={t('app.expand_sidebar')}
-            >
-              {t('app.help')}
-            </Button>
-            <Dropdown.Popover className="rounded-md w-5!">
-              <Dropdown.Menu>
-                <Dropdown.Item
-                  className="rounded-md"
-                  id="copy-run-logs"
-                  textValue={t('menu.run_logs')}
-                  onAction={() => handleHelpAction('copy-run-logs')}
-                >
-                  <Label>{t('menu.run_logs')}</Label>
-                </Dropdown.Item>
-                <Dropdown.Item
-                  className="rounded-md"
-                  id="check-update"
-                  textValue={t('menu.check_update')}
-                  onAction={() => handleHelpAction('check-update')}
-                >
-                  <span className="flex w-full items-center justify-between gap-3">
-                    <Label>{t('menu.check_update')}</Label>
-                    <If cond={updateInfo != null}>
-                      <Description>{t('menu.new_version')}</Description>
-                    </If>
-                  </span>
-                </Dropdown.Item>
-                <Dropdown.Item
-                  className="rounded-md"
-                  id="about"
-                  textValue={t('menu.about')}
-                  onAction={() => handleHelpAction('about')}
-                >
-                  <Label>{t('menu.about')}</Label>
-                </Dropdown.Item>
-              </Dropdown.Menu>
-            </Dropdown.Popover>
-          </Dropdown>
-
-        </div>
       </If>
+
+      <Button
+        className="rounded-lg size-7"
+        isIconOnly
+        size="sm"
+        variant="ghost"
+        aria-label={t('nav.forward')}
+        isDisabled={!canGoForward}
+        onPress={() => { sendNav('page:next') }}
+      >
+        <ArrowRight />
+      </Button>
+      <div className="ml-1">
+        <DebugSidebar>
+          <Button
+            className="rounded-lg h-6 text-xs px-1.5"
+            size="sm"
+            variant="ghost"
+            aria-label={t('app.expand_sidebar')}
+          >
+            {t('app.debug')}
+          </Button>
+        </DebugSidebar>
+        <Dropdown>
+          <Button
+            className="rounded-lg h-6 text-xs px-1.5"
+            size="sm"
+            variant="ghost"
+            aria-label={t('app.expand_sidebar')}
+          >
+            {t('app.help')}
+          </Button>
+          <Dropdown.Popover className="rounded-md w-5!">
+            <Dropdown.Menu>
+              <Dropdown.Item
+                className="rounded-md"
+                id="copy-run-logs"
+                textValue={t('menu.run_logs')}
+                onAction={() => handleHelpAction('copy-run-logs')}
+              >
+                <Label>{t('menu.run_logs')}</Label>
+              </Dropdown.Item>
+              <Dropdown.Item
+                className="rounded-md"
+                id="check-update"
+                textValue={t('menu.check_update')}
+                onAction={() => handleHelpAction('check-update')}
+              >
+                <span className="flex w-full items-center justify-between gap-3">
+                  <Label>{t('menu.check_update')}</Label>
+                  <If cond={updateInfo != null}>
+                    <Description>{t('menu.new_version')}</Description>
+                  </If>
+                </span>
+              </Dropdown.Item>
+              <Dropdown.Item
+                className="rounded-md"
+                id="about"
+                textValue={t('menu.about')}
+                onAction={() => handleHelpAction('about')}
+              >
+                <Label>{t('menu.about')}</Label>
+              </Dropdown.Item>
+            </Dropdown.Menu>
+          </Dropdown.Popover>
+        </Dropdown>
+
+      </div>
 
       {/* 拖拽区：Tauri 原生拖拽（仅此元素带 data-tauri-drag-region，按钮不受影响） */}
       <div
