@@ -124,19 +124,18 @@ export default function Navbar({ iframeRef }: NavbarProps) {
         >
           <ArrowLeft />
         </Button>
+        <Button
+          className="rounded-lg size-7"
+          isIconOnly
+          size="sm"
+          variant="ghost"
+          aria-label={t('nav.forward')}
+          isDisabled={!canGoForward}
+          onPress={() => { sendNav('page:next') }}
+        >
+          <ArrowRight />
+        </Button>
       </If>
-
-      <Button
-        className="rounded-lg size-7"
-        isIconOnly
-        size="sm"
-        variant="ghost"
-        aria-label={t('nav.forward')}
-        isDisabled={!canGoForward}
-        onPress={() => { sendNav('page:next') }}
-      >
-        <ArrowRight />
-      </Button>
       <div className="ml-1">
         <DebugSidebar>
           <Button
