@@ -1,3 +1,4 @@
+/* eslint-disable no-control-regex */
 import type { UnlistenFn } from '@tauri-apps/api/event'
 import type {
   InstallerState,
@@ -11,6 +12,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import i18next from 'i18next'
 import { defineStore } from 'valtio-define'
+import { queryClient } from '@/config/client'
 import { updater } from '../updater'
 
 const MAX_RETRIES = 8
@@ -98,7 +100,7 @@ async function readServiceLogTail(): Promise<string[]> {
     const raw = await invoke<string>('read_service_logs', { maxBytes: LOG_TAIL_MAX_BYTES })
     return raw
       .split(/\r?\n/)
-      .map(line => line.replace(/\x1b\[[0-9;]*m/g, '').trim())
+      .map(line => line.replace(/\x1B\[[0-9;]*m/g, '').trim())
       .filter(Boolean)
   }
   catch (err) {
@@ -245,6 +247,12 @@ export const harness = defineStore({
           )
         }
         this.serviceHealthy = true
+        // 服务（重）启动成功后，dsh 版本/端口/CLI 链接状态等运行时信息可能已变化
+        // （典型：Harness 更新后旧版本缓存仍在，调试侧边栏需刷新页面才显示新版本）。
+        // 使侧边栏相关查询缓存失效，重新打开/已挂载时自动拉取最新值。
+        void queryClient.invalidateQueries({ queryKey: ['info'] })
+        void queryClient.invalidateQueries({ queryKey: ['config'] })
+        void queryClient.invalidateQueries({ queryKey: ['cli_status'] })
       }
       catch (err) {
         // 失败时附上服务日志里的真实错误行，供错误界面展示而不是只显示超时文案
