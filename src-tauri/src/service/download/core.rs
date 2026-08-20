@@ -22,6 +22,7 @@ pub async fn download_file<'a, R: Runtime>(
 ) -> Result<Vec<u8>, String> {
     log::info!("Starting file download: {}", url);
     validate_download_url(&url)?;
+
     // 创建具备 User-Agent 的客户端
     let client = reqwest::Client::builder()
         .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (deepseek-harness-desktop)")
@@ -32,23 +33,109 @@ pub async fn download_file<'a, R: Runtime>(
             e.to_string()
         })?;
 
-    let res = client.get(&url).send().await.map_err(|e| {
+    // GitHub CDN（objects/release-assets.githubusercontent.com）的大文件传输
+    // 偶发中途断流（连接被重置、chunked body 提前结束，表现为"error decoding
+    // response body"），这类瞬时错误重试通常即可成功。重试时带 Range 头从
+    // 上次断点续传（CDN 支持 206），避免每次都从头下载 38MB。
+    // 最多 MAX_DOWNLOAD_ATTEMPTS 次，失败退避递增（2s/4s）。
+    const MAX_DOWNLOAD_ATTEMPTS: usize = 3;
+    // buffer 由外层持有：每次尝试在已有字节基础上续传/追加，成功后整体返回
+    let mut buffer: Vec<u8> = Vec::new();
+    let mut last_error: Option<String> = None;
+    for attempt in 1..=MAX_DOWNLOAD_ATTEMPTS {
+        if attempt > 1 {
+            let delay = Duration::from_secs(1 << (attempt - 1));
+            log::warn!(
+                "Download attempt {}/{} failed, retrying in {}s (resume from {} bytes)",
+                attempt - 1,
+                MAX_DOWNLOAD_ATTEMPTS,
+                delay.as_secs(),
+                buffer.len()
+            );
+            tokio::time::sleep(delay).await;
+        }
+        match download_attempt(&client, tracker, &url, attempt, MAX_DOWNLOAD_ATTEMPTS, &mut buffer)
+            .await
+        {
+            Ok(()) => {
+                log::info!("Download completed, {} bytes total", buffer.len());
+                return Ok(buffer);
+            }
+            Err(e) => {
+                log::warn!(
+                    "Download attempt {}/{} failed: {}",
+                    attempt,
+                    MAX_DOWNLOAD_ATTEMPTS,
+                    e
+                );
+                last_error = Some(e);
+            }
+        }
+    }
+    Err(last_error.unwrap_or_else(|| format!("DOWNLOAD_FAILED: {url}")))
+}
+
+/// 单次下载尝试：发起 GET 请求并把响应体流式读入 `buffer`。
+///
+/// 已有部分数据时自动带 `Range: bytes=<已有>-` 续传；服务端返回 200（不支持
+/// Range）则清空从头下载。续传成功不代表整体完成——调用方必须比对摘要校验，
+/// 任何中途断流都会以 Err 返回并触发外层重试。
+async fn download_attempt<'a, R: Runtime>(
+    client: &reqwest::Client,
+    tracker: &'a ProgressTracker<'a, R>,
+    url: &str,
+    attempt: usize,
+    max_attempts: usize,
+    buffer: &mut Vec<u8>,
+) -> Result<(), String> {
+    let resume_from = buffer.len() as u64;
+    log::debug!(
+        "Download attempt {}/{}: {} (resume from {})",
+        attempt,
+        max_attempts,
+        url,
+        resume_from
+    );
+
+    let mut req = client.get(url);
+    if resume_from > 0 {
+        req = req.header(reqwest::header::RANGE, format!("bytes={resume_from}-"));
+    }
+    let res = req.send().await.map_err(|e| {
         log::error!("Download request failed: {}", e);
         e.to_string()
     })?;
     validate_download_url(res.url().as_str())?;
 
+    // 416 属防御分支：理论上不会发生（断流说明还没收完，resume_from 必然
+    // 小于文件总长），若出现则清空 buffer 让下一次尝试从头下载，避免死循环。
+    if res.status() == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
+        log::warn!("Server returned 416 for range request, restarting from zero");
+        buffer.clear();
+        return Err(format!("Download failed: HTTP {}", res.status()));
+    }
     if !res.status().is_success() {
         log::error!("Download failed with HTTP status: {}", res.status());
         return Err(format!("Download failed: HTTP {}", res.status()));
     }
 
-    // 下载流处理并写入内存
-    let total_size = res.content_length().unwrap_or(0);
+    // 206 = 续传成功，保留已有字节只追加后续分片；200 = 服务端不支持 Range
+    // （或首次下载），整体从头开始。
+    let range_accepted = res.status() == reqwest::StatusCode::PARTIAL_CONTENT;
+    if !range_accepted && resume_from > 0 {
+        log::warn!("Server ignored Range request, restarting download from zero");
+        buffer.clear();
+    }
+
+    // 进度按"已收字节 + 本次分片"计算；总长 = 断点偏移 + 本次 Content-Length
+    let total_size = if range_accepted {
+        resume_from + res.content_length().unwrap_or(0)
+    } else {
+        res.content_length().unwrap_or(0)
+    };
     log::debug!("File size: {} bytes", total_size);
     let mut downloaded: u64 = 0;
     let mut stream = res.bytes_stream();
-    let mut buffer = Vec::new();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| {
             log::error!("Download stream read error: {}", e);
@@ -56,20 +143,21 @@ pub async fn download_file<'a, R: Runtime>(
         })?;
         buffer.extend_from_slice(&chunk);
         downloaded += chunk.len() as u64;
-        let progress_pct = (downloaded as f64 / total_size as f64) * 100.0;
+        let received_total = resume_from + downloaded;
+        let progress_pct = (received_total as f64 / total_size as f64) * 100.0;
         tracker.update(
             progress_pct,
             format!(
                 "已下载 {:.1} MB / {:.1} MB",
-                downloaded as f64 / 1_000_000.0,
+                received_total as f64 / 1_000_000.0,
                 total_size as f64 / 1_000_000.0
             ),
             format!("Download {}", url),
         );
     }
 
-    log::info!("Download completed, {} bytes total", downloaded);
-    Ok(buffer)
+    log::info!("Download attempt {}/{} succeeded, {} bytes in buffer", attempt, max_attempts, buffer.len());
+    Ok(())
 }
 
 fn validate_download_url(url: &str) -> Result<(), String> {
@@ -348,6 +436,8 @@ pub async fn ensure_extract<'a, R: Runtime>(
 
 /// GitHub API 地址（未认证限流 60 次/小时/IP，仅供每次启动检查一次）
 const DSH_PKG_GITHUB_API: &str = "https://api.github.com/repos/hairyf/deepseek-harness-pkg";
+/// pkg 仓库 HTML 来源；`releases.atom` 走 github.com 而非 api.github.com，不受未认证限流约束。
+const DSH_PKG_REPO: &str = "https://github.com/hairyf/deepseek-harness-pkg";
 
 /// 最新 Harness 发行版信息（版本 tag + 对应 commit hash）
 #[derive(Debug, Clone, serde::Serialize)]
@@ -355,23 +445,25 @@ pub struct LatestDshPkg {
     pub tag: String,
     pub commit: String,
     pub asset_url: String,
-    pub digest: String,
+    /// 可信 SHA-256 摘要。为 `None` 表示 GitHub API 限流/不可用未能取得可信摘要，
+    /// 此时该信息**仅可作更新提示**（tag/commit 仍有效），不可用于自动重装——
+    /// 重装路径会因完整性校验缺失而中止（沿用 DSH_INTEGRITY_UNAVAILABLE 安全设计）。
+    pub digest: Option<String>,
 }
 
-/// 查询 GitHub 上最新 Harness 发行版信息
-///
-/// 先取最新 release 的 tag_name，再通过 commits 端点把 tag 解析为 commit。
-/// 网络不可用或 API 限流时返回 Err，由调用方决定是否保留本地安装。
-pub async fn fetch_latest_dsh_pkg_info() -> Result<LatestDshPkg, String> {
-    let client = reqwest::Client::builder()
+/// 构造带 User-Agent 与超时的 GitHub 请求客户端。
+fn github_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
         .user_agent("deepseek-harness-desktop")
         .timeout(std::time::Duration::from_secs(5))
         .build()
-        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))
+}
 
-    // 1. 最新 release 的 tag_name
-    let release: serde_json::Value = client
-        .get(format!("{}/releases/latest", DSH_PKG_GITHUB_API))
+/// 拉取最新 release 的 JSON（含 tag、资产、摘要）。
+async fn fetch_releases_latest(client: &reqwest::Client) -> Result<serde_json::Value, String> {
+    client
+        .get(format!("{DSH_PKG_GITHUB_API}/releases/latest"))
         .send()
         .await
         .map_err(|e| format!("Failed to request latest release: {}", e))?
@@ -379,15 +471,13 @@ pub async fn fetch_latest_dsh_pkg_info() -> Result<LatestDshPkg, String> {
         .map_err(|e| format!("Latest release request failed: {}", e))?
         .json()
         .await
-        .map_err(|e| format!("Failed to parse latest release response: {}", e))?;
-    let tag_name = release
-        .get("tag_name")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| "Missing tag_name in latest release response".to_string())?;
+        .map_err(|e| format!("Failed to parse latest release response: {}", e))
+}
 
-    // 2. 通过 commits 端点把 tag 解析为 commit hash
+/// 通过 commits 端点把 release tag 解析为完整 commit hash。
+async fn fetch_tag_commit(client: &reqwest::Client, tag: &str) -> Result<String, String> {
     let commit: serde_json::Value = client
-        .get(format!("{}/commits/{}", DSH_PKG_GITHUB_API, tag_name))
+        .get(format!("{DSH_PKG_GITHUB_API}/commits/{tag}"))
         .send()
         .await
         .map_err(|e| format!("Failed to request release commit: {}", e))?
@@ -396,40 +486,202 @@ pub async fn fetch_latest_dsh_pkg_info() -> Result<LatestDshPkg, String> {
         .json()
         .await
         .map_err(|e| format!("Failed to parse release commit response: {}", e))?;
-    let sha = commit
+    commit
         .get("sha")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| "Missing sha in release commit response".to_string())?;
+        .map(|s| s.to_string())
+        .ok_or_else(|| "Missing sha in release commit response".to_string())
+}
 
+/// 从 tag 内嵌的 build-id 提取 commit 标识：`dsh-0.1.0-rc.8-32331963388` → `32331963388`。
+///
+/// 当 `/commits/{tag}` 因 api.github.com 限流/网络失败时，用 build-id 兜底作为 commit，
+/// 保证「版本升级」判定不因这一次要调用而整体中断（issue：rc.8 发布后无更新提示）。
+fn commit_fallback_from_tag(tag: &str) -> String {
+    tag.rsplit('-').next().unwrap_or(tag).to_string()
+}
+
+/// 从 releases.atom（github.com，非 api.github.com）解析最新 release tag。
+///
+/// 用作 API 限流/不可用时的兜底来源，仅在 API 完全不可达时调用。
+async fn fetch_latest_dsh_tag_from_atom() -> Result<String, String> {
+    let client = github_client()?;
+    let body = client
+        .get(format!("{DSH_PKG_REPO}/releases.atom"))
+        .send()
+        .await
+        .map_err(|e| format!("DSH_ATOM: {e}"))?
+        .error_for_status()
+        .map_err(|e| format!("DSH_ATOM: {e}"))?
+        .text()
+        .await
+        .map_err(|e| format!("DSH_ATOM: {e}"))?;
+    // 取第一条 <entry> 作为最新 release，从中提取 releases/tag/<TAG>
+    let entry = body
+        .find("<entry>")
+        .and_then(|p| body[p..].find("</entry>").map(|e| &body[p..p + e]))
+        .unwrap_or(&body);
+    entry
+        .split("releases/tag/")
+        .nth(1)
+        .and_then(|s| s.split('"').next())
+        .filter(|t| !t.is_empty())
+        .map(|t| t.to_string())
+        .ok_or_else(|| "DSH_ATOM: missing tag in atom feed".to_string())
+}
+
+/// 从 expanded_assets HTML 片段中解析指定资产文件名后的 `sha256:<64hex>` 摘要。
+///
+/// 纯函数，便于对真实页面片段做离线单元测试；解析失败返回 `None`。
+fn parse_digest_from_expanded_assets(body: &str, expected_name: &str) -> Option<String> {
+    let pos = body.find(expected_name)?;
+    let window = &body[pos..(pos + 4096).min(body.len())];
+    const START: &str = "sha256:";
+    let hash_start = window.find(START)?;
+    let hash = &window[hash_start + START.len()..];
+    let hex_end = hash
+        .find(|c: char| !c.is_ascii_hexdigit())
+        .unwrap_or(hash.len());
+    if hex_end != 64 {
+        return None;
+    }
+    Some(format!("sha256:{}", &hash[..64]))
+}
+
+/// 从 release 的 expanded_assets HTML（github.com，非 api.github.com，不受未认证
+/// 限流 403 约束）解析指定资产的 SHA-256 摘要。
+///
+/// GitHub release 资产的 `digest` 字段默认只由 api.github.com 的 JSON 返回，一旦
+/// API 被限流就拿不到可信摘要，更新会因完整性校验缺失被 `DSH_INTEGRITY_UNAVAILABLE`
+/// 卡死。但 GitHub 的 `expanded_assets` 页面片段同样呈现作者填写的 `sha256:<hex>`
+/// 摘要（发行版页面资产区展开时的 HTML），且走 github.com 普通请求、不受 API 配额
+/// 限制——以它作为 API 限流时的非限流兜底来源，保证完整性校验不因 403 而失效。
+async fn fetch_dsh_digest_from_expanded_assets(
+    client: &reqwest::Client,
+    tag: &str,
+    expected_name: &str,
+) -> Result<Option<String>, String> {
+    let body = client
+        .get(format!("{DSH_PKG_REPO}/releases/expanded_assets/{tag}"))
+        .send()
+        .await
+        .map_err(|e| format!("DSH_EXPANDED: {e}"))?
+        .error_for_status()
+        .map_err(|e| format!("DSH_EXPANDED: {e}"))?
+        .text()
+        .await
+        .map_err(|e| format!("DSH_EXPANDED: {e}"))?;
+    Ok(parse_digest_from_expanded_assets(&body, expected_name))
+}
+
+/// 查询 GitHub 上最新 Harness 发行版信息。
+///
+/// 优先走 api.github.com（`/releases/latest` + `/commits/{tag}`），拿到可用的 tag、
+/// 资产地址与可信 SHA-256 摘要。API 限流/网络失败时**不整体中断**：
+/// - tag 兜底用 releases.atom（github.com，不受未认证限流约束）；
+/// - commit 兜底用 tag 内嵌 build-id；
+/// - 资产 URL 由平台确定性推导；
+/// - digest 置 `None`（仅可提示、不可自动重装，重装时重取摘要或安全中止）。
+///
+/// 修复前：api.github.com 一限流 `fetch_latest_dsh_pkg_info` 直接返回 Err，
+/// `check_dsh_update` 静默跳过，导致上游 rc.8 发布后桌面端迟迟不出现更新提示。
+pub async fn fetch_latest_dsh_pkg_info() -> Result<LatestDshPkg, String> {
+    let client = github_client()?;
     let expected_name = config::get_dsh_download_url()?
         .rsplit('/')
         .next()
         .ok_or_else(|| "Missing DSH asset filename".to_string())?
         .to_string();
-    let asset = release
-        .get("assets")
-        .and_then(|value| value.as_array())
-        .and_then(|assets| {
-            assets.iter().find(|asset| {
-                asset.get("name").and_then(|value| value.as_str()) == Some(expected_name.as_str())
-            })
-        })
-        .ok_or_else(|| format!("Missing release asset {expected_name}"))?;
-    let asset_url = asset
-        .get("browser_download_url")
-        .and_then(|value| value.as_str())
-        .ok_or_else(|| format!("Missing download URL for {expected_name}"))?;
-    let digest = asset
-        .get("digest")
-        .and_then(|value| value.as_str())
-        .filter(|value| value.starts_with("sha256:"))
-        .ok_or_else(|| format!("Missing SHA-256 digest for {expected_name}"))?;
+
+    // 1. 首选 GitHub API 拉最新 release（含 tag + 资产 + 可信摘要）
+    let api_release = match fetch_releases_latest(&client).await {
+        Ok(release) => Some(release),
+        Err(e) => {
+            log::warn!(
+                "GitHub API latest release unavailable ({}), falling back to atom feed",
+                e
+            );
+            None
+        }
+    };
+
+    // 2. tag：优先 API，失败则从 releases.atom 兜底
+    let tag_name = match &api_release {
+        Some(release) => release
+            .get("tag_name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "Missing tag_name in latest release response".to_string())?
+            .to_string(),
+        None => fetch_latest_dsh_tag_from_atom().await?,
+    };
+
+    // 3. commit：优先 API /commits/{tag}，失败用 tag 内嵌 build-id 兜底
+    let commit = match fetch_tag_commit(&client, &tag_name).await {
+        Ok(sha) => sha,
+        Err(e) => {
+            log::warn!(
+                "Failed to resolve commit for tag {} ({}), using build-id fallback",
+                tag_name,
+                e
+            );
+            commit_fallback_from_tag(&tag_name)
+        }
+    };
+
+    // 4. 资产 URL 与摘要：仅 API 可达时资产/摘要可信；否则 URL 平台确定性回退、digest=None
+    let (asset_url, mut digest) = match api_release.as_ref() {
+        Some(release) => {
+            let asset = release.get("assets").and_then(|value| value.as_array()).and_then(
+                |assets| {
+                    assets.iter().find(|asset| {
+                        asset.get("name").and_then(|value| value.as_str())
+                            == Some(expected_name.as_str())
+                    })
+                },
+            );
+            let asset_url = asset
+                .and_then(|a| a.get("browser_download_url").and_then(|v| v.as_str()))
+                .map(|u| u.to_string())
+                .unwrap_or_else(|| config::get_dsh_download_url().unwrap_or_default());
+            let digest = asset
+                .and_then(|a| a.get("digest").and_then(|v| v.as_str()))
+                .filter(|v| v.starts_with("sha256:"))
+                .map(|v| v.to_string());
+            (asset_url, digest)
+        }
+        None => (config::get_dsh_download_url()?, None),
+    };
+
+    // 4b. API 限流/不可用导致取不到可信摘要时，改从 expanded_assets HTML
+    // （github.com，非 api.github.com，不受 403 限流）解析作者填写的 sha256，
+    // 保证完整性校验不因 api.github.com 限流而失效、更新不被卡死。
+    if digest.is_none() {
+        match fetch_dsh_digest_from_expanded_assets(&client, &tag_name, &expected_name).await {
+            Ok(Some(d)) => {
+                log::info!(
+                    "Trusted digest unavailable from GitHub API, recovered from release HTML for {}",
+                    expected_name
+                );
+                digest = Some(d);
+            }
+            Ok(None) => {
+                log::warn!(
+                    "No digest found in release HTML for {} (tag {})",
+                    expected_name,
+                    tag_name
+                );
+            }
+            Err(e) => {
+                log::warn!("Failed to fetch digest from release HTML: {}", e);
+            }
+        }
+    }
 
     Ok(LatestDshPkg {
-        tag: tag_name.to_string(),
-        commit: sha.to_string(),
-        asset_url: asset_url.to_string(),
-        digest: digest.to_string(),
+        tag: tag_name,
+        commit,
+        asset_url,
+        digest,
     })
 }
 
@@ -458,10 +710,14 @@ pub enum UpdateCheck {
 /// 本地记录（release commit + tag）由安装流程写入；但当安装文件被外围途径
 /// 更新、或安装时 GitHub API 失败未落盘，记录会滞后于文件，造成每次都误报
 /// 更新。这里以磁盘上实际的 `@deepseek-ai/dsh` 版本为准核对：
-/// - commit 一致 → 无更新；
-/// - 文件版本与最新 release 不同 → 有更新；
-/// - 文件版本相同：记录 tag 版本也相同 → 同版本热修 → 有更新；
+/// - 最新 release 版本号与已装版本不同 → 有更新（不论 commit）；
+/// - 版本号相同且 commit 一致 → 无更新；
+/// - 版本号相同：记录 tag 版本也相同 → 同版本热修 → 有更新；
 ///   记录 tag 版本更旧（或记录无 tag，经 `legacy_tags` 反查）→ 记录滞后 → 修正记录。
+///
+/// 注意必须先比版本、再比 commit：dsh 仓库的 rc 发布会重打同一 git commit，
+/// 因此「最新 release 的 commit 等于已装记录的 commit」并不代表没有更新，
+/// 只有 tag 里的版本号才能正确区分（如 rc.8 之于 rc.7）。
 ///
 /// `legacy_tags` 是 pkg 仓库的 tags 列表（tag, commit），仅用于反查历史安装
 /// 记录的版本；反查不到时以实际文件为准（视为记录滞后）。
@@ -472,17 +728,27 @@ pub fn resolve_update(
     latest: &LatestDshPkg,
     legacy_tags: &[(String, String)],
 ) -> UpdateCheck {
-    if record_commit == Some(latest.commit.as_str()) {
-        return UpdateCheck::UpToDate;
-    }
     let (Some(installed), Some(latest_version)) =
         (installed_version, parse_version_from_tag(&latest.tag))
     else {
-        // 版本信息不可解析时回退到旧行为：记录不一致即视为有更新
-        return UpdateCheck::UpdateAvailable;
+        // 版本信息不可解析时回退旧行为：记录不一致即视为有更新
+        return if record_commit == Some(latest.commit.as_str()) {
+            UpdateCheck::UpToDate
+        } else {
+            UpdateCheck::UpdateAvailable
+        };
     };
+
+    // 先按“最新 release 的版本号”判定：与已装版本不同 → 有更新。
+    // 不能先看 commit 相等就跳过：dsh 仓库的 rc 发布可能重打同一 git commit
+    // （build-id 不同但 underlying commit 相同），此时 commit 不是可分辨信号，
+    // 只有 tag 里的版本号才能正确识别 rc.8 之于 rc.7 是更新。
     if installed != latest_version {
         return UpdateCheck::UpdateAvailable;
+    }
+    // 版本相同且 commit 一致 → 安装文件即最新 release，无更新。
+    if record_commit == Some(latest.commit.as_str()) {
+        return UpdateCheck::UpToDate;
     }
     // 文件已经是“最新版本”，此时需要甄别记录是否滞后
     match record_tag.and_then(parse_version_from_tag) {
@@ -599,8 +865,43 @@ mod tests {
             tag: tag.to_string(),
             commit: commit.to_string(),
             asset_url: "https://example.invalid/dsh.zip".to_string(),
-            digest: format!("sha256:{}", "0".repeat(64)),
+            digest: Some(format!("sha256:{}", "0".repeat(64))),
         }
+    }
+
+    #[test]
+    fn commit_fallback_extracts_build_id_from_tag() {
+        assert_eq!(
+            commit_fallback_from_tag("dsh-0.1.0-rc.8-32331963388"),
+            "32331963388"
+        );
+        // 无 build-id 的 tag 兜底取最后一段，仍为非空稳定标识，避免空 commit 破坏比对
+        assert_eq!(commit_fallback_from_tag("dsh-0.2.0"), "0.2.0");
+    }
+
+    #[test]
+    fn parses_digest_from_expanded_assets_html() {
+        // 模拟 expanded_assets 片段：资产文件名之后紧跟作者填写的 sha256:<64hex>。
+        // 来自真实 rc.8 页面：windows 资产摘要为 4d541676...
+        let html = concat!(
+            "…/deepseek-harness-pkg-windows.zip…<span>sha256:4d5416766eb4a66e81b83532abeea64de7e7e2e0bac69a4f0c0508e1d91936c0</span>",
+        );
+        let got =
+            parse_digest_from_expanded_assets(html, "deepseek-harness-pkg-windows.zip");
+        assert_eq!(
+            got.as_deref(),
+            Some("sha256:4d5416766eb4a66e81b83532abeea64de7e7e2e0bac69a4f0c0508e1d91936c0")
+        );
+        // 文件名不存在 → None
+        assert_eq!(
+            parse_digest_from_expanded_assets(html, "deepseek-harness-pkg-linux.zip"),
+            None
+        );
+        // 摘要缺失 → None
+        assert_eq!(
+            parse_digest_from_expanded_assets("<p>no digest here</p>", "deepseek-harness-pkg-windows.zip"),
+            None
+        );
     }
 
     #[test]
@@ -733,6 +1034,26 @@ mod tests {
         let decision = resolve_update(
             Some("564019027fd9469991aef6e57bb0a96325491c4e"),
             None,
+            Some("0.1.0-rc.7"),
+            &latest,
+            &[],
+        );
+        assert_eq!(decision, UpdateCheck::UpdateAvailable);
+    }
+
+    #[test]
+    fn resolve_rc7_installed_rc8_released_is_update() {
+        // 用户现场（已实测真实网络）：已装 rc.7，上游发布 rc.8。仓库 rc 发布会
+        // 重打同一 git commit（/commits/{tag} 解析出的 rc.8 commit 与 rc.7 完全相同
+        // 6c659bb...），因此 commit 相等不能当作“无更新”——版本号 rc.8 > rc.7
+        // 才是有更新。正是这个 commit 相等快路径导致更新提示被吞。
+        let latest = latest(
+            "dsh-0.1.0-rc.8-32331963388",
+            "6c659bb2636b3ad396a204c4c6ff110276fa3a09", // 与已装记录相同 commit
+        );
+        let decision = resolve_update(
+            Some("6c659bb2636b3ad396a204c4c6ff110276fa3a09"), // rc.7 记录
+            Some("dsh-0.1.0-rc.7-32054485373"),
             Some("0.1.0-rc.7"),
             &latest,
             &[],

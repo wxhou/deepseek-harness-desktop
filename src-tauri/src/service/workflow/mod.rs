@@ -442,12 +442,17 @@ pub fn stop_on_exit(_app_handle: tauri::AppHandle, _port: u16) {
     terminate_owned_process();
 }
 
-/// 安装环境（Node.js 运行时 + 打包的 Harness 发行版）
+/// 安装环境（Node.js 运行时 + 打包的 Harness 发行版）。
+///
+/// 返回是否真正落盘更新了 Harness（dsh 任务实际下载并解压）；仅重装
+/// Node/pnpm 或全部任务被跳过时返回 false，供调用方决定是否重启页面。
 pub async fn install(
     app_handle: &tauri::AppHandle,
     mut dsh_latest: Option<download::LatestDshPkg>,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     log::info!("Starting installation process");
+    // dsh 任务（index==1）实际下载解压时置 true
+    let mut dsh_updated = false;
 
     // 安装前先停止本应用持有的 Harness 服务：运行中的 node 进程会把
     // 原生模块 DLL（如 sharp 的 libvips-42.dll）加载进内存并锁住文件，
@@ -474,10 +479,24 @@ pub async fn install(
 
     for (index, task) in tasks.iter().enumerate() {
         log::debug!("Processing task {}/{}", index + 1, tasks.len());
-        // 已安装但 commit 与最新 release 不一致时强制重新下载
+        // 已安装但版本/commit 与最新 release 不一致时强制重新下载。
+        // 版本优先（与 resolve_update 的判定完全一致）：dsh 的 rc 发布会复用
+        // 同一 git commit（record_commit 不变），只比 commit 会把 rc.8 之于
+        // rc.7 误判为"已最新"而跳过下载——日志表现为"All installation tasks
+        // completed"但实际什么都没下载，重启后仍是旧版，且前端丢掉更新提示。
         let outdated = index == 1
             && dsh_latest.as_ref().is_some_and(|info| {
-                config::get_dsh_pkg_commit(app_handle).as_deref() != Some(info.commit.as_str())
+                let installed_version = config::get_dsh_version(app_handle);
+                let latest_version = download::parse_version_from_tag(&info.tag);
+                // 版本号可解析且不同 → 必须更新；版本不可解析时退回 commit 比对
+                let version_differs =
+                    match (installed_version.as_deref(), latest_version.as_deref()) {
+                        (Some(a), Some(b)) => a != b,
+                        _ => false,
+                    };
+                version_differs
+                    || config::get_dsh_pkg_commit(app_handle).as_deref()
+                        != Some(info.commit.as_str())
             });
         if task.check_installed(app_handle) && !outdated {
             log::debug!(
@@ -547,7 +566,7 @@ pub async fn install(
                 }
                 dsh_latest
                     .as_ref()
-                    .map(|info| info.digest.clone())
+                    .and_then(|info| info.digest.clone())
                     .ok_or_else(|| {
                         "DSH_INTEGRITY_UNAVAILABLE: trusted release digest is required".to_string()
                     })?
@@ -572,6 +591,7 @@ pub async fn install(
 
         // 记录本次安装对应的 release tag 与 commit，供下次启动比对
         if index == 1 {
+            dsh_updated = true;
             if let Some(info) = &dsh_latest {
                 config::set_dsh_pkg_commit(app_handle, info.commit.clone());
                 config::set_dsh_pkg_tag(app_handle, info.tag.clone());
@@ -586,7 +606,7 @@ pub async fn install(
         "All tasks completed".into(),
     );
 
-    Ok(())
+    Ok(dsh_updated)
 }
 
 /// 健康检查（通过 Rust 代理，避免 WebView CORS 问题）

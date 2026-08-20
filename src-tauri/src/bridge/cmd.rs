@@ -25,12 +25,17 @@ fn sync_cli_link(app_handle: &AppHandle) {
 
 /// 一键安装依赖（Node.js 运行时 + 打包的 Harness 发行版）
 ///
+/// 返回是否真正执行了安装/更新：`true` 表示本次调用落盘了运行时（前端
+/// 需重启服务以加载新版本），`false` 表示未发生任何安装（已是最新、记录
+/// 自愈，或 GitHub 限流无法校验完整性而保持本地安装——此时前端不应重启、
+/// 也不应丢弃“有新版本”提示，而应提示稍后重试）。
+///
 /// 启动逻辑由前端显式调用 `launch_harness` 完成，避免重复拉起进程。
 #[tauri::command]
-pub async fn install_dependencies(app_handle: AppHandle) -> Result<(), String> {
+pub async fn install_dependencies(app_handle: AppHandle) -> Result<bool, String> {
     if workflow::status::get_status() == workflow::status::Status::Installing {
         log::info!("Installation process already running, skipping");
-        return Ok(());
+        return Ok(false);
     }
 
     // 以实际安装状态为准：本地安装与 GitHub 最新 release 的 commit hash
@@ -59,7 +64,7 @@ pub async fn install_dependencies(app_handle: AppHandle) -> Result<(), String> {
             setting.installed = true;
             config::set_store_dat_setting(&app_handle, setting);
             sync_cli_link(&app_handle);
-            return Ok(());
+            return Ok(false);
         }
     }
 
@@ -104,7 +109,20 @@ pub async fn install_dependencies(app_handle: AppHandle) -> Result<(), String> {
                     }
                     false
                 }
-                download::UpdateCheck::UpdateAvailable => true,
+                download::UpdateCheck::UpdateAvailable => {
+                    // 有新版但 GitHub API 限流拿不到可信源码摘要时，不自动整包重下
+                    // （无法校验完整性，Windows 上重解压还易损坏 node_modules）。
+                    // 保持本地安装，更新提示由启动后的 check_dsh_update 给出，稍后可重试。
+                    if latest.digest.is_none() {
+                        log::warn!(
+                            "New dsh release {} found but trusted digest unavailable (API rate-limited), keeping local install",
+                            latest.tag
+                        );
+                        false
+                    } else {
+                        true
+                    }
+                }
             }
         }
         // 核心文件缺失（首次安装或目录被清空）→ 需要安装
@@ -127,19 +145,21 @@ pub async fn install_dependencies(app_handle: AppHandle) -> Result<(), String> {
             config::set_store_dat_setting(&app_handle, setting);
         }
         sync_cli_link(&app_handle);
-        return Ok(());
+        return Ok(false);
     }
 
     log::info!("Dependencies missing or outdated, starting installation process");
     workflow::status::set_status(workflow::status::Status::Installing);
     workflow::status::emit_status(&app_handle);
-    workflow::install(&app_handle, dsh_latest.ok()).await?;
+    // 返回 dsh 是否真正落盘更新：仅重装 Node/pnpm 或全部任务被跳过（例如
+    // 版本相同仅记录滞后）时为 false，前端据此决定是否重启页面/保留更新提示
+    let updated = workflow::install(&app_handle, dsh_latest.ok()).await?;
     log::debug!("Installation completed, marked as installed");
     let mut setting = config::get_store_dat_setting(&app_handle);
     setting.installed = true;
     config::set_store_dat_setting(&app_handle, setting);
     sync_cli_link(&app_handle);
-    Ok(())
+    Ok(updated)
 }
 
 /// 静默检查是否有新版 Harness 可用（只查不装，供进入页面后后台调用）
@@ -480,7 +500,7 @@ pub async fn read_run_logs(app_handle: AppHandle) -> Result<String, String> {
     let desktop_text = read_tail(&desktop);
 
     Ok(format!(
-        "### 环境信息\n\n{}\n\n### 服务日志\n\n{}\n\n### 运行日志\n\n{}",
+        "### 环境信息\n\n{}\n\n### 服务日志\n\n```\n{}\n```\n\n### 运行日志\n\n```\n{}\n```",
         env_text,
         service_text.trim_end(),
         desktop_text.trim_end()
