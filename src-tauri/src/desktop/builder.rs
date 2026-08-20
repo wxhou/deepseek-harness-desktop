@@ -214,7 +214,7 @@ pub fn handler() -> impl Fn(Invoke<Wry>) -> bool + Send + Sync + 'static {
 
 // configure tauri builder
 pub fn builder() -> tauri::Builder<tauri::Wry> {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .setup(|app| {
             let app_handle = app.handle().clone();
             build_main_window(&app_handle)?;
@@ -228,16 +228,21 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
                 api.prevent_close();
                 let _ = window.hide();
             }
-        })
-        // 单例模式：多次双击图标（或重复启动）时不会新开窗口，而是把
-        // 已存在的（可能已隐藏到托盘）主窗口调到前台，实现“单例 + 复用后台窗口”。
-        // 该回调在首次启动时也会以当前进程的参数触发一次（幂等，仅 show/focus），
-        // 之后每次二次启动都会派发到这里，重新展示后台运行的主窗口。
-        // 仅生成（release）环境启用，避免开发调试时二次启动被单例吞掉。
-        // #[cfg(not(debug_assertions))]
-        // .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-        //     crate::core::utils::show_main_window(app);
-        // }))
+        });
+
+    // 单例模式：多次双击图标（或重复启动）时不会新开窗口，而是把
+    // 已存在的（可能已隐藏到托盘）主窗口调到前台，实现“单例 + 复用后台窗口”。
+    // 该回调在首次启动时也会以当前进程的参数触发一次（幂等，仅 show/focus），
+    // 之后每次二次启动都会派发到这里，重新展示后台运行的主窗口。
+    // 仅在生产环境（release）启用：debug 开发调试时若启用单例，
+    // 二次启动的调试进程会被吞掉（例如 tauri dev 多实例调试），
+    // 因此开发环境跳过该插件。
+    #[cfg(not(debug_assertions))]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        crate::core::utils::show_main_window(app);
+    }));
+
+    builder
         // Opener plugin
         .plugin(tauri_plugin_opener::init())
         // Notification plugin（Windows 上以 tauri-winrt-notification 实现点击回调，
