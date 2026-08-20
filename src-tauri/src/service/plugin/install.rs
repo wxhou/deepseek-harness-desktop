@@ -144,6 +144,7 @@ async fn ensure_pnpm(app_handle: &AppHandle, window: &WebviewWindow) -> Result<(
     let dest = download::Pnpm.get_install_path(app_handle);
 
     download::ensure_extract(&tracker, name, buffer, dest)
+        .await
         .map_err(|e| format!("PNPM_EXTRACT_FAILED: {e}"))?;
 
     let _ = window.emit(

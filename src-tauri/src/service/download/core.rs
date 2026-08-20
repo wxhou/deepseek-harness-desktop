@@ -143,7 +143,12 @@ pub async fn fetch_node_sha256(download_url: &str) -> Result<String, String> {
 ///
 /// 结束 dsh/node 进程后，加载进内存的 DLL 句柄不会立即释放，删除目录可能
 /// 短暂失败（os error 32）。这里轮询等待，最长约 10 秒。
-fn remove_dir_with_retry(dest: &Path) -> bool {
+///
+/// # 性能
+/// 锁等待期间用 `tokio::time::sleep` 让出异步运行时，而不是阻塞占用一个
+/// Tokio worker：安装流程的进度事件与其它异步任务（健康检查、日志轮转）
+/// 不会因一次长锁等待而被一并冻结。
+async fn remove_dir_with_retry(dest: &Path) -> bool {
     const MAX_ATTEMPTS: u32 = 40;
     const RETRY_DELAY: Duration = Duration::from_millis(250);
 
@@ -159,7 +164,7 @@ fn remove_dir_with_retry(dest: &Path) -> bool {
                         MAX_ATTEMPTS,
                         e
                     );
-                    std::thread::sleep(RETRY_DELAY);
+                    tokio::time::sleep(RETRY_DELAY).await;
                 } else {
                     log::error!(
                         "Failed to clean {:?} after {} attempts: {}",
@@ -174,12 +179,12 @@ fn remove_dir_with_retry(dest: &Path) -> bool {
     false
 }
 
-fn remove_path_if_exists(path: &Path) -> Result<(), String> {
+async fn remove_path_if_exists(path: &Path) -> Result<(), String> {
     if !path.exists() {
         return Ok(());
     }
     if path.is_dir() {
-        if remove_dir_with_retry(path) {
+        if remove_dir_with_retry(path).await {
             Ok(())
         } else {
             Err(format!(
@@ -194,7 +199,7 @@ fn remove_path_if_exists(path: &Path) -> Result<(), String> {
 }
 
 /// 将已经完整解压并验证结构的临时目录切换为正式目录；切换失败时恢复旧版本。
-fn commit_staged_install(staging: &Path, dest: &Path, backup: &Path) -> Result<(), String> {
+async fn commit_staged_install(staging: &Path, dest: &Path, backup: &Path) -> Result<(), String> {
     // 上次若恰好在“旧目录改名为备份”后崩溃，先恢复旧版本再进行本次切换。
     if !dest.exists() && backup.exists() {
         fs::rename(backup, dest).map_err(|e| {
@@ -205,7 +210,7 @@ fn commit_staged_install(staging: &Path, dest: &Path, backup: &Path) -> Result<(
             )
         })?;
     }
-    remove_path_if_exists(backup)?;
+    remove_path_if_exists(backup).await?;
     let had_previous = dest.exists();
     if had_previous {
         fs::rename(dest, backup).map_err(|e| {
@@ -227,7 +232,7 @@ fn commit_staged_install(staging: &Path, dest: &Path, backup: &Path) -> Result<(
         ));
     }
     if had_previous {
-        if let Err(e) = remove_path_if_exists(backup) {
+        if let Err(e) = remove_path_if_exists(backup).await {
             // 新版本已经切换成功，备份清理失败不应把成功安装误报为失败。
             log::warn!("Failed to remove previous installation backup: {e}");
         }
@@ -245,7 +250,7 @@ fn commit_staged_install(staging: &Path, dest: &Path, backup: &Path) -> Result<(
 ///
 /// # 返回
 /// 成功返回 `Ok(())`，失败返回错误信息
-pub fn ensure_extract<'a, R: Runtime>(
+pub async fn ensure_extract<'a, R: Runtime>(
     tracker: &'a ProgressTracker<'a, R>,
     name: String,
     buffer: Vec<u8>,
@@ -263,7 +268,7 @@ pub fn ensure_extract<'a, R: Runtime>(
         .unwrap_or("package");
     let staging = parent.join(format!(".{leaf}.installing-{}", std::process::id()));
     let backup = parent.join(format!(".{leaf}.backup"));
-    remove_path_if_exists(&staging)?;
+    remove_path_if_exists(&staging).await?;
 
     // 判断文件类型
     let pure_name = name.split('?').next().unwrap_or(&name).to_lowercase();
@@ -289,7 +294,7 @@ pub fn ensure_extract<'a, R: Runtime>(
             format!("已写入: {}", "100%"),
             format!("File written: {}", staging.display()),
         );
-        commit_staged_install(&staging, &dest, &backup)?;
+        commit_staged_install(&staging, &dest, &backup).await?;
         log::info!("File write completed: {}", dest.display());
         return Ok(());
     }
@@ -337,7 +342,7 @@ pub fn ensure_extract<'a, R: Runtime>(
         }
     }
 
-    commit_staged_install(&staging, &dest, &backup)?;
+    commit_staged_install(&staging, &dest, &backup).await?;
     Ok(())
 }
 
@@ -554,8 +559,8 @@ mod tests {
         assert!(validate_download_url("https://example.com/file.zip").is_err());
     }
 
-    #[test]
-    fn staged_install_replaces_previous_version_and_cleans_backup() {
+    #[tokio::test]
+    async fn staged_install_replaces_previous_version_and_cleans_backup() {
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock after epoch")
@@ -569,7 +574,9 @@ mod tests {
         fs::write(dest.join("version.txt"), "old").expect("write previous version");
         fs::write(staging.join("version.txt"), "new").expect("write staged version");
 
-        commit_staged_install(&staging, &dest, &backup).expect("commit staged install");
+        commit_staged_install(&staging, &dest, &backup)
+            .await
+            .expect("commit staged install");
 
         assert_eq!(fs::read_to_string(dest.join("version.txt")).unwrap(), "new");
         assert!(!staging.exists());
@@ -579,7 +586,9 @@ mod tests {
         fs::rename(&dest, &backup).expect("simulate interrupted switch");
         fs::create_dir_all(&staging).expect("create next staged install");
         fs::write(staging.join("version.txt"), "next").expect("write next version");
-        commit_staged_install(&staging, &dest, &backup).expect("recover and commit");
+        commit_staged_install(&staging, &dest, &backup)
+            .await
+            .expect("recover and commit");
         assert_eq!(fs::read_to_string(dest.join("version.txt")).unwrap(), "next");
         assert!(!backup.exists());
         fs::remove_dir_all(root).ok();

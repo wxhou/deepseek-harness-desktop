@@ -500,7 +500,7 @@ pub async fn install(
         );
         let dest = task.get_install_path(app_handle);
         log::debug!("Installation path: {:?}", dest);
-        download::ensure_extract(&tracker, name, buffer, dest)?;
+        download::ensure_extract(&tracker, name, buffer, dest).await?;
         log::info!("Extraction completed");
         tracker.end_phase();
 
