@@ -60,6 +60,7 @@
   "menu.check_update": "Check for Updates",
   "menu.new_version": "New version available",
   "menu.about": "About Desktop",
+  "menu.run_logs": "Run Logs",
   "about.title": "About",
   "about.powered_by": "Powered by {{name}}",
   "about.release_date": "Release date",

@@ -9,10 +9,12 @@ import {
   Xmark,
 } from '@gravity-ui/icons'
 import { Button, Description, Dropdown, Label } from '@heroui/react'
+import { invoke } from '@tauri-apps/api/core'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { useTranslation } from 'react-i18next'
 import { If } from 'react-if-lite'
 import { useStore } from 'valtio-define'
+import { toast } from '@/utils'
 import { useDshPlugins } from '../hooks/use-dsh-plugins'
 import { useIframeTauri } from '../hooks/use-iframe-tauri'
 import { desktopUpdate } from '../store/modules/desktop-update'
@@ -77,6 +79,20 @@ export default function Navbar({ iframeRef }: NavbarProps) {
       void desktopUpdate.openUpdateDialog()
     else if (key === 'about')
       void desktopUpdate.openAbout()
+    else if (key === 'copy-run-logs')
+      void copyRunLogs()
+  }
+
+  async function copyRunLogs() {
+    try {
+      const logs = await invoke<string>('read_run_logs')
+      await navigator.clipboard.writeText(logs)
+      toast(t('messages.logs_copied'), {})
+    }
+    catch (err) {
+      console.error('[Navbar] failed to copy run logs:', err)
+      toast(t('messages.copy_failed'), {})
+    }
   }
 
   return (
@@ -142,6 +158,14 @@ export default function Navbar({ iframeRef }: NavbarProps) {
             </Button>
             <Dropdown.Popover className="rounded-md w-5!">
               <Dropdown.Menu>
+                <Dropdown.Item
+                  className="rounded-md"
+                  id="copy-run-logs"
+                  textValue={t('menu.run_logs')}
+                  onAction={() => handleHelpAction('copy-run-logs')}
+                >
+                  <Label>{t('menu.run_logs')}</Label>
+                </Dropdown.Item>
                 <Dropdown.Item
                   className="rounded-md"
                   id="check-update"
