@@ -452,6 +452,9 @@ export const harness = defineStore({
       try {
         unlisten = await this.listenPreinstallLog()
         await invoke('install_preinstall_plugins', { ids })
+        // 后端装完已把服务停掉，这里在日志面板讲清接下来的重启（issue #48），
+        // 避免用户把"插件安装后的自动重启"误认为崩溃/故障。
+        this.preinstall.logs = [...this.preinstall.logs, '[harness] 正在重启服务，请稍候…'].slice(-200)
         await this.continueAfterPreinstall()
       }
       catch (err) {

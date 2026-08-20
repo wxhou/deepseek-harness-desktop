@@ -83,6 +83,13 @@ pub async fn install(app_handle: &AppHandle, ids: &[String]) -> Result<(), Strin
 
     // 安装前停止运行中的服务，避免资源冲突
     if workflow::has_owned_process() {
+        // 停服务会让用户感到"重启"，先在日志面板讲清缘由（issue #48）
+        let _ = window.emit(
+            PREINSTALL_LOG_EVENT,
+            PreinstallLogPayload {
+                line: "[harness] 正在停止运行中的服务（安装插件需要短暂重启）…".to_string(),
+            },
+        );
         log::info!("Stopping running harness service before installing preinstall plugins");
         if let Err(e) = workflow::stop(app_handle.clone()).await {
             log::warn!("failed to stop harness before preinstall: {e}");
@@ -198,6 +205,14 @@ pub async fn install(app_handle: &AppHandle, ids: &[String]) -> Result<(), Strin
             log::warn!("win inspector apply failed after install: {e}");
         }
     }
+
+    // 告知用户安装阶段结束；随后的服务重启由前端 continueAfterPreinstall 负责
+    let _ = window.emit(
+        PREINSTALL_LOG_EVENT,
+        PreinstallLogPayload {
+            line: format!("[harness] 已安装 {} 个插件", ids.len()),
+        },
+    );
 
     log::info!("Preinstall plugins installed successfully: {ids:?}");
     Ok(())
