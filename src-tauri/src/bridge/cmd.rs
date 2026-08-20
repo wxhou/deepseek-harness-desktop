@@ -440,7 +440,7 @@ pub async fn clear_service_logs(app_handle: AppHandle) -> Result<(), String> {
 }
 
 /// 读取运行日志（DSH 服务日志 + 桌面端 Rust 运行日志），格式化为便于
-/// 反馈/报障复制的纯文本块：`### 服务日志` 与 `### 运行日志` 两段。
+/// 反馈/报障复制的纯文本块：`### 环境信息`、`### 服务日志` 与 `### 运行日志` 三段。
 ///
 /// 服务日志来自 `logs/dsh-web.log`，运行日志来自 `logs/desktop.log`
 /// （桌面端自身 `logger::init` 每次启动落盘，见 logger/mod.rs）。
@@ -463,11 +463,25 @@ pub async fn read_run_logs(app_handle: AppHandle) -> Result<String, String> {
         lines[start..].join("\n")
     };
 
+    // 环境信息：桌面端应用版本、dsh 发行版本、Node 版本与系统平台/架构，便于报障时快速定位环境差异
+    let dsh_version = config::get_dsh_version(&app_handle)
+        .map(|v| format!("dsh: {v}\n"))
+        .unwrap_or_default();
+    let env_text = format!(
+        "app: {}\n{}node: {}\nos: {} ({})",
+        app_handle.package_info().version,
+        dsh_version,
+        config::get_active_node_version(),
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+    );
+
     let service_text = read_tail(&service);
     let desktop_text = read_tail(&desktop);
 
     Ok(format!(
-        "### 服务日志\n\n{}\n\n### 运行日志\n\n{}",
+        "### 环境信息\n\n{}\n\n### 服务日志\n\n{}\n\n### 运行日志\n\n{}",
+        env_text,
         service_text.trim_end(),
         desktop_text.trim_end()
     ))
