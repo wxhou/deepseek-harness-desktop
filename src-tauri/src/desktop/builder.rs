@@ -198,6 +198,7 @@ pub fn handler() -> impl Fn(Invoke<Wry>) -> bool + Send + Sync + 'static {
         crate::bridge::cmd::reveal_data_dir,
         crate::bridge::cmd::reveal_in_folder,
         crate::bridge::cmd::read_service_logs,
+        crate::bridge::cmd::read_run_logs,
         crate::bridge::cmd::clear_service_logs,
         crate::bridge::cmd::set_language,
         crate::bridge::cmd::toggle_sidebar,

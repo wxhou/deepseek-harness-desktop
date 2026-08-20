@@ -439,6 +439,34 @@ pub async fn clear_service_logs(app_handle: AppHandle) -> Result<(), String> {
     std::fs::write(&log_path, "").map_err(|e| e.to_string())
 }
 
+/// 读取运行日志（DSH 服务日志 + 桌面端 Rust 运行日志），格式化为便于
+/// 反馈/报障复制的纯文本块：`### 服务日志` 与 `### 运行日志` 两段。
+///
+/// 服务日志来自 `logs/dsh-web.log`，运行日志来自 `logs/desktop.log`
+/// （桌面端自身 `logger::init` 每次启动落盘，见 logger/mod.rs）。
+#[tauri::command]
+pub async fn read_run_logs(app_handle: AppHandle) -> Result<String, String> {
+    let base = config::get_base_dir(&app_handle);
+    let service = config::get_service_log_path(&app_handle);
+    let desktop = base.join("logs").join("desktop.log");
+
+    let read = |path: &std::path::Path| -> String {
+        if !path.exists() {
+            return String::new();
+        }
+        std::fs::read_to_string(path).unwrap_or_default()
+    };
+
+    let service_text = read(&service);
+    let desktop_text = read(&desktop);
+
+    Ok(format!(
+        "### 服务日志\n\n{}\n\n### 运行日志\n\n{}",
+        service_text.trim_end(),
+        desktop_text.trim_end()
+    ))
+}
+
 /// 保存界面语言偏好
 #[tauri::command]
 pub fn set_language(app_handle: AppHandle, lang: String) {
