@@ -48,6 +48,42 @@ fn find_available_port(start: u16) -> Result<u16, String> {
     }
 }
 
+/// dsh 版本是否支持 `--no-open` 标志。
+///
+/// 0.1.0-rc.8 起 `dsh web` 默认在系统浏览器打开 UI（桌面端内嵌 WebView，
+/// 不希望每次启动都弹浏览器），并新增 `--no-open` 关闭该行为。更早的 rc
+/// 版本没有这个标志，commander 会把未知选项当作错误、导致 web profile
+/// 启动失败，因此追加标志前必须按已装版本判定：rc.8 及以上（含无 rc 后缀
+/// 的稳定版）传标志；rc.7 及更早不传（保持旧行为）。无法解析的版本号保守
+/// 按不支持处理。
+fn version_supports_no_open(version: &str) -> bool {
+    if version.is_empty() {
+        return false;
+    }
+    // 版本形如 "0.1.0-rc.8"，取 rc 号数值比较
+    if let Some((_, rc_part)) = version.split_once("-rc") {
+        // rc 号前的分隔点可有可无；解析失败视为无法判定，保守不传
+        rc_part
+            .trim_start_matches('.')
+            .parse::<u32>()
+            .map(|n| n >= 8)
+            .unwrap_or(false)
+    } else {
+        // 无 rc 标识（0.2.0 等稳定版）必然晚于 rc.8
+        true
+    }
+}
+
+/// 按已安装 dsh 版本决定是否追加 `--no-open`（见 [`version_supports_no_open`]）。
+///
+/// 读不到版本清单（未安装/损坏）时保守处理：不追加标志。
+fn web_supports_no_open_flag(app_handle: &tauri::AppHandle) -> bool {
+    match config::get_dsh_version(app_handle) {
+        Some(version) => version_supports_no_open(&version),
+        None => false,
+    }
+}
+
 /// 只结束本应用当前进程创建并仍持有的 Harness 进程树。
 fn terminate_owned_process() {
     let pid = OWNED_PROCESS_ID.swap(0, Ordering::SeqCst);
@@ -477,6 +513,10 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
         .map_err(|e| format!("create log dir failed: {e}"))?;
     utils::rotate_service_log(&log_path, 3);
 
+    // rc.8 起 `dsh web` 默认在系统浏览器打开 UI；桌面端内嵌 WebView，不需要
+    // 浏览器，追加 `--no-open` 关闭（老版本无此标志时按版本判定不传）。
+    let no_open = web_supports_no_open_flag(&app_handle);
+
     log::info!("Starting Harness process");
 
     // Windows 打包版是 GUI 进程（没有控制台）。直接以 CREATE_NO_WINDOW 启动
@@ -485,7 +525,7 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     let spawn_result = {
         #[cfg(windows)]
         {
-            let args: Vec<OsString> = vec![
+            let mut args: Vec<OsString> = vec![
                 dsh_binary_path.as_os_str().to_os_string(),
                 OsString::from("--profile"),
                 OsString::from("web"),
@@ -494,6 +534,9 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
                 OsString::from("--port"),
                 OsString::from(setting.port.to_string()),
             ];
+            if no_open {
+                args.push(OsString::from("--no-open"));
+            }
             win_spawn::spawn_with_hidden_console_owned(
                 &node_binary_path,
                 &args,
@@ -546,8 +589,11 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
                 .arg("--host")
                 .arg("127.0.0.1")
                 .arg("--port")
-                .arg(&setting.port.to_string())
-                .envs(&envs)
+                .arg(&setting.port.to_string());
+            if no_open {
+                cmd.arg("--no-open");
+            }
+            cmd.envs(&envs)
                 .current_dir(config::get_dsh_install_path(&app_handle))
                 // 核心修正：提供一个空的 stdin 防止 setRawMode 报错
                 .stdin(Stdio::null())
@@ -841,5 +887,27 @@ mod tests {
         let selected = find_available_port(occupied).expect("find next free port");
         assert!(selected > occupied);
         assert!(!is_port_in_use(selected));
+    }
+
+    #[test]
+    fn no_open_supported_on_rc8_and_later() {
+        assert!(version_supports_no_open("0.1.0-rc.8"));
+        assert!(version_supports_no_open("0.1.0-rc.9"));
+        // 稳定版必然晚于 rc.8
+        assert!(version_supports_no_open("0.2.0"));
+    }
+
+    #[test]
+    fn no_open_absent_before_rc8() {
+        assert!(!version_supports_no_open("0.1.0-rc.7"));
+        assert!(!version_supports_no_open("0.1.0-rc.0"));
+    }
+
+    #[test]
+    fn no_open_unknown_version_is_conservative() {
+        assert!(!version_supports_no_open(""));
+        // rc 号缺失/非数字：无法判定，保守按不支持处理
+        assert!(!version_supports_no_open("0.1.0-rc"));
+        assert!(!version_supports_no_open("0.1.0-rc.a"));
     }
 }
