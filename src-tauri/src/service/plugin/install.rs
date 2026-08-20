@@ -55,7 +55,11 @@ pub async fn install(app_handle: &AppHandle, ids: &[String]) -> Result<(), Strin
         let spec = preset_map
             .get(id.as_str())
             .ok_or_else(|| format!("PREINSTALL_INVALID_ID: {id}"))?;
-        specs.push(spec.to_string());
+        // 统一把 `github:user/repo` 规范为显式 `git+https://...`，绕开 pnpm 对
+        // GitHub 简写「HTTPS 探测失败即回退 SSH」的已知缺陷（pnpm issue
+        // #3948 / #7243 / #13276）：公开仓库一旦落进 git+ssh，在没有 SSH 配置
+        // 的桌面机上必然 `Host key verification failed` / `Permission denied (publickey)`。
+        specs.push(normalize_git_spec(spec));
     }
 
     // 确保 pnpm/dsh shim 存在
@@ -137,14 +141,16 @@ pub async fn install(app_handle: &AppHandle, ids: &[String]) -> Result<(), Strin
     // 失败时解析输出里印出的 `allowBuilds` 键写回 profile 的 pnpm-workspace.yaml
     // 后重试，直至成功或再无键可加。
     let mut retries = 0usize;
+    let mut last_output = String::new();
     let exit_code = loop {
         let (code, captured) =
             run_plugin_process(&node, &args, &cwd, &envs, &window).await?;
         if code == 0 {
             break 0;
         }
+        last_output = captured;
 
-        let new_keys = parse_allowlist_keys(&captured);
+        let new_keys = parse_allowlist_keys(&last_output);
         if new_keys.is_empty() || retries >= MAX_ALLOW_LIST_RETRIES {
             log::error!(
                 "dsh plugin install failed with exit code {code}; no more allowBuilds entries to add"
@@ -165,6 +171,22 @@ pub async fn install(app_handle: &AppHandle, ids: &[String]) -> Result<(), Strin
 
     if exit_code != 0 {
         log::error!("dsh plugin install failed with exit code {exit_code}");
+        // 区分 git 传输层失败与 allowBuilds 构建门禁：前者是 pnpm 走了 git+ssh
+        // （用户环境无 SSH 配置），后者才是补充白名单可自愈的。传输层错误给出
+        // 可读指引，避免用户被 dsh 那条 allowBuilds 提示误导。
+        let hint = git_transport_hint(&last_output);
+        if let Some(hint) = hint {
+            log::warn!("git transport failure detected during plugin install: {hint}");
+            let _ = window.emit(
+                PREINSTALL_LOG_EVENT,
+                PreinstallLogPayload {
+                    line: format!("[pnpm] {hint}"),
+                },
+            );
+            return Err(format!(
+                "PREINSTALL_FAILED: dsh plugin exited with code {exit_code} ({hint})"
+            ));
+        }
         return Err(format!(
             "PREINSTALL_FAILED: dsh plugin exited with code {exit_code}"
         ));
@@ -481,9 +503,66 @@ fn collapse_allow_builds_duplicates(content: &str) -> String {
     out.join("\n")
 }
 
+/// 把 `github:owner/repo[#ref]` 一类的 GitHub 简写规范为显式 HTTPS 依赖形式
+/// （`git+https://github.com/owner/repo.git[#ref]`）。
+///
+/// 动机：pnpm 解析 GitHub 简写时，「HTTPS 可达性探测一旦失败就回退 git+ssh」
+/// 是已知缺陷（issue #3948 / #7243 / #13276，官方已 accepted 仍未修）。公开仓库
+/// 一旦落进 git+ssh，在无 SSH 配置的桌面机上（非交互子进程无法应答 known_hosts
+/// 询问）必然硬失败。规范为显式 `git+https:` 后 pnpm 直接走 HTTPS 克隆，绕开该
+/// 回退；非 `github:` 形式（如纯 npm 包名）原样返回。
+fn normalize_git_spec(spec: &str) -> String {
+    let Some(rest) = spec.strip_prefix("github:") else {
+        return spec.to_string();
+    };
+    let (path, fragment) = match rest.split_once('#') {
+        Some((p, f)) => (p.trim_end_matches('/'), Some(f)),
+        None => (rest.trim_end_matches('/'), None),
+    };
+    let mut repo = path.to_string();
+    if !repo.ends_with(".git") {
+        repo.push_str(".git");
+    }
+    let mut url = format!("git+https://github.com/{repo}");
+    if let Some(fragment) = fragment {
+        url.push('#');
+        url.push_str(fragment);
+    }
+    url
+}
+
+/// 从 pnpm 失败输出里识别 git 传输层错误（区别于 allowBuilds 构建门禁），命中时
+/// 返回一句可读的成因/指引。pnpm 在这些场景下已经退到 git+ssh，再去补 allowBuilds
+/// 白名单是无效且误导的。
+fn git_transport_hint(output: &str) -> Option<&'static str> {
+    const SIGNALS: &[(&str, &str)] = &[
+        (
+            "host key verification failed",
+            "git fell back to SSH and could not verify GitHub's host key (no known_hosts entry; the process ran non-interactively). Make sure GitHub is reachable over HTTPS.",
+        ),
+        (
+            "permission denied (publickey)",
+            "git fell back to SSH but no GitHub SSH key is configured (Permission denied (publickey)). Reach GitHub over HTTPS instead.",
+        ),
+        (
+            "could not read from remote repository",
+            "pnpm could not read from the git remote — commonly a git+ssh transport failure. Ensure GitHub is reachable over HTTPS.",
+        ),
+        (
+            "ssh: connect to host",
+            "pnpm tried to reach GitHub over SSH (port 22) and the connection was refused. Use HTTPS instead.",
+        ),
+    ];
+    let lower = output.to_ascii_lowercase();
+    SIGNALS
+        .iter()
+        .find(|(sig, _)| lower.contains(sig))
+        .map(|(_, hint)| *hint)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{apply_allow_build_keys, collapse_allow_builds_duplicates, extract_allow_line_key, parse_allowlist_keys};
+    use super::{apply_allow_build_keys, collapse_allow_builds_duplicates, extract_allow_line_key, git_transport_hint, normalize_git_spec, parse_allowlist_keys};
 
     #[test]
     fn parse_git_dep_path_key() {
@@ -605,5 +684,63 @@ allowBuilds:
         // 去重结果必须是合法 YAML，且能被后续解析
         let out = apply_allow_build_keys(&normalized, &["node-pty".to_string()]).unwrap();
         assert_eq!(allow_builds_map(&out).get("node-pty"), Some(&serde_yaml::Value::Bool(true)));
+    }
+
+    // ---- git GitHub 简写规范化（issue #51 根因绕行）----
+
+    #[test]
+    fn normalize_github_shorthand_to_git_https() {
+        assert_eq!(
+            normalize_git_spec("github:baihejiangnan/dsh-session-context-menu"),
+            "git+https://github.com/baihejiangnan/dsh-session-context-menu.git"
+        );
+    }
+
+    #[test]
+    fn normalize_github_shorthand_preserves_ref_and_dedup_git_suffix() {
+        assert_eq!(
+            normalize_git_spec("github:omdsh-dev/DSH-better-sidebar#next"),
+            "git+https://github.com/omdsh-dev/DSH-better-sidebar.git#next"
+        );
+        // 已带 .git 不重复追加
+        assert_eq!(
+            normalize_git_spec("github:user/repo.git"),
+            "git+https://github.com/user/repo.git"
+        );
+        // 尾部多余斜杠剥掉
+        assert_eq!(
+            normalize_git_spec("github:user/repo/"),
+            "git+https://github.com/user/repo.git"
+        );
+    }
+
+    #[test]
+    fn normalize_non_github_spec_passes_through() {
+        assert_eq!(normalize_git_spec("dshmarket"), "dshmarket");
+        assert_eq!(
+            normalize_git_spec("git+https://github.com/foo/bar.git"),
+            "git+https://github.com/foo/bar.git"
+        );
+    }
+
+    // ---- git 传输层错误识别（区别于 allowBuilds 门禁）----
+
+    #[test]
+    fn git_transport_hint_detects_host_key_failure() {
+        let out = "git ls-remote \"git+ssh://git@github.com/foo.git\" HEAD\nHost key verification failed.\nfatal: Could not read from remote repository.\n";
+        assert!(git_transport_hint(out).is_some());
+    }
+
+    #[test]
+    fn git_transport_hint_detects_publickey_and_ssh() {
+        assert!(git_transport_hint("git@github.com: Permission denied (publickey)").is_some());
+        assert!(git_transport_hint("ssh: connect to host github.com port 22: Connection refused").is_some());
+    }
+
+    #[test]
+    fn git_transport_hint_none_for_allowbuilds_output() {
+        // allowBuilds 场景（prepare 构建被拦）不应误判为传输层错误
+        let out = "[ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED] ...\nallowBuilds:\n  node-pty: true\n";
+        assert!(git_transport_hint(out).is_none());
     }
 }
