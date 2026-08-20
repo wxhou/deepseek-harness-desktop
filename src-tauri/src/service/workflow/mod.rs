@@ -99,6 +99,60 @@ pub fn has_owned_process() -> bool {
     OWNED_PROCESS_ID.load(Ordering::SeqCst) != 0
 }
 
+/// Windows RedirectionGuard（错误码 448 = ERROR_UNTRUSTED_MOUNT_POINT）逃逸重拉的标记路径。
+fn relaunch_marker_path(app_handle: &tauri::AppHandle) -> std::path::PathBuf {
+    config::get_base_dir(app_handle).join(".dsh-relaunch-448")
+}
+
+/// 探测 dsh 入口在当前进程上下文下的打开错误码（None=可打开）。
+///
+/// 448 只在「进程继承 RedirectionGuard 强制执行」时出现；干净上下文（父进程为
+/// explorer 等普通进程）下 Level-1 符号链接可正常穿越。
+fn dsh_bin_open_error(app_handle: &tauri::AppHandle) -> Option<i32> {
+    std::fs::File::open(config::get_dsh_binary_path(app_handle))
+        .err()
+        .and_then(|e| e.raw_os_error())
+}
+
+/// 通过 explorer 转交启动请求，脱离 RedirectionGuard 强制执行上下文后退出本进程。
+///
+/// Windows 11 25H2 的 RedirectionGuard 对「非提权进程创建的符号链接/联接点」盖信任章，
+/// 而安装器（msiexec/RestartManager 自动重开）会在自身进程启用强制执行并随进程树继承，
+/// 导致新实例跨越 pnpm 符号链接链打开 bin.js 时持续报 448——实测与等待时长无关、
+/// 永不自行恢复（issue #35）。应用无法在运行时关闭继承的策略，只能脱离被污染的进程树：
+/// 把启动请求转交给 explorer（单实例壳进程，干净上下文），由 explorer 创建新实例，
+/// 其父进程即 explorer，不再继承强制执行（实测：explorer.exe <exe> 的子进程父进程为
+/// explorer.exe，而非转交发起者）。标记文件用于防死循环：若上次重拉未逃逸
+/// （explorer 未运行等），本次回退到常规缺失处理（复位 installed 走安装流程）。
+#[cfg(windows)]
+fn relaunch_via_shell_escape(app_handle: &tauri::AppHandle) {
+    let marker = relaunch_marker_path(app_handle);
+    if marker.exists() {
+        let _ = std::fs::remove_file(&marker);
+        log::warn!("RedirectionGuard(448) relaunch did not escape, falling back to normal missing handling");
+        return;
+    }
+    let _ = std::fs::write(&marker, b"1");
+    let Ok(exe) = std::env::current_exe() else {
+        log::warn!("RedirectionGuard(448) detected but current_exe unavailable, falling back");
+        return;
+    };
+    match std::process::Command::new("explorer.exe").arg(&exe).spawn() {
+        Ok(_) => {
+            log::warn!(
+                "RedirectionGuard(448) detected, relaunching via explorer to escape enforced context: {}",
+                exe.display()
+            );
+            // 短暂让出后退出，避免与新实例产生单实例冲突
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            std::process::exit(0);
+        }
+        Err(e) => {
+            log::warn!("RedirectionGuard(448) detected but explorer spawn failed ({e}), falling back");
+        }
+    }
+}
+
 /// 检测并启动 Harness 服务
 pub async fn start(app_handle: tauri::AppHandle) -> Result<(), String> {
     let setting = config::get_store_dat_setting(&app_handle);
@@ -110,6 +164,13 @@ pub async fn start(app_handle: tauri::AppHandle) -> Result<(), String> {
         return Ok(());
     }
     if !node_binary_path.exists() || !dsh_binary_path.exists() {
+        // Windows RedirectionGuard(448)：安装器继承的强制执行上下文永不自行恢复，
+        // 先尝试通过 explorer 逃逸重拉（见 relaunch_via_shell_escape 注释），
+        // 成功则本进程退出；未命中（重拉未逃逸/非 448）才走常规缺失处理。
+        #[cfg(windows)]
+        if dsh_bin_open_error(&app_handle) == Some(448) {
+            relaunch_via_shell_escape(&app_handle);
+        }
         let mut setting = config::get_store_dat_setting(&app_handle);
         setting.installed = false;
         config::set_store_dat_setting(&app_handle, setting);
@@ -125,6 +186,11 @@ pub async fn start(app_handle: tauri::AppHandle) -> Result<(), String> {
         status::emit_status(&app_handle);
         return Ok(());
     }
+
+    // 清理 RedirectionGuard(448) 逃逸重拉标记：本进程正常走到启动说明处于干净上下文，
+    // 移除标记保证下次自更新后仍能触发逃逸重拉。
+    #[cfg(windows)]
+    let _ = std::fs::remove_file(relaunch_marker_path(&app_handle));
 
     log::info!("Starting Harness service");
     status::set_status(status::Status::Starting);
