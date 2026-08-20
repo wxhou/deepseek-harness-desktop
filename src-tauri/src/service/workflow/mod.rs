@@ -113,6 +113,61 @@ pub fn has_owned_process() -> bool {
     OWNED_PROCESS_ID.load(Ordering::SeqCst) != 0
 }
 
+/// 结束所有从本应用 dsh 安装目录启动的 Harness 服务进程（含历史崩溃残留的孤儿实例）。
+///
+/// 只停本应用当前持有的进程不够：`.harness.pid` 标记只记录最近一次会话的 PID，
+/// 应用多次崩溃/强杀（任务管理器结束等）会遗留多个孤儿 dsh 进程、端口一路漂移
+/// （3080→3081→…），`sweep_orphan_harness` 每次只能回收最近一个，更早的孤儿
+/// 会持续占用 `dependencies/dsh` 目录的文件句柄（node 以该目录为 cwd 且模块
+/// DLL 加载在内存），更新切换目录时触发 os error 32（INSTALL_BACKUP_FAILED）。
+///
+/// 命令行为本应用 dsh 入口路径（`...\dependencies\dsh\node_modules\...\bin.js`）
+/// 的 node 进程可判定为本应用的服务实例——路径精确匹配不会误杀用户其它 node
+/// 程序，因此可安全地全部结束（taskkill /T /F）。
+pub fn terminate_stale_harness_processes(app_handle: &tauri::AppHandle) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let dsh_bin_path = config::get_dsh_binary_path(app_handle);
+        let Some(dsh_bin) = dsh_bin_path.to_str() else {
+            return;
+        };
+        // 进程名过滤保证 PowerShell 自身（其命令行同样包含该路径）不被误杀；
+        // 路径中的单引号按 PS 字符串字面量规则转义，避免用户目录含 `'` 时语法错误。
+        let escaped = dsh_bin.replace('\'', "''");
+        let script = format!(
+            "Get-CimInstance Win32_Process -Filter \"Name = 'node.exe'\" | Where-Object {{ $_.CommandLine -like '*{escaped}*' }} | Select-Object -ExpandProperty ProcessId"
+        );
+        let Ok(output) = Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .creation_flags(0x08000000)
+            .output()
+        else {
+            log::error!("Failed to enumerate stale Harness service processes");
+            return;
+        };
+        let mut found = 0;
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            let Ok(pid) = line.trim().parse::<u32>() else {
+                continue;
+            };
+            found += 1;
+            log::warn!("Terminating stale Harness service process {pid} (from dsh install dir)");
+            kill_pid_tree(pid);
+        }
+        if found > 0 {
+            // 与 stop() 同理：taskkill 返回后 DLL 句柄的释放还有短暂滞后，
+            // 让出一点时间避免紧随其后的目录切换撞上残留锁。
+            std::thread::sleep(std::time::Duration::from_millis(800));
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        // Unix 允许对打开中的文件重命名，孤儿进程不阻塞更新切换，无需处理。
+        let _ = app_handle;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 孤儿 Harness 清扫：崩溃/强杀残留实例的识别与回收（issue #34 关联现象）
 // ---------------------------------------------------------------------------
@@ -144,6 +199,13 @@ pub fn sweep_orphan_harness(app_handle: &tauri::AppHandle) {
     if has_owned_process() {
         return;
     }
+    // 先按命令行路径清扫所有从本应用 dsh 安装目录启动的孤儿 Harness 实例：
+    // 标记文件只记录最近一次会话的 PID，应用多次崩溃/强杀会遗留更早的孤儿
+    // （端口一路漂移 3081/3082/…），它们持续占用 dependencies/dsh 目录的文件
+    // 句柄，导致更新切换目录失败（INSTALL_BACKUP_FAILED, os error 32）。
+    // 路径精确匹配不会误杀用户其它 node 程序；标记中的进程若在其中会被一并
+    // 结束，随后的 PID/端口双重确认自然落空，仅清理陈旧标记。
+    terminate_stale_harness_processes(app_handle);
     let pid_file = harness_pid_path(app_handle);
     let Ok(text) = fs::read_to_string(&pid_file) else { return; };
     let mut lines = text.lines();
@@ -582,8 +644,12 @@ pub async fn install(
     if has_owned_process() {
         log::info!("Stopping running Harness service before installation");
         stop(app_handle.clone()).await?;
-
     }
+    // 只停本应用持有的进程还不够：历史崩溃/强杀残留的孤儿 Harness 实例
+    // （不在 .harness.pid 标记中）同样从 dependencies/dsh 启动、占用目录文件
+    // 句柄，会导致更新切换目录失败（INSTALL_BACKUP_FAILED, os error 32）。
+    // 按命令行路径精确清扫所有本应用 dsh 安装目录启动的进程。
+    terminate_stale_harness_processes(app_handle);
 
     let window = app_handle
         .get_webview_window("main")
