@@ -133,5 +133,6 @@
   "app.debug_sidebar_title": "应用调试",
   "messages.logs_copied": "日志已复制到剪贴板",
   "app.debug": "调试",
-  "app.help": "帮助"
+  "app.help": "帮助",
+  "app.application": "应用"
 }

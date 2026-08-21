@@ -133,5 +133,6 @@
   "app.debug_sidebar_title": "Application Debug",
   "messages.logs_copied": "Logs copied to clipboard",
   "app.debug": "Debug",
-  "app.help": "Help"
+  "app.help": "Help",
+  "app.application": "Application"
 }
