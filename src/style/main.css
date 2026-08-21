@@ -8,6 +8,10 @@
 /* 主题变量：默认深色，html[data-theme="light"] 切换到浅色。
    取值与官方 dsw alias token（design-platform.css）逐项一致 */
 :root {
+  --accent: #679efe;                 /* state-business-primary (deepseek-400) */
+  --accent-hover: #4176e6;           /* deepseek-500，hover 变深 */
+  --danger: #f25a5a;                 /* state-error-primary (red-400) */
+
   --color-canvas: #151517;             /* bg-base (bluish-950) */
   --color-panel: #1b1b1c;              /* specific-sidebar-fill (bluish-900) */
   --color-panel-2: #2c2c2e;            /* bg-layer-2 / 输入控件底 (bluish-850) */

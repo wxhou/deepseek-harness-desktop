@@ -190,7 +190,7 @@ export function ConfigCore() {
           {rows.map(core => (
             <Card
               key={core.id}
-              className={`rounded-md bg-[#f5f5f5] dark:bg-[#222222] py-3${core.present && !core.active ? ' cursor-pointer' : ''}`}
+              className={`rounded-md bg-panel2 py-3${core.present && !core.active ? ' cursor-pointer' : ''}`}
               onClick={() => onActivate(core)}
             >
               <Card.Content className="flex flex-col gap-1.5">
