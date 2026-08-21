@@ -112,9 +112,9 @@ fi
 // shim 目录）的用户 dsh，转发时不注入本应用的 DSH_HOME，保留用户环境；
 // 仅找不到用户 dsh 时才回退到捆绑 dsh。
 // 变量约定：cmd 用 %SELF_PREFIX%/%USER_DSH%，ps1 用 $selfDir/$userDsh，
-// sh 用 $SELF_DIR。
-// ---------------------------------------------------------------------------
-
+// sh 用 $SELF_DIR。dsh shim 仅 release 构建写入（debug 构建不覆盖共享的
+// dsh shim，见 write_shims），debug 下这些常量/函数未使用，允许 dead_code。
+#[cfg_attr(debug_assertions, allow(dead_code))]
 const CMD_USER_DSH_PRECEDENCE: &str = r#"
 rem Prefer a user-installed dsh on PATH (skip our own shim dir), fall back to bundled.
 rem This preserves your own dsh binary and its $DSH_HOME config; nothing is overwritten.
@@ -142,6 +142,7 @@ if defined USER_DSH (
 )
 "#;
 
+#[cfg_attr(debug_assertions, allow(dead_code))]
 const PS1_USER_DSH_PRECEDENCE: &str = r#"
 # Prefer a user-installed dsh on PATH (skip our own shim dir), fall back to bundled.
 # This preserves your own dsh binary and its $env:DSH_HOME config; nothing is overwritten.
@@ -156,6 +157,7 @@ if ($userDsh) {
 "#;
 
 #[cfg_attr(windows, allow(dead_code))] // 仅 Unix shim 使用
+#[cfg_attr(debug_assertions, allow(dead_code))]
 const SH_USER_DSH_PRECEDENCE: &str = r#"
 # Prefer a user-installed dsh on PATH (skip our own shim dir), fall back to bundled.
 # This preserves your own dsh binary and its $DSH_HOME config; nothing is overwritten.
@@ -199,7 +201,9 @@ pub fn escape_path_sh(path: &Path) -> String {
 // ---------------------------------------------------------------------------
 
 /// Windows `dsh.cmd` 内容。`app_dir` 为应用数据目录（绝对路径，生成时写死），
-/// `dsh_home` 为官方 `$DSH_HOME`（`~/.dsh`，生成时写死，与桌面端/官方一致）。
+/// `dsh_home` 为官方 `$DSH_HOME`（release 为 `~/.dsh`，生成时写死，与桌面端/
+/// 官方一致）。
+#[cfg_attr(debug_assertions, allow(dead_code))] // 仅 release 构建写入 dsh shim
 pub fn build_cmd_shim(app_dir: &Path, dsh_home: &Path) -> String {
     let dsh_bin = app_dir.join("dependencies/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js");
 
@@ -236,6 +240,7 @@ exit /b 1
 }
 
 /// Windows `dsh.ps1` 内容
+#[cfg_attr(debug_assertions, allow(dead_code))] // 仅 release 构建写入 dsh shim
 pub fn build_ps1_shim(app_dir: &Path, dsh_home: &Path) -> String {
     let dsh_bin = app_dir.join("dependencies/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js");
 
@@ -267,6 +272,7 @@ exit $LASTEXITCODE
 
 /// Unix `dsh` shell 脚本内容（POSIX sh）
 #[cfg(not(windows))]
+#[cfg_attr(debug_assertions, allow(dead_code))] // 仅 release 构建写入 dsh shim
 pub fn build_sh_shim(app_dir: &Path, dsh_home: &Path) -> String {
     let dsh_bin = app_dir.join("dependencies/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js");
 
@@ -500,7 +506,6 @@ pub fn user_dsh_preserved(bin_dir: &Path) -> bool {
 /// 同名 `dsh`/`pnpm` 一律保留不动，避免覆盖用户自己的安装与配置。
 pub fn write_shims(app_handle: &AppHandle, bin_dir: &Path) -> Result<(), String> {
     let app_dir = config::get_base_dir(app_handle);
-    let dsh_home = config::get_dsh_data_path(app_handle);
     fs::create_dir_all(bin_dir).map_err(|e| format!("create bin dir failed: {e}"))?;
 
     // 写入单个 shim：若目标已存在且非本应用生成，则跳过不覆盖（保留用户文件）。
@@ -520,19 +525,43 @@ pub fn write_shims(app_handle: &AppHandle, bin_dir: &Path) -> Result<(), String>
         }};
     }
 
+    // dsh shim 会在内容里烘焙 $DSH_HOME（生产为 ~/.dsh、开发为 ~/.dsh.dev）。
+    // 开发构建禁止改写用户共享的 dsh shim——改写会让终端 `dsh` 指向开发数据
+    // 目录，并覆盖生产的命令行集成；生产版生成的 dsh shim 原样保留。
+    #[cfg(not(debug_assertions))]
+    {
+        let dsh_home = config::get_dsh_data_path(app_handle);
+        #[cfg(windows)]
+        {
+            write_if_ours!(SHIM_CMD_NAME, build_cmd_shim(&app_dir, &dsh_home));
+            write_if_ours!(SHIM_PS1_NAME, build_ps1_shim(&app_dir, &dsh_home));
+        }
+        #[cfg(not(windows))]
+        {
+            write_if_ours!(SHIM_SH_NAME, build_sh_shim(&app_dir, &dsh_home));
+        }
+    }
+    #[cfg(debug_assertions)]
+    log::debug!("debug build: skip dsh shim write (shared user state kept for release)");
+
+    // pnpm shim 不烘焙 $DSH_HOME（仅绑定 bundle 目录与“用户 pnpm 优先”逻辑），
+    // 内容与生产完全一致，开发构建也可写入——dsh plugin 子进程经 PATH 解析
+    // pnpm 依赖它，写它不污染任何共享数据。
     #[cfg(windows)]
     {
-        write_if_ours!(SHIM_CMD_NAME, build_cmd_shim(&app_dir, &dsh_home));
-        write_if_ours!(SHIM_PS1_NAME, build_ps1_shim(&app_dir, &dsh_home));
         write_if_ours!(PNPM_SHIM_CMD_NAME, build_pnpm_cmd_shim(&app_dir));
         write_if_ours!(PNPM_SHIM_PS1_NAME, build_pnpm_ps1_shim(&app_dir));
     }
     #[cfg(not(windows))]
     {
-        write_if_ours!(SHIM_SH_NAME, build_sh_shim(&app_dir, &dsh_home));
         write_if_ours!(PNPM_SHIM_SH_NAME, build_pnpm_sh_shim(&app_dir));
         // 仅对本应用生成/覆盖过的 shim 设置可执行位；保留的用户文件不动
-        for name in [SHIM_SH_NAME, PNPM_SHIM_SH_NAME] {
+        let chmod_names: &[&str] = if cfg!(debug_assertions) {
+            &[PNPM_SHIM_SH_NAME]
+        } else {
+            &[SHIM_SH_NAME, PNPM_SHIM_SH_NAME]
+        };
+        for name in chmod_names {
             let path = bin_dir.join(name);
             if path.is_file() && !is_foreign_file(&path) {
                 use std::os::unix::fs::PermissionsExt;

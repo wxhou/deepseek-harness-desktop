@@ -159,6 +159,15 @@ pub fn has_owned_process() -> bool {
 /// 的 node 进程可判定为本应用的服务实例——路径精确匹配不会误杀用户其它 node
 /// 程序，因此可安全地全部结束（taskkill /T /F）。
 pub fn terminate_stale_harness_processes(app_handle: &tauri::AppHandle) {
+    // 开发（debug）构建不做按路径清扫：生产与开发共用同一个 `dependencies/dsh`
+    // 安装目录（核心共用），按命令行路径匹配会把同时运行的 release 服务进程
+    // 一并结束——`pnpm tauri dev` 每次后端重编译都会重启应用并触发清扫，导致
+    // "release 版 DSH 被 dev 版热更新杀掉"。开发构建自身的崩溃残留仍由
+    // `.harness.pid` 标记（位于独立数据目录 `.dsh.dev`，PID+端口双重确认）
+    // 精确回收。
+    if cfg!(debug_assertions) {
+        return;
+    }
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;

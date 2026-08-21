@@ -271,24 +271,39 @@ fn user_home_dir() -> Option<PathBuf> {
 /// Harness 用户数据目录（$DSH_HOME）。
 ///
 /// 与官方 dsh（`${DSH_HOME:-$HOME/.dsh}`）保持一致：
-/// - 环境变量 `DSH_HOME` 非空时优先使用；
-/// - 否则默认 `~/.dsh`（Windows `%USERPROFILE%\.dsh`，Unix `$HOME/.dsh`）。
-///
-/// 桌面版与官方 node 安装共用同一份数据：两边数据互通、无需切换。
+/// - 环境变量 `DSH_HOME` 非空时优先使用（用户显式指定优先于构建差异）；
+/// - 否则 release 构建默认 `~/.dsh`（Windows `%USERPROFILE%\.dsh`，Unix
+///   `$HOME/.dsh`，与官方 node 安装共用同一份数据）；
+/// - debug 构建默认 `~/.dsh.dev`：开发版与生产版同时运行时，会话、档案、
+///   插件与主题等数据互不干扰，也不会互相污染对方的会话（核心目录
+///   `dependencies/` 仍共用同一份安装）。
 pub fn get_dsh_data_path<R: Runtime>(_app_handle: &AppHandle<R>) -> PathBuf {
     if let Some(home) = std::env::var_os("DSH_HOME") {
         if !home.is_empty() {
             return PathBuf::from(home);
         }
     }
+    let dir_name = if cfg!(debug_assertions) {
+        DSH_HOME_DEV_DIR_NAME
+    } else {
+        DSH_HOME_DIR_NAME
+    };
     user_home_dir()
-        .map(|home| home.join(".dsh"))
-        .unwrap_or_else(|| PathBuf::from(".dsh"))
+        .map(|home| home.join(dir_name))
+        .unwrap_or_else(|| PathBuf::from(dir_name))
 }
 
 /// dsh 服务日志文件路径
-pub fn get_service_log_path(app_handle: &tauri::AppHandle) -> PathBuf {
-    get_base_dir(app_handle).join("logs").join("dsh-web.log")
+///
+/// debug 构建写入独立的 `dsh-web.dev.log`：开发版每次启动都会轮转日志，若与
+/// 生产共用同一个文件，会把正在运行的生产版日志记录轮转覆盖掉。
+pub fn get_service_log_path<R: Runtime>(app_handle: &AppHandle<R>) -> PathBuf {
+    let name = if cfg!(debug_assertions) {
+        "dsh-web.dev.log"
+    } else {
+        "dsh-web.log"
+    };
+    get_base_dir(app_handle).join("logs").join(name)
 }
 
 /// 捆绑的 Node.js 版本号
@@ -371,24 +386,15 @@ pub struct RuntimeInfo {
 }
 
 pub fn runtime_info<R: Runtime>(app: &AppHandle<R>, port: u16) -> RuntimeInfo {
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_default();
-
     RuntimeInfo {
         app_version: app.package_info().version.to_string(),
         dsh_version: get_dsh_version(app),
         node_version: get_active_node_version(),
         service_url: get_dsh_service_url(port),
-        // 用户数据所在目录 = 官方 $DSH_HOME（~/.dsh），不再是 AppData
+        // 用户数据所在目录 = $DSH_HOME（release 为官方 ~/.dsh，debug 为独立
+        // ~/.dsh.dev，见 get_dsh_data_path），不再是 AppData
         data_dir: get_dsh_data_path(app).to_string_lossy().into_owned(),
-        log_path: PathBuf::from(&app_data_dir)
-            .join("logs")
-            .join("dsh-web.log")
-            .to_string_lossy()
-            .into_owned(),
+        log_path: get_service_log_path(app).to_string_lossy().into_owned(),
         platform: env::consts::OS.to_string(),
         arch: env::consts::ARCH.to_string(),
     }

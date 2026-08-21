@@ -30,6 +30,14 @@ fn legacy_dsh_home(app_handle: &AppHandle) -> PathBuf {
 /// 幂等：成功后会删除旧目录并置位 `.store.dat` 标记，重复调用为 no-op。
 /// 失败返回 Err（不删除旧数据），由调用方决定是否阻断——本应用选择仅告警。
 pub fn migrate(app_handle: &AppHandle) -> Result<(), String> {
+    // 开发（debug）构建不执行旧数据迁移：旧版 AppData `data/dsh` 是生产的
+    // 数据（release 尚未完成迁移时会把它整目录搬进开发版的 `.dsh.dev`，
+    // 导致 release 丢失数据）。开发构建的数据目录从一开始就是独立的 `.dsh.dev`。
+    if cfg!(debug_assertions) {
+        log::debug!("skipping legacy data migration in debug build (data belongs to release)");
+        return Ok(());
+    }
+
     let setting = config::get_store_dat_setting(app_handle);
     if setting.dsh_home_migrated {
         log::debug!("dsh home migration already done, skipping");

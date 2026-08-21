@@ -52,6 +52,16 @@ pub fn ensure(app_handle: &AppHandle) -> Result<CliLinkStatus, String> {
 
     let bin_dir = get_bin_dir(app_handle);
     write_shims(app_handle, &bin_dir)?;
+    // 开发（debug）构建不注册用户 PATH：bin 目录与 PATH 是共享的用户级状态，
+    // 由生产版维护；开发版只写 shim（debug 下仅 pnpm shim，见 write_shims），
+    // 既不增删 PATH 条目、也不覆盖生产的 dsh shim，避免干扰生产命令行集成。
+    if cfg!(debug_assertions) {
+        log::info!(
+            "dsh/pnpm CLI shims ensured at {} (debug build: PATH registration skipped)",
+            bin_dir.display()
+        );
+        return Ok(get_status(app_handle));
+    }
     register_path(app_handle)?;
 
     log::info!("dsh/pnpm CLI links ensured at {}", bin_dir.display());
@@ -71,6 +81,12 @@ pub fn ensure_shims(app_handle: &AppHandle) -> Result<(), String> {
 
 /// 禁用并清理命令行集成（删除 shim + 移除 PATH 注册）
 pub fn remove(app_handle: &AppHandle) -> Result<CliLinkStatus, String> {
+    // 开发（debug）构建不删除 shim、不注销 PATH：这些是共享的用户级状态，
+    // 由生产版维护——开发版执行清理会让正在运行的生产版命令行集成失效。
+    if cfg!(debug_assertions) {
+        log::info!("cli link removal skipped in debug build (shared user state kept)");
+        return Ok(get_status(app_handle));
+    }
     let bin_dir = get_bin_dir(app_handle);
 
     #[cfg(windows)]

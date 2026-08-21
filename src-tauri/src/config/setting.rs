@@ -79,9 +79,23 @@ impl Default for Setting {
     }
 }
 
+/// Store 持久化文件名：debug 构建与生产隔离（各自独立文件）。
+///
+/// store（端口、installed、active_core 等）属于「应用数据」而非共用核心——
+/// 生产默认 3080、开发默认 3081，共用一份 store 会让两边端口一路漂移
+/// （release 读到开发写入的 3081 后把 3080 让出，开发下次又从 3081 漂走）
+/// 并相互污染安装/核心等状态。
+fn store_dat_file_name() -> &'static str {
+    if cfg!(debug_assertions) {
+        STORE_DAT_DEV_FILE
+    } else {
+        STORE_DAT_FILE
+    }
+}
+
 pub fn set_store_dat_setting(app_handle: &AppHandle, setting: Setting) {
     let store = app_handle
-        .store(STORE_DAT_FILE)
+        .store(store_dat_file_name())
         .expect("Failed to load store");
     store.set(STORE_SETTING_KEY, serde_json::to_value(&setting).unwrap());
     store.save().expect("Failed to save store");
@@ -92,7 +106,7 @@ pub fn set_store_dat_setting(app_handle: &AppHandle, setting: Setting) {
 
 pub fn get_store_dat_setting(app_handle: &AppHandle) -> Setting {
     let store = app_handle
-        .store(STORE_DAT_FILE)
+        .store(store_dat_file_name())
         .expect("Failed to load store");
     let raw = store.get(STORE_SETTING_KEY);
     let value = raw.as_ref().and_then(|v| {

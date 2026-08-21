@@ -576,7 +576,8 @@ pub async fn clear_service_logs(app_handle: AppHandle) -> Result<(), String> {
 /// 读取运行日志（DSH 服务日志 + 桌面端 Rust 运行日志），格式化为便于
 /// 反馈/报障复制的纯文本块：`### 环境信息`、`### 服务日志` 与 `### 运行日志` 三段。
 ///
-/// 服务日志来自 `logs/dsh-web.log`，运行日志来自 `logs/desktop.log`
+/// 服务日志来自 `logs/dsh-web.log`（debug 构建为 `logs/dsh-web.dev.log`），
+/// 运行日志来自 `logs/desktop.log`
 /// （桌面端自身 `logger::init` 每次启动落盘，见 logger/mod.rs）。
 /// 每段取末尾最多 `MAX_LINES` 行，避免粘贴内容超出 GitHub issue 长度上限。
 #[tauri::command]
