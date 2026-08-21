@@ -7,7 +7,7 @@ import { listen } from '@tauri-apps/api/event'
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { If } from 'react-if-lite'
-import { ProgressPanel } from './progress-panel'
+import { PanelProgress } from './panel-progress'
 
 /**
  * 核心版本下载对话框：复用首次安装（setup）的 `install-progress` 事件流，
@@ -15,13 +15,13 @@ import { ProgressPanel } from './progress-panel'
  *
  * 用法（overlastic holder）：
  * ```tsx
- * const [dialog, openDownload] = useOverlay(CoreDownloadDialog, { type: 'holder' })
+ * const [dialog, openDownload] = useOverlay(DownloadCoreDialog, { type: 'holder' })
  * await openDownload({ tag, version, runDownload: (tag) => downloadCore(tag) })
  * ```
  * `runDownload` 由调用方注入（通常是 useDshCores 的 downloadCore），对话框负责
  * 监听进度事件并在结束后 resolve/reject。
  */
-export interface CoreDownloadDialogProps extends PropsWithOverlays {
+export interface DownloadCoreDialogProps extends PropsWithOverlays {
   /** 要下载的 release tag（如 `dsh-0.1.0-rc.8-32331963388`） */
   tag: string
   /** 展示用版本号 */
@@ -30,7 +30,7 @@ export interface CoreDownloadDialogProps extends PropsWithOverlays {
   runDownload: (tag: string) => Promise<HarnessCore>
 }
 
-export function CoreDownloadDialog(props: CoreDownloadDialogProps) {
+export function DownloadCoreDialog(props: DownloadCoreDialogProps) {
   const disclosure = useDisclosure({ props, delay: 300 })
 
   const { t } = useTranslation()
@@ -104,7 +104,7 @@ export function CoreDownloadDialog(props: CoreDownloadDialogProps) {
                 else={(
                   <div className="flex flex-col gap-3">
                     <p className="break-all font-mono text-xs leading-[1.7] text-danger">{errorMsg}</p>
-                    <ProgressPanel logs={logs} />
+                    <PanelProgress logs={logs} />
                   </div>
                 )}
               >
@@ -113,7 +113,7 @@ export function CoreDownloadDialog(props: CoreDownloadDialogProps) {
                     <Spinner size="sm" color="current" />
                     <span className="text-xs text-muted">{t('core.downloading_hint', { version: props.version })}</span>
                   </div>
-                  <ProgressPanel percentage={percentage} logs={logs} />
+                  <PanelProgress percentage={percentage} logs={logs} />
                 </div>
               </If>
             </AlertDialog.Body>

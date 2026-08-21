@@ -1,4 +1,3 @@
-import type { ReactNode } from 'react'
 import { ArrowRotateRight, ArrowUpRightFromSquare, ChevronRight, CircleInfo, Copy, Folder, Power, TrashBin } from '@gravity-ui/icons'
 import { Button, Chip, Description, Input, Link, ListBox, Select, Spinner, Surface, Switch, Tooltip } from '@heroui/react'
 import { useMutation, useQuery } from '@tanstack/react-query'
@@ -9,6 +8,7 @@ import { If } from 'react-if-lite'
 import { useStore } from 'valtio-define'
 import { store } from '@/store'
 import { toast } from '@/utils'
+import { InfoRow } from './info-row'
 
 export interface RuntimeInfo {
   app_version: string
@@ -38,7 +38,7 @@ export interface AppConfig {
 export function ConfigDebug() {
   const { t, i18n } = useTranslation()
   const { serviceRunning, busyAction, preinstall } = useStore(store.harness)
-  const { updateInfo } = useStore(store.updater)
+  const { updateInfo } = useStore(store.harnessUpdater)
 
   const [port, setPort] = useState<number>(3080)
 
@@ -60,17 +60,18 @@ export function ConfigDebug() {
     queryKey: ['cli_status'],
     queryFn: () => invoke<CliLinkStatus>('get_cli_link_status'),
   })
+
   const { data: logs, refetch: refreshLogs } = useQuery({
     queryKey: ['logs'],
     queryFn: () => invoke<string>('read_service_logs'),
-    refetchInterval: 5000,
+    refetchInterval: 2000,
   })
 
   const { mutate: onClearLogs } = useMutation({
     mutationFn: async () => {
       await invoke('clear_service_logs')
       await refreshLogs()
-      toast(t('messages.logs_cleared'), {})
+      toast(t('messages.logs_cleared'))
     },
   })
 
@@ -84,7 +85,7 @@ export function ConfigDebug() {
   const { mutate: onCopyServiceUrl } = useMutation({
     mutationFn: async () => {
       await invoke('copy_service_url')
-      toast(t('messages.copy_success'), {})
+      toast(t('messages.copy_success'))
     },
   })
 
@@ -92,13 +93,16 @@ export function ConfigDebug() {
     mutationFn: async (port: number) => {
       await invoke<AppConfig>('update_app_config', { port })
       await refreshConfig()
-      toast(t('messages.port_changed'), {
+      const key = toast(t('messages.port_changed'), {
         variant: 'accent',
         description: t('messages.port_restart_hint'),
         timeout: 10_000,
         actionProps: {
           children: t('app.restart'),
-          onPress: () => store.harness.restart(),
+          onPress: () => {
+            store.harness.restart()
+            toast.close(key)
+          },
         },
       })
     },
@@ -107,6 +111,7 @@ export function ConfigDebug() {
   const { mutate: onRevealDataDir } = useMutation({
     mutationFn: () => invoke('reveal_data_dir'),
   })
+
   return (
     <div className="space-y-3">
       <div className="space-y-1.5">
@@ -183,12 +188,12 @@ export function ConfigDebug() {
       </div>
       <div className="border-t border-line/30" />
       <div>
-        <dl className="space-y-1">
+        <div className="space-y-1">
           <InfoRow term={t('ui.current_version')}>{info?.app_version ?? '-'}</InfoRow>
           <InfoRow term={t('ui.dsh_version')}>
             <span>{info?.dsh_version ?? '-'}</span>
             <If cond={updateInfo}>
-              <Link className="ml-2 text-[10px] text-accent" onClick={store.updater.showToast}>
+              <Link className="ml-2 text-[10px] text-accent" onClick={store.harnessUpdater.showToast}>
                 {t('menu.new_version')}
                 <ChevronRight className="scale-75" />
               </Link>
@@ -200,8 +205,8 @@ export function ConfigDebug() {
             {info ? `${info.platform} / ${info.arch}` : '-'}
           </InfoRow>
           <div className="flex items-center justify-between gap-2 text-xs">
-            <dt className="shrink-0 min-w-[30%] text-muted font-medium">{t('ui.data_dir')}</dt>
-            <dd className="min-w-0 flex items-center gap-1">
+            <span className="shrink-0 min-w-[30%] text-muted font-medium">{t('ui.data_dir')}</span>
+            <span className="min-w-0 flex items-center gap-1">
               <span className="truncate font-mono text-[11px] text-muted/80" title={info?.data_dir ?? '-'}>
                 {info?.data_dir ?? '-'}
               </span>
@@ -215,9 +220,9 @@ export function ConfigDebug() {
               >
                 <Folder className="size-3.5" />
               </Button>
-            </dd>
+            </span>
           </div>
-        </dl>
+        </div>
       </div>
       <div className="border-t border-line/30" />
       <div className="space-y-1.5">
@@ -227,6 +232,7 @@ export function ConfigDebug() {
             <Switch
               isSelected={cliStatus?.enabled ?? false}
               onChange={onToggleCliLink}
+              aria-label={t('ui.cli_link_enabled')}
             >
               <Switch.Content>
                 <Switch.Control>
@@ -310,6 +316,7 @@ export function ConfigDebug() {
             selectedKey={i18n.language}
             onSelectionChange={key => i18n.changeLanguage(String(key))}
             className="w-[80px]"
+            aria-label={t('ui.language')}
           >
             <Select.Trigger className="rounded-md min-h-8! h-8 py-0 items-center">
               <Select.Value />
@@ -338,19 +345,10 @@ export function ConfigDebug() {
               variant="ghost"
               onPress={async () => {
                 await navigator.clipboard.writeText(logs || '')
-                toast(t('messages.logs_copied'), {})
+                toast(t('messages.logs_copied'))
               }}
             >
               <Copy className="scale-80" />
-            </Button>
-            <Button
-              isIconOnly
-              size="sm"
-              className="rounded-md size-6"
-              variant="ghost"
-              onPress={() => refreshLogs()}
-            >
-              <ArrowRotateRight className="scale-80" />
             </Button>
             <Button
               isIconOnly
@@ -367,15 +365,6 @@ export function ConfigDebug() {
           {logs || t('ui.no_logs')}
         </Surface>
       </div>
-    </div>
-  )
-}
-
-function InfoRow({ term, children }: { term: string, children: ReactNode }) {
-  return (
-    <div className="flex items-center justify-between gap-2 text-xs py-0.5">
-      <dt className="shrink-0 text-muted font-medium">{term}</dt>
-      <dd className="min-w-0 break-all text-ink text-right font-mono">{children}</dd>
     </div>
   )
 }

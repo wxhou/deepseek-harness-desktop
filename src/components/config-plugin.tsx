@@ -1,15 +1,20 @@
 import { CircleExclamation } from '@gravity-ui/icons'
-import { Button, Card, Chip, Label, Spinner, Tooltip, Typography } from '@heroui/react'
+import { Button, Chip, Label, Spinner, Tooltip } from '@heroui/react'
 import { useOverlay } from '@overlastic/react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { invoke } from '@tauri-apps/api/core'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { If } from 'react-if-lite'
+import { store } from '@/store'
 import { toast } from '@/utils'
 import { useDshPlugins } from '../hooks/use-dsh-plugins'
-import { Dialog } from './dialog'
 import { Ellipsis as TextEllipsis } from './ellipsis'
+import { Empty } from './empty'
+import { Item } from './item'
+import { Modal } from './modal'
+import { PanelHeader } from './panel-header'
+import { PanelState } from './panel-state'
 
 /**
  * 「插件」面板：展示已安装插件，作为「插件出问题时」的卸载/升级入口。
@@ -27,7 +32,7 @@ export function ConfigPlugin() {
   const queryClient = useQueryClient()
   const { plugins, loading, error } = useDshPlugins()
 
-  const [dialogHolder, openDialog] = useOverlay(Dialog, { type: 'holder' })
+  const [dialogHolder, openDialog] = useOverlay(Modal, { type: 'holder' })
 
   /** 行内操作进行中状态：id + 操作类型（update/remove），保证单例运行 */
   const [busy, setBusy] = useState<{ id: string, action: 'update' | 'remove' } | null>(null)
@@ -74,22 +79,30 @@ export function ConfigPlugin() {
     }
     finally {
       setBusy(null)
+      // 插件操作会停掉运行中的服务（即使失败也已被后端停止），这里统一拉起服务并
+      // 同步前端运行状态，避免留下「服务已死但界面仍显示运行中」的过期状态。
+      void store.harness.restart()
     }
   }
 
   async function onRemove(id: string, name: string) {
     if (busy)
       return
-    await openDialog({
-      status: 'danger',
-      title: t('plugins.remove_confirm_title'),
-      description: (
-        <p>
-          {t('plugins.remove_confirm_desc', { name })}
-        </p>
-      ),
-      confirmText: t('plugins.uninstall'),
-    })
+    try {
+      await openDialog({
+        status: 'danger',
+        title: t('plugins.remove_confirm_title'),
+        description: (
+          <p>
+            {t('plugins.remove_confirm_desc', { name })}
+          </p>
+        ),
+        confirmText: t('plugins.uninstall'),
+      })
+    }
+    catch {
+      return
+    }
     setBusy({ id, action: 'remove' })
     try {
       await remove.mutateAsync(id)
@@ -99,54 +112,28 @@ export function ConfigPlugin() {
     }
     finally {
       setBusy(null)
+      // 同上：卸载后统一拉起服务，避免服务被后端停止后前端状态过期。
+      void store.harness.restart()
     }
   }
 
   return (
     <div>
-      {/* 面板头：标题 + 说明 */}
-      <div className="space-y-2 sticky top-0 bg-canvas z-10 pb-3">
-        <Typography type="h4">
-          {t('plugins.title')}
-        </Typography>
-        <Typography color="muted" type="body-sm">
-          {t('plugins.panel_tooltip')}
-        </Typography>
-      </div>
+      <PanelHeader className="sticky top-0 bg-canvas z-10 pb-3" title={t('plugins.title')} description={t('plugins.panel_tooltip')} />
 
       {/* 加载 / 失败 / 空态 */}
-      <If
-        cond={!loading && error === ''}
-        else={(
-          <If
-            cond={loading}
-            else={(
-              <p className="rounded-md border border-danger/30 bg-danger/5 p-3 text-xs text-danger">
-                {t('plugins.error')}
-                ：
-                {error}
-              </p>
-            )}
-          >
-            <div className="flex items-center justify-center gap-2 p-4 text-xs text-muted">
-              <Spinner size="sm" color="current" />
-              {t('plugins.loading')}
-            </div>
-          </If>
-        )}
-      >
+      <PanelState loading={loading} error={error}>
         <If
           cond={plugins.length > 0}
           else={(
-            <p className="rounded-md border border-line bg-panel2/40 p-4 text-center text-xs text-muted">
-              {t('plugins.empty')}
-            </p>
+            <Empty>{t('plugins.empty')}</Empty>
           )}
         >
           <div className="space-y-3 flex-wrap gap-2">
             {plugins.map(plugin => (
-              <Card key={plugin.id} className="rounded-md bg-panel2 py-3">
-                <Card.Content className="flex flex-row items-center justify-between">
+              <Item
+                key={plugin.id}
+                left={(
                   <div className="min-w-0">
                     <div className="flex min-w-0 items-center gap-1">
                       <If cond={plugin.error != null}>
@@ -187,8 +174,9 @@ export function ConfigPlugin() {
                       </TextEllipsis>
                     </If>
                   </div>
-
-                  <div className="flex shrink-0 items-center gap-1.5">
+                )}
+                right={(
+                  <>
                     {/* 更新入口仅在插件异常时显示（需求 2：异常插件的修复入口） */}
                     <If cond={plugin.error != null}>
                       <Chip
@@ -216,13 +204,13 @@ export function ConfigPlugin() {
                         {t('plugins.uninstall')}
                       </span>
                     </Chip>
-                  </div>
-                </Card.Content>
-              </Card>
+                  </>
+                )}
+              />
             ))}
           </div>
         </If>
-      </If>
+      </PanelState>
 
       {dialogHolder}
     </div>

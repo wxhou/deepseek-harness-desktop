@@ -1,5 +1,5 @@
 import { Plus } from '@gravity-ui/icons'
-import { Button, Card, Checkbox, Chip, Description, Input, Label, Typography } from '@heroui/react'
+import { Button, Checkbox, Chip, Description, Input, Label } from '@heroui/react'
 import { useOverlay } from '@overlastic/react'
 import { useState } from 'react'
 
@@ -8,8 +8,11 @@ import { If } from 'react-if-lite'
 import { store } from '@/store'
 import { toast } from '@/utils'
 import { useDshProfiles } from '../hooks/use-dsh-profiles'
-import { Dialog } from './dialog'
 import { Ellipsis } from './ellipsis'
+import { Item } from './item'
+import { Modal } from './modal'
+import { PanelHeader } from './panel-header'
+import { PanelState } from './panel-state'
 
 export function ConfigProfile() {
   /**
@@ -22,7 +25,7 @@ export function ConfigProfile() {
    */
   const { profiles, loading, error, createProfile, activateProfile, removeProfile, busy } = useDshProfiles()
 
-  const [dialogHolder, openDialog] = useOverlay(Dialog, { type: 'holder' })
+  const [dialogHolder, openDialog] = useOverlay(Modal, { type: 'holder' })
 
   const { t } = useTranslation()
   const [creating, setCreating] = useState(false)
@@ -32,24 +35,32 @@ export function ConfigProfile() {
     const target = profiles.find(p => p.id === id)
     if (!target || target.active || busy)
       return
-    await openDialog({
-      status: 'warning',
-      title: t('profiles.activate_confirm_title'),
-      description: (
-        <p>
-          {t('profiles.activate_confirm_desc', { name: target.name })}
-        </p>
-      ),
-    })
+    try {
+      await openDialog({
+        status: 'warning',
+        title: t('profiles.activate_confirm_title'),
+        description: (
+          <p>
+            {t('profiles.activate_confirm_desc', { name: target.name })}
+          </p>
+        ),
+      })
+    }
+    catch {
+      return
+    }
     try {
       await activateProfile(id)
-      toast(t('profiles.activate_toast', { name: target.name }), {
+      const key = toast(t('profiles.activate_toast', { name: target.name }), {
         variant: 'accent',
         description: t('profiles.activate_restart_hint'),
         timeout: 10_000,
         actionProps: {
           children: t('app.restart'),
-          onPress: () => store.harness.restart(),
+          onPress: () => {
+            store.harness.restart()
+            toast.close(key)
+          },
         },
       })
     }
@@ -89,16 +100,21 @@ export function ConfigProfile() {
     const target = profiles.find(p => p.id === id)
     if (!target || busy)
       return
-    await openDialog({
-      title: t('profiles.remove_confirm_title'),
-      status: 'danger',
-      description: (
-        <p>
-          {t('profiles.remove_confirm_desc', { name: target.name })}
-        </p>
-      ),
-      confirmText: t('profiles.remove_confirm'),
-    })
+    try {
+      await openDialog({
+        title: t('profiles.remove_confirm_title'),
+        status: 'danger',
+        description: (
+          <p>
+            {t('profiles.remove_confirm_desc', { name: target.name })}
+          </p>
+        ),
+        confirmText: t('profiles.remove_confirm'),
+      })
+    }
+    catch {
+      return
+    }
     try {
       // 删除成功后列表已移除该档案，UI 本身就有变化，不再弹成功 toast
       await removeProfile(id)
@@ -111,41 +127,17 @@ export function ConfigProfile() {
 
   return (
     <div className="space-y-3">
-      {/* 面板头：标题 + 说明 [i] */}
-      <div className="space-y-2">
-        <Typography type="h4">
-          {t('profiles.title')}
-        </Typography>
-        <Typography color="muted" type="body-sm">
-          {t('profiles.tooltip')}
-        </Typography>
-      </div>
+      <PanelHeader title={t('profiles.title')} description={t('profiles.tooltip')} />
 
       {/* 加载 / 失败 / 列表 */}
-      <If
-        cond={!loading && error === ''}
-        else={(
-          <If
-            cond={loading}
-            else={(
-              <p className="rounded-md border border-danger/30 bg-danger/5 p-3 text-xs text-danger">
-                {t('plugins.error')}
-                ：
-                {error}
-              </p>
-            )}
-          >
-            <div className="flex items-center justify-center gap-2 p-4 text-xs text-muted">
-              {t('plugins.loading')}
-            </div>
-          </If>
-        )}
-      >
+      <PanelState loading={loading} error={error}>
         <div className="space-y-3 flex-wrap gap-2">
           {profiles.map(profile => (
-            <Card key={profile.id} className="bg-panel2 rounded-md py-3 cursor-pointer" onClick={() => activate(profile.id)}>
-              <Card.Content className="flex flex-row justify-between">
-                <div className="flex items-center gap-1">
+            <Item
+              key={profile.id}
+              onClick={() => activate(profile.id)}
+              left={(
+                <>
                   <Label className="min-w-0 truncate text-sm font-medium text-ink">
                     {profile.name}
                   </Label>
@@ -154,8 +146,10 @@ export function ConfigProfile() {
                       <Ellipsis>{t('profiles.default_desc')}</Ellipsis>
                     </Description>
                   </If>
-                </div>
-                <div className="flex items-center gap-2">
+                </>
+              )}
+              right={(
+                <>
                   <Checkbox
                     isSelected={profile.active}
                     isDisabled={busy}
@@ -182,9 +176,9 @@ export function ConfigProfile() {
                       {t('profiles.remove')}
                     </Chip>
                   </If>
-                </div>
-              </Card.Content>
-            </Card>
+                </>
+              )}
+            />
           ))}
           {/* 新建档案：内联输入 or 触发入口 */}
           <If
@@ -229,7 +223,7 @@ export function ConfigProfile() {
             </Button>
           </If>
         </div>
-      </If>
+      </PanelState>
       {dialogHolder}
     </div>
   )

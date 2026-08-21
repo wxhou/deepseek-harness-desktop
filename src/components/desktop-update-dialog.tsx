@@ -6,7 +6,8 @@ import { useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { If } from 'react-if-lite'
 import { useStore } from 'valtio-define'
-import { desktopUpdate } from '../store/modules/desktop-update'
+import { store } from '@/store'
+import { InfoRow } from './info-row'
 
 export interface DesktopUpdateDialogProps extends PropsWithOverlays {}
 
@@ -18,10 +19,10 @@ export interface DesktopUpdateDialogProps extends PropsWithOverlays {}
  * 下载由 store 驱动：对话框内「立即更新」触发 `downloadAndOpen`；
  * 外部触发（右下角 toast）下载完成并打开安装包后，对话框依据 downloading 回落自动关闭。
  */
-export default function DesktopUpdateDialog(props: DesktopUpdateDialogProps) {
+export function DesktopUpdateDialog(props: DesktopUpdateDialogProps) {
   const disclosure = useDisclosure({ props })
   const { t } = useTranslation()
-  const { updateInfo, downloading, downloadProgress } = useStore(desktopUpdate)
+  const { updateInfo, downloading, downloadProgress } = useStore(store.desktopUpdater)
   const prevDownloadingRef = useRef(false)
 
   // 外部触发下载（如右下角 toast「立即更新」）完成并打开安装包后，自动关闭对话框；
@@ -33,15 +34,15 @@ export default function DesktopUpdateDialog(props: DesktopUpdateDialogProps) {
   }, { immediate: true })
 
   async function handlePrimary() {
-    const info = desktopUpdate.updateInfo
+    const info = store.desktopUpdater.updateInfo
     if (!info)
       return
     if (info.downloaded) {
-      await desktopUpdate.openInstaller(info.path)
+      await store.desktopUpdater.openInstaller(info.path)
       disclosure.cancel()
     }
     else {
-      await desktopUpdate.downloadAndOpen()
+      await store.desktopUpdater.downloadAndOpen()
     }
   }
 
@@ -57,14 +58,8 @@ export default function DesktopUpdateDialog(props: DesktopUpdateDialogProps) {
             <Modal.Body className="space-y-3">
               <If cond={updateInfo != null}>
                 <div className="space-y-1.5">
-                  <div className="flex items-center justify-between text-sm">
-                    <span className="text-muted">{t('ui.current_version')}</span>
-                    <span className="text-ink font-medium">{updateInfo?.currentVersion}</span>
-                  </div>
-                  <div className="flex items-center justify-between text-sm">
-                    <span className="text-muted">{t('update.new_version_label')}</span>
-                    <span className="text-ink font-medium">{updateInfo?.version}</span>
-                  </div>
+                  <InfoRow term={t('ui.current_version')}>{updateInfo?.currentVersion}</InfoRow>
+                  <InfoRow term={t('update.new_version_label')}>{updateInfo?.version}</InfoRow>
                   <If cond={updateInfo?.downloaded}>
                     <Description className="text-xs">
                       {t('update.desktop_downloaded')}

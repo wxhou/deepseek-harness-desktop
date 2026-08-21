@@ -1,5 +1,6 @@
 import type { PropsWithOverlays } from '@overlastic/react'
 import { Cpu, PersonPencil, Puzzle, Wrench } from '@gravity-ui/icons'
+import { useEventBus } from '@hairy/react-lib'
 import { cn, Modal } from '@heroui/react'
 import { useDisclosure } from '@overlastic/react'
 import { useState } from 'react'
@@ -15,6 +16,7 @@ export interface ConfigDialogProps extends PropsWithOverlays {}
 export function ConfigDialog(props: ConfigDialogProps) {
   const disclosure = useDisclosure({ props })
   const { t } = useTranslation()
+
   const navs = [
     { label: t('config.debug'), value: 'debug', icon: Wrench },
     { label: t('config.profiles'), value: 'profiles', icon: PersonPencil },
@@ -23,6 +25,9 @@ export function ConfigDialog(props: ConfigDialogProps) {
   ]
 
   const [activeTab, setActiveTab] = useState('debug')
+
+  useEventBus('config:dialog:hidden').on(disclosure.cancel)
+
   return (
     <Modal isOpen={disclosure.visible} onOpenChange={disclosure.cancel}>
       <Modal.Backdrop>

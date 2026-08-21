@@ -5,7 +5,7 @@ import { AlertDialog, Button } from '@heroui/react'
 import { useDisclosure } from '@overlastic/react'
 import { useTranslation } from 'react-i18next'
 
-export interface DialogProps extends PropsWithOverlays {
+export interface ModalProps extends PropsWithOverlays {
   status: AlertDialogStatus
   title?: string
   description?: ReactNode
@@ -14,7 +14,7 @@ export interface DialogProps extends PropsWithOverlays {
   confirmText?: string
 }
 
-export function Dialog(props: DialogProps) {
+export function Modal(props: ModalProps) {
   const disclosure = useDisclosure({ props })
   const { t } = useTranslation()
 

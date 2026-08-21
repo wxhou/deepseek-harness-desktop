@@ -1,6 +1,6 @@
 import type { HarnessCore } from '../hooks/use-dsh-cores'
 import { ArrowRotateRight, CircleArrowDown as DownloadIcon, FolderOpen } from '@gravity-ui/icons'
-import { Button, Card, Checkbox, Chip, Description, Label, Spinner, Typography } from '@heroui/react'
+import { Button, Checkbox, Chip, Description, Label, Spinner } from '@heroui/react'
 import { useOverlay } from '@overlastic/react'
 import { invoke } from '@tauri-apps/api/core'
 import { useState } from 'react'
@@ -9,8 +9,12 @@ import { If } from 'react-if-lite'
 import { store } from '@/store'
 import { toast } from '@/utils'
 import { useDshCores } from '../hooks/use-dsh-cores'
-import { CoreDownloadDialog } from './core-download-dialog'
-import { Dialog } from './dialog'
+import { DownloadCoreDialog } from './download-core-dialog'
+import { Empty } from './empty'
+import { Item } from './item'
+import { Modal } from './modal'
+import { PanelHeader } from './panel-header'
+import { PanelState } from './panel-state'
 
 /**
  * 「核心」面板：管理 Harness 引擎来源与多版本。
@@ -27,8 +31,8 @@ import { Dialog } from './dialog'
  * - 每行展示核心入口（cli path，超长省略号 + 限制宽度）。
  */
 export function ConfigCore() {
-  const [dialogHolder, openDialog] = useOverlay(Dialog, { type: 'holder' })
-  const [downloadDialogHolder, openDownloadDialog] = useOverlay(CoreDownloadDialog, { type: 'holder' })
+  const [dialogHolder, openDialog] = useOverlay(Modal, { type: 'holder' })
+  const [downloadDialogHolder, openDownloadDialog] = useOverlay(DownloadCoreDialog, { type: 'holder' })
 
   const { t } = useTranslation()
   const { cores, loading, error, setActiveCore, updateLocalCore, downloadCore, removeCore, busy } = useDshCores()
@@ -56,24 +60,32 @@ export function ConfigCore() {
   async function onActivate(core: HarnessCore) {
     if (core.active || busy || !core.present)
       return
-    await openDialog({
-      status: 'warning',
-      title: t('core.switch_confirm_title'),
-      description: (
-        <p>
-          {t('core.switch_confirm_desc', { version: displayVersion(core) })}
-        </p>
-      ),
-    })
+    try {
+      await openDialog({
+        status: 'warning',
+        title: t('core.switch_confirm_title'),
+        description: (
+          <p>
+            {t('core.switch_confirm_desc', { version: displayVersion(core) })}
+          </p>
+        ),
+      })
+    }
+    catch {
+      return
+    }
     try {
       await runBusy(core.id, () => setActiveCore(core.id))
-      toast(t('core.activate_toast', { version: displayVersion(core) }), {
+      const key = toast(t('core.activate_toast', { version: displayVersion(core) }), {
         variant: 'accent',
         description: t('core.switch_restart_hint'),
         timeout: 10_000,
       })
-      // 需求 5：切换核心后自动重启服务
+      // 需求 5：切换核心后自动重启服务；重启结束后收起提示 toast。
+      // 重启失败已由应用错误态呈现，这里静默吞掉以免重复弹错。
       void store.harness.restart()
+        .then(() => toast.close(key))
+        .catch(() => {})
     }
     catch (err) {
       console.error('[ConfigCore] switch failed:', err)
@@ -116,16 +128,21 @@ export function ConfigCore() {
   async function onRemove(core: HarnessCore) {
     if (busy)
       return
-    await openDialog({
-      status: 'danger',
-      title: t('core.remove_confirm_title'),
-      description: (
-        <p>
-          {t('core.remove_confirm_desc', { version: displayVersion(core) })}
-        </p>
-      ),
-      confirmText: t('core.uninstall'),
-    })
+    try {
+      await openDialog({
+        status: 'danger',
+        title: t('core.remove_confirm_title'),
+        description: (
+          <p>
+            {t('core.remove_confirm_desc', { version: displayVersion(core) })}
+          </p>
+        ),
+        confirmText: t('core.uninstall'),
+      })
+    }
+    catch {
+      return
+    }
     try {
       await runBusy(core.id, () => removeCore(core.id))
       toast(t('core.uninstalled_toast', { version: displayVersion(core) }), {})
@@ -155,134 +172,106 @@ export function ConfigCore() {
 
   return (
     <div className="space-y-3">
-      {/* 面板头：标题 + 说明 */}
-      <div className="space-y-2">
-        <Typography type="h4">
-          {t('core.title')}
-        </Typography>
-        <Typography color="muted" type="body-sm">
-          {t('core.tooltip')}
-        </Typography>
-      </div>
+      <PanelHeader title={t('core.title')} description={t('core.tooltip')} />
 
       {/* 加载 / 失败 / 列表 */}
-      <If
-        cond={!loading && error === ''}
-        else={(
-          <If
-            cond={loading}
-            else={(
-              <p className="rounded-md border border-danger/30 bg-danger/5 p-3 text-xs text-danger">
-                {t('plugins.error')}
-                ：
-                {error}
-              </p>
-            )}
-          >
-            <div className="flex items-center justify-center gap-2 p-4 text-xs text-muted">
-              <Spinner size="sm" color="current" />
-              {t('plugins.loading')}
-            </div>
-          </If>
-        )}
-      >
+      <PanelState loading={loading} error={error}>
         <div className="space-y-3 flex-wrap gap-2">
           {rows.map(core => (
-            <Card
+            <Item
               key={core.id}
-              className={`rounded-md bg-panel2 py-3${core.present && !core.active ? ' cursor-pointer' : ''}`}
-              onClick={() => onActivate(core)}
-            >
-              <Card.Content className="flex flex-col gap-1.5">
-                <div className="flex flex-row items-center justify-between">
-                  <div className="flex min-w-0 items-center gap-1">
-                    <Label className="min-w-0 truncate font-mono text-sm font-medium text-ink">
-                      {displayVersion(core)}
-                    </Label>
-                    <If cond={core.source === 'local'}>
-                      <Chip size="sm" variant="soft" color="accent" className="shrink-0 font-medium">
-                        {t('core.local')}
-                      </Chip>
-                    </If>
-                    <If cond={core.source === 'app'}>
-                      <Chip size="sm" variant="soft" color="default" className="shrink-0 font-medium">
-                        {t('core.app')}
-                      </Chip>
-                    </If>
-                    {/* 已下载：Chip 右侧的文件夹图标，点击打开所在目录 */}
-                    <If cond={core.present}>
-                      <Button
-                        size="sm"
-                        variant="tertiary"
-                        className="h-6 w-6 shrink-0 rounded-md p-0"
-                        isDisabled={busy}
-                        aria-label={t('core.open_dir')}
-                        onClick={(event) => {
-                          event.stopPropagation()
-                          openCoreDir(core)
-                        }}
-                      >
-                        <FolderOpen className="size-3.5" />
-                      </Button>
-                    </If>
-                    <If cond={!core.present}>
-                      <Description className="min-w-0 text-xs text-muted">
-                        {t('core.not_downloaded')}
-                      </Description>
-                    </If>
-                  </div>
-
-                  <div className="flex shrink-0 items-center gap-2">
-                    {/* 已下载：切换（选中当前使用版本） */}
-                    <If cond={core.present}>
-                      <Checkbox
-                        isSelected={core.active}
-                        isDisabled={busy}
-                        aria-label={core.version || core.id}
-                        className="shrink-0"
-                      >
-                        <Checkbox.Content>
-                          <Checkbox.Control>
-                            <Checkbox.Indicator />
-                          </Checkbox.Control>
-                        </Checkbox.Content>
-                      </Checkbox>
-                    </If>
-                    {/* 未下载（app 版本）：下载入口（进度与日志在下载对话框内展示） */}
-                    <If cond={!core.present && core.source === 'app'}>
-                      <Button
-                        size="sm"
-                        variant="tertiary"
-                        className="h-7 rounded-md text-xs"
-                        isDisabled={busy}
-                        onClick={(event) => {
-                          event.stopPropagation()
-                          onDownload(core)
-                        }}
-                      >
-                        <DownloadIcon className="size-3.5" />
-                        {t('core.download')}
-                      </Button>
-                    </If>
-                    {/* 已下载且非激活（app 版本）：卸载入口 */}
-                    <If cond={core.present && !core.active && core.source === 'app'}>
-                      <Button
-                        size="sm"
-                        variant="tertiary"
-                        className="h-7 rounded-md text-xs"
-                        isDisabled={busy}
-                        onClick={(event) => {
-                          event.stopPropagation()
-                          onRemove(core)
-                        }}
-                      >
-                        <If cond={busyId === core.id} then={<Spinner size="sm" color="current" />} />
-                        {t('core.uninstall')}
-                      </Button>
-                    </If>
-                  </div>
-                </div>
-                {/* 本地核心更新入口 */}
+              onClick={core.present && !core.active ? () => onActivate(core) : undefined}
+              left={(
+                <>
+                  <Label className="min-w-0 truncate font-mono text-sm font-medium text-ink">
+                    {displayVersion(core)}
+                  </Label>
+                  <If cond={core.source === 'local'}>
+                    <Chip size="sm" variant="soft" color="accent" className="shrink-0 font-medium">
+                      {t('core.local')}
+                    </Chip>
+                  </If>
+                  <If cond={core.source === 'app'}>
+                    <Chip size="sm" variant="soft" color="default" className="shrink-0 font-medium">
+                      {t('core.app')}
+                    </Chip>
+                  </If>
+                  {/* 已下载：Chip 右侧的文件夹图标，点击打开所在目录 */}
+                  <If cond={core.present}>
+                    <Button
+                      size="sm"
+                      variant="tertiary"
+                      className="h-6 w-6 shrink-0 rounded-md p-0"
+                      isDisabled={busy}
+                      aria-label={t('core.open_dir')}
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        openCoreDir(core)
+                      }}
+                    >
+                      <FolderOpen className="size-3.5" />
+                    </Button>
+                  </If>
+                  <If cond={!core.present}>
+                    <Description className="min-w-0 text-xs text-muted">
+                      {t('core.not_downloaded')}
+                    </Description>
+                  </If>
+                </>
+              )}
+              right={(
+                <>
+                  {/* 已下载：切换（选中当前使用版本） */}
+                  <If cond={core.present}>
+                    <Checkbox
+                      isSelected={core.active}
+                      isDisabled={busy}
+                      aria-label={core.version || core.id}
+                      className="shrink-0"
+                    >
+                      <Checkbox.Content>
+                        <Checkbox.Control>
+                          <Checkbox.Indicator />
+                        </Checkbox.Control>
+                      </Checkbox.Content>
+                    </Checkbox>
+                  </If>
+                  {/* 未下载（app 版本）：下载入口（进度与日志在下载对话框内展示） */}
+                  <If cond={!core.present && core.source === 'app'}>
+                    <Button
+                      size="sm"
+                      variant="tertiary"
+                      className="h-7 rounded-md text-xs"
+                      isDisabled={busy}
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        onDownload(core)
+                      }}
+                    >
+                      <DownloadIcon className="size-3.5" />
+                      {t('core.download')}
+                    </Button>
+                  </If>
+                  {/* 已下载且非激活（app 版本）：卸载入口 */}
+                  <If cond={core.present && !core.active && core.source === 'app'}>
+                    <Button
+                      size="sm"
+                      variant="tertiary"
+                      className="h-7 rounded-md text-xs"
+                      isDisabled={busy}
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        onRemove(core)
+                      }}
+                    >
+                      <If cond={busyId === core.id} then={<Spinner size="sm" color="current" />} />
+                      {t('core.uninstall')}
+                    </Button>
+                  </If>
+                </>
+              )}
+              footer={(
+                // 本地核心更新入口（放在主行之后，避免与勾选/卸载操作混排）
                 <If cond={core.source === 'local' && core.present}>
                   <div className="flex justify-end">
                     <Button
@@ -300,17 +289,15 @@ export function ConfigCore() {
                     </Button>
                   </div>
                 </If>
-              </Card.Content>
-            </Card>
+              )}
+            />
           ))}
           {/* 本地核心提示：未检测到时说明如何安装 */}
           <If cond={!localCore?.present}>
-            <p className="rounded-md border border-line bg-panel2/40 p-3 text-xs text-muted">
-              {t('core.local_missing_hint')}
-            </p>
+            <Empty>{t('core.local_missing_hint')}</Empty>
           </If>
         </div>
-      </If>
+      </PanelState>
 
       {dialogHolder}
       {downloadDialogHolder}

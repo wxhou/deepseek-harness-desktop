@@ -6,7 +6,8 @@ import { invoke } from '@tauri-apps/api/core'
 import { useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useStore } from 'valtio-define'
-import { desktopUpdate } from '../store/modules/desktop-update'
+import { store } from '@/store'
+import { InfoRow } from './info-row'
 
 export interface DesktopAboutDialogProps extends PropsWithOverlays {}
 
@@ -16,14 +17,14 @@ export interface DesktopAboutDialogProps extends PropsWithOverlays {}
  * 使用 overlastic 命令式打开（`useOverlay(DesktopAboutDialog)`），
  * 打开时通过 store 的 `loadAbout` 拉取信息，关闭由 `disclosure.cancel` 完成。
  */
-export default function DesktopAboutDialog(props: DesktopAboutDialogProps) {
+export function DesktopAboutDialog(props: DesktopAboutDialogProps) {
   const disclosure = useDisclosure({ props })
   const { t } = useTranslation()
-  const { about } = useStore(desktopUpdate)
+  const { about } = useStore(store.desktopUpdater)
 
   useEffect(() => {
     if (disclosure.visible)
-      void desktopUpdate.loadAbout()
+      void store.desktopUpdater.loadAbout()
   }, [disclosure.visible])
 
   return (
@@ -44,16 +45,8 @@ export default function DesktopAboutDialog(props: DesktopAboutDialogProps) {
                 </Description>
               </div>
               <div className="space-y-1.5 border-t border-line/40 pt-3">
-                <div className="flex items-center justify-between text-sm">
-                  <span className="text-muted">{t('ui.current_version')}</span>
-                  <span className="text-ink font-medium">{about?.version ?? '-'}</span>
-                </div>
-                <div className="flex items-center justify-between text-sm">
-                  <span className="text-muted">{t('about.release_date')}</span>
-                  <span className="text-ink">
-                    {about?.published_at ? formatDate(about.published_at) : '-'}
-                  </span>
-                </div>
+                <InfoRow term={t('ui.current_version')}>{about?.version ?? '-'}</InfoRow>
+                <InfoRow term={t('about.release_date')}>{about?.published_at ? formatDate(about.published_at) : '-'}</InfoRow>
                 <div className="flex items-center justify-between text-sm border-t border-line/40 pt-2 ">
                   <span className="text-muted">{t('about.source_code')}</span>
                   <Button
