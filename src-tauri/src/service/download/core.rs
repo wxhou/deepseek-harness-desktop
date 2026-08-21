@@ -75,6 +75,11 @@ async fn download_with_retry<'a, R: Runtime>(
     log::info!("Starting file download: {}", url);
     validate_download_url(url)?;
 
+    // 只在整个下载开始时写一次 "Download <url>" 日志，之后进度由 detail/percentage
+    // 驱动：同一 URL 若随每个 50ms 进度 tick 重复写入，日志面板会把同一文件刷成
+    // 多条完全相同行（历史 issue：一个文件的下载任务却出现多条日志）。
+    tracker.update(0.0, String::new(), format!("Download {}", url));
+
     // 创建具备 User-Agent 的客户端
     let client = reqwest::Client::builder()
         .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (deepseek-harness-desktop)")
@@ -207,7 +212,9 @@ async fn download_attempt<'a, R: Runtime>(
                 received_total as f64 / 1_000_000.0,
                 total_size as f64 / 1_000_000.0
             ),
-            format!("Download {}", url),
+            // 进度阶段不再重复写 URL：仅由上面的 "Download <url>" 一行标识本次
+            // 下载，避免随进度 tick 产生大量重复日志（前端对空 log 直接忽略）。
+            String::new(),
         );
     }
 

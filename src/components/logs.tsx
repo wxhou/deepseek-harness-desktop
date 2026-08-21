@@ -3,6 +3,20 @@ import { useTranslation } from 'react-i18next'
 import { If } from 'react-if-lite'
 import { cn } from 'tailwind-variants'
 
+/** DSH 发行版 GitHub Release 下载 URL 前缀：日志展示时剥离，避免整段长 URL 占满一行 */
+const DSH_RELEASE_URL_PREFIX = 'https://github.com/hairyf/deepseek-harness-pkg/releases/download/'
+/** ghfast.top 镜像透传包装前缀（与官方 URL 拼接），同样剥离 */
+const DSH_MIRROR_URL_PREFIX = 'https://ghfast.top/'
+
+/**
+ * 精简下载日志行：把 GitHub Release 下载 URL 缩短为「版本 tag / 文件名」，
+ * 让日志里"正在下载的是什么"一目了然（如 `Download dsh-0.1.1-rc.1-32457794457/deepseek-harness-pkg-windows.zip`）。
+ * 用 split/join 代替 replaceAll 以保证各构建目标下行为一致。
+ */
+function formatLogLine(line: string): string {
+  return line.split(DSH_RELEASE_URL_PREFIX).join('').replace(DSH_MIRROR_URL_PREFIX, '')
+}
+
 /**
  * 日志面板：带边框的「› + 行」日志容器 + 空日志占位。
  * 供 panel-progress 与 preinstall-setup 的日志控制台共用；
@@ -39,7 +53,7 @@ export function Logs({ logs, limit = 100, header, className, bodyClassName }: Lo
             // eslint-disable-next-line react/no-array-index-key
             <p key={`${line}-${index}`} className="m-0 flex gap-2 overflow-hidden text-ellipsis whitespace-nowrap text-log-ink">
               <span className="shrink-0 text-accent select-none">›</span>
-              <span className="min-w-0 overflow-hidden text-ellipsis">{line}</span>
+              <span className="min-w-0 overflow-hidden text-ellipsis">{formatLogLine(line)}</span>
             </p>
           ))}
         </If>
