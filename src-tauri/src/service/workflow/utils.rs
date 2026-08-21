@@ -57,7 +57,7 @@ where
             for line in reader.lines() {
                 match line {
                     Ok(line) => {
-                        log::info!("[dsh::stdout]: {}", line);
+                        log::info!(target: "dsh", "{}", line);
                         append_log(&log_path, &line);
                     }
                     Err(e) => {
@@ -76,7 +76,7 @@ where
             for line in reader.lines() {
                 match line {
                     Ok(line) => {
-                        log::warn!("[dsh::stderr]: {}", line);
+                        log::warn!(target: "dsh", "{}", line);
                         append_log(&log_path, &line);
                     }
                     Err(e) => {

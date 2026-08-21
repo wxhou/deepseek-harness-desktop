@@ -1,216 +1,29 @@
-use log::{Level, LevelFilter, Metadata, Record};
+//! 统一日志底座 — `log` 外观代理 `tracing` 栈
+//!
+//! 目标：
+//! - 后端：`log::*`（业务，`dsh` target 表示 Harness 输出）→ `tracing` 经 `tracing_log::LogTracer` → `tracing-subscriber` + `tracing-appender`（non-blocking）+ `EnvFilter`
+//! - 前端：`console.*` 劫持 → `log_frontend`（`target: "frontend"`）→ 独立 `desktop.frontdesk.log`（标识 `frontend`，同格式）
+//! - 格式：`[YYYY-MM-DD HH:MM:SS.mmmZ] LEVEL target: message`（例 `INFO dsh:` / `INFO frontend:`）
+//! - 轮转：`desktop.log` + `desktop.frontdesk.log` 各 5MiB，保留 `.1 ~ .3`
+//! - 降噪：`reqwest`/`hyper` 默认 `warn`，可通过 `RUST_LOG=reqwest=debug` 覆盖
+
 use std::fs::{File, OpenOptions};
-use std::io::Write;
+use std::io::{self, Write};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
-/// 日志级别对应数值（数值越大，日志越不敏感/级别越高）
-const TRACE: u8 = 0;
-const DEBUG: u8 = 1;
-const INFO: u8 = 2;
-const WARN: u8 = 3;
-const ERROR: u8 = 4;
-const OFF: u8 = 5;
-
-/// 与 tauri.conf.json 的 identifier 保持一致。logger 初始化早于 AppHandle 可用，
-/// 日志文件路径需要自行按 Tauri app_data_dir 的规则（系统数据目录 + identifier）推导。
+use tracing_appender::non_blocking::{NonBlocking, WorkerGuard};
+use tracing_subscriber::fmt::time::OffsetTime;
+use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 const APP_IDENTIFIER: &str = "io.github.hairyf.deepseek-harness-desktop";
-/// 壳自身日志文件名（与 dsh 核心的 dsh-web.log 放同一 logs 目录）
 const LOG_FILE_NAME: &str = "desktop.log";
-/// 单文件超过该字节数即滚动，滚动后保留最近 3 个历史文件（desktop.log.1 ~ .3）
+const FRONTDESK_LOG_FILE_NAME: &str = "desktop.frontdesk.log";
 const MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
 const MAX_BACKUPS: usize = 3;
 
-/// 将 `log::Level` 转换为内部比较数值
-#[inline]
-const fn level_to_u8(level: Level) -> u8 {
-    match level {
-        Level::Trace => TRACE,
-        Level::Debug => DEBUG,
-        Level::Info => INFO,
-        Level::Warn => WARN,
-        Level::Error => ERROR,
-    }
-}
+static FILE_GUARD: OnceLock<WorkerGuard> = OnceLock::new();
+static FRONTDESK_WRITER: OnceLock<Arc<Mutex<SizeRotatingWriter>>> = OnceLock::new();
 
-/// 模块级过滤规则
-struct FilterRule {
-    target: String,
-    level: u8,
-}
-
-/// 第三方网络库默认降噪规则：即使全局开启 Debug，也不打印 reqwest/hyper 的调试刷屏。
-/// 如果用户显式指定了类似 `RUST_LOG=reqwest=debug`，会优先覆盖此处的默认值。
-const DEFAULT_NOISY_RULES: &[(&str, u8)] = &[("reqwest", WARN), ("hyper", WARN)];
-
-static FILTER_LEVEL: AtomicU8 = AtomicU8::new(INFO);
-static FILTER_RULES: OnceLock<Vec<FilterRule>> = OnceLock::new();
-
-/// 文件 sink（懒初始化）：GUI 模式下 stdout/stderr 被丢弃，必须落盘才能在
-/// 桌面端自更新/启动异常后回溯流程（例如「自动重开是否走了安装自愈」）。
-/// 首次写日志时才创建目录与文件；创建失败后不再重复尝试，退回纯控制台输出。
-static FILE_SINK: Mutex<Option<File>> = Mutex::new(None);
-static FILE_SINK_TRIED: AtomicBool = AtomicBool::new(false);
-
-/// 自定义轻量级日志格式化器（控制台 + 文件双写）
-struct SimpleLogger;
-
-impl log::Log for SimpleLogger {
-    fn enabled(&self, metadata: &Metadata) -> bool {
-        let record_level = level_to_u8(metadata.level());
-        let current_level = FILTER_LEVEL.load(Ordering::Relaxed);
-        let module_path = metadata.target();
-
-        let mut effective_level = current_level;
-
-        if let Some(rules) = FILTER_RULES.get() {
-            // 1. 优先匹配显式配置的模块规则（匹配前缀最长者优先）
-            if let Some(rule) = most_specific_rule(module_path, rules) {
-                effective_level = rule.level;
-            } else {
-                // 2. 未显式配置时，对指定的第三方高噪库应用默认过滤规则
-                for &(target, default_level) in DEFAULT_NOISY_RULES {
-                    if module_matches(module_path, target) {
-                        effective_level = effective_level.max(default_level);
-                        break;
-                    }
-                }
-            }
-        }
-
-        record_level >= effective_level
-    }
-
-    fn log(&self, record: &Record) {
-        if !self.enabled(record.metadata()) {
-            return;
-        }
-
-        let module_path = record.module_path().unwrap_or("unknown");
-
-        // 控制台输出保持原有格式（`pnpm tauri dev` 时可见）
-        if record.level() == Level::Error {
-            let stderr = std::io::stderr();
-            let mut handle = stderr.lock();
-            let _ = writeln!(handle, "[{}]: {}", module_path, record.args());
-            let _ = handle.flush();
-        } else {
-            let stdout = std::io::stdout();
-            let mut handle = stdout.lock();
-            let _ = writeln!(handle, "[{}]: {}", module_path, record.args());
-            let _ = handle.flush();
-        }
-
-        // 文件输出：带时间戳与级别，便于与安装/启动时间线对齐
-        Self::write_file(&format!(
-            "[{}] [{}] [{}]: {}",
-            now_utc(),
-            record.level(),
-            module_path,
-            record.args()
-        ));
-    }
-
-    fn flush(&self) {
-        let _ = std::io::stdout().lock().flush();
-        let _ = std::io::stderr().lock().flush();
-        if let Ok(mut sink) = FILE_SINK.lock() {
-            if let Some(file) = sink.as_mut() {
-                let _ = file.flush();
-            }
-        }
-    }
-}
-
-impl SimpleLogger {
-    /// 追加一行到日志文件；文件超过大小上限时滚动。目录不可用时静默跳过。
-    fn write_file(line: &str) {
-        if FILE_SINK_TRIED.load(Ordering::Relaxed) {
-            return;
-        }
-        let mut sink = FILE_SINK.lock().unwrap_or_else(|e| e.into_inner());
-        if sink.is_none() {
-            *sink = open_sink();
-            if sink.is_none() {
-                FILE_SINK_TRIED.store(true, Ordering::Relaxed);
-                return;
-            }
-        }
-        let Some(file) = sink.as_mut() else {
-            return;
-        };
-        let _ = writeln!(file, "{line}");
-        let _ = file.flush();
-        // 超过上限时滚动：先释放当前句柄（Windows 下文件被占用无法重命名）
-        if file.metadata().map(|m| m.len()).unwrap_or(0) > MAX_LOG_BYTES {
-            *sink = None;
-            *sink = rotate_sink();
-        }
-    }
-}
-
-static LOGGER: SimpleLogger = SimpleLogger;
-
-/// 将字符串解析为日志级别，无法识别时返回 `None`
-fn parse_level(input: &str) -> Option<u8> {
-    match input.trim().to_ascii_lowercase().as_str() {
-        "trace" => Some(TRACE),
-        "debug" => Some(DEBUG),
-        "info" => Some(INFO),
-        "warn" => Some(WARN),
-        "error" => Some(ERROR),
-        "off" => Some(OFF),
-        _ => None,
-    }
-}
-
-/// 判断 `module_path` 是否命中 `target`（如 `reqwest` 可匹配 `reqwest::connect`）
-fn module_matches(module_path: &str, target: &str) -> bool {
-    if target.is_empty() {
-        return false;
-    }
-    module_path == target
-        || module_path
-            .strip_prefix(target)
-            .is_some_and(|rest| rest.starts_with("::"))
-}
-
-/// 获取匹配最精确的显式规则（匹配前缀越长，优先级越高）
-fn most_specific_rule<'a>(module_path: &str, rules: &'a [FilterRule]) -> Option<&'a FilterRule> {
-    rules
-        .iter()
-        .filter(|rule| module_matches(module_path, &rule.target))
-        .max_by_key(|rule| rule.target.len())
-}
-
-/// 解析 `RUST_LOG` 指令，支持形如 `debug,reqwest=warn,hyper=warn` 的过滤语法
-fn parse_directives(input: &str) -> (Option<u8>, Vec<FilterRule>) {
-    let mut global = None;
-    let mut rules = Vec::new();
-
-    for part in input.split(',').map(str::trim).filter(|s| !s.is_empty()) {
-        if let Some((target, level_str)) = part.split_once('=') {
-            let target = target.trim();
-            if let Some(level) = parse_level(level_str) {
-                if !target.is_empty() {
-                    rules.push(FilterRule {
-                        target: target.to_string(),
-                        level,
-                    });
-                }
-            }
-        } else if let Some(level) = parse_level(part) {
-            global = Some(level);
-        }
-    }
-
-    (global, rules)
-}
-
-/// 推导应用数据目录（与 Tauri app_data_dir 的规则一致，此时尚无 AppHandle）：
-/// Windows 用 %APPDATA%（Roaming），macOS 用 ~/Library/Application Support，
-/// Linux 用 $XDG_DATA_HOME 或 ~/.local/share，再拼上 identifier。
 fn app_data_dir() -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
     {
@@ -244,34 +57,14 @@ fn app_data_dir() -> Option<PathBuf> {
     None
 }
 
-/// 日志文件完整路径：`{app_data_dir}/logs/desktop.log`（与 dsh-web.log 同目录）
 fn log_file_path() -> Option<PathBuf> {
     Some(app_data_dir()?.join("logs").join(LOG_FILE_NAME))
 }
 
-/// 打开（或创建）日志文件，追加模式
-fn open_sink() -> Option<File> {
-    let path = log_file_path()?;
-    std::fs::create_dir_all(path.parent()?).ok()?;
-    OpenOptions::new().create(true).append(true).open(path).ok()
+fn frontdesk_log_file_path() -> Option<PathBuf> {
+    Some(app_data_dir()?.join("logs").join(FRONTDESK_LOG_FILE_NAME))
 }
 
-/// 滚动日志文件：`desktop.log → .1 → .2 → .3`（删除最旧的），再打开新的 desktop.log
-fn rotate_sink() -> Option<File> {
-    let path = log_file_path()?;
-    // 先删除最旧的备份，避免 Windows 下 rename 目标已存在而失败
-    let _ = std::fs::remove_file(backup_path(&path, MAX_BACKUPS));
-    for i in (1..=MAX_BACKUPS).rev() {
-        let src = backup_path(&path, i - 1);
-        let dst = backup_path(&path, i);
-        if src.exists() {
-            let _ = std::fs::rename(&src, &dst);
-        }
-    }
-    open_sink()
-}
-
-/// 第 n 个备份的文件名：n=0 为当前文件，n>0 为 `desktop.log.n`
 fn backup_path(base: &PathBuf, n: usize) -> PathBuf {
     if n == 0 {
         base.clone()
@@ -280,90 +73,315 @@ fn backup_path(base: &PathBuf, n: usize) -> PathBuf {
     }
 }
 
-/// 当前 UTC 时间（`YYYY-MM-DD HH:MM:SS.mmm`），纯算法实现避免引入时间库依赖。
-/// 统一用 UTC 而非本地时区：跨平台可移植，且足够用于与安装/启动时间线对齐。
-fn now_utc() -> String {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    let secs = now.as_secs();
-    let millis = now.subsec_millis();
-    let days = secs / 86_400;
-    let sod = secs % 86_400;
-
-    let (y, m, d) = civil_from_days(days as i64);
-    format!(
-        "{y:04}-{m:02}-{d:02} {:02}:{:02}:{:02}.{:03}Z",
-        sod / 3_600,
-        (sod % 3_600) / 60,
-        sod % 60,
-        millis
-    )
+struct SizeRotatingWriter {
+    path: PathBuf,
+    file: Mutex<Option<File>>,
+    max_bytes: u64,
+    max_backups: usize,
 }
 
-/// 自 UNIX 纪元（1970-01-01）起的日数 → 公历 (年, 月, 日)。Howard Hinnant 算法。
-fn civil_from_days(days: i64) -> (i64, u32, u32) {
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let m = (if mp < 10 { mp + 3 } else { mp - 9 }) as u32;
-    let y = (if m <= 2 { yoe + 1 } else { yoe }) + era * 400;
-    (y, m, d)
+impl SizeRotatingWriter {
+    fn new(path: PathBuf, max_bytes: u64, max_backups: usize) -> Self {
+        Self {
+            path,
+            file: Mutex::new(None),
+            max_bytes,
+            max_backups,
+        }
+    }
+    fn ensure_file(&self) -> io::Result<()> {
+        let mut guard = self.file.lock().unwrap_or_else(|e| e.into_inner());
+        if guard.is_some() {
+            return Ok(());
+        }
+        if let Some(parent) = self.path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let f = OpenOptions::new().create(true).append(true).open(&self.path)?;
+        *guard = Some(f);
+        Ok(())
+    }
+    fn rotate_if_needed(&self) {
+        let len = {
+            let guard = self.file.lock().unwrap_or_else(|e| e.into_inner());
+            guard.as_ref().and_then(|f| f.metadata().ok()).map(|m| m.len()).unwrap_or(0)
+        };
+        if len <= self.max_bytes {
+            return;
+        }
+        {
+            let mut guard = self.file.lock().unwrap_or_else(|e| e.into_inner());
+            *guard = None;
+        }
+        let _ = std::fs::remove_file(backup_path(&self.path, self.max_backups));
+        for i in (1..=self.max_backups).rev() {
+            let src = backup_path(&self.path, i - 1);
+            let dst = backup_path(&self.path, i);
+            if src.exists() {
+                let _ = std::fs::rename(&src, &dst);
+            }
+        }
+    }
+}
+impl SizeRotatingWriter {
+    /// 供 `log_frontend` 以 `&self` 追加写入（带轮转），避免 `&mut` 约束
+    fn append_bytes(&self, buf: &[u8]) -> io::Result<()> {
+        let _ = self.ensure_file();
+        {
+            let mut guard = self.file.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(f) = guard.as_mut() {
+                f.write_all(buf)?;
+                let _ = f.flush();
+            } else {
+                return Ok(());
+            }
+        }
+        self.rotate_if_needed();
+        Ok(())
+    }
 }
 
-/// 初始化日志系统
-///
-/// 默认日志级别为 `info`，可以通过环境变量 `RUST_LOG` 进行控制。
-/// 例如: `RUST_LOG=debug` 或 `RUST_LOG=debug,reqwest=warn,hyper=warn`
+impl Write for SizeRotatingWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.ensure_file().ok();
+        let mut guard = self.file.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(f) = guard.as_mut() {
+            let n = f.write(buf)?;
+            let _ = f.flush();
+            drop(guard);
+            self.rotate_if_needed();
+            Ok(n)
+        } else {
+            Ok(buf.len())
+        }
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        let mut guard = self.file.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(f) = guard.as_mut() { f.flush() } else { Ok(()) }
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for SizeRotatingWriter {
+    type Writer = SizeRotatingWriterGuard<'a>;
+    fn make_writer(&'a self) -> Self::Writer {
+        let _ = self.ensure_file();
+        SizeRotatingWriterGuard { parent: self }
+    }
+}
+
+struct SizeRotatingWriterGuard<'a> {
+    parent: &'a SizeRotatingWriter,
+}
+
+impl<'a> Write for SizeRotatingWriterGuard<'a> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let mut guard = self.parent.file.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(f) = guard.as_mut() {
+            let n = f.write(buf)?;
+            let _ = f.flush();
+            drop(guard);
+            self.parent.rotate_if_needed();
+            Ok(n)
+        } else {
+            Ok(buf.len())
+        }
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        let mut guard = self.parent.file.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(f) = guard.as_mut() { f.flush() } else { Ok(()) }
+    }
+}
+
+#[allow(dead_code)]
+struct SharedRotatingWriter(Arc<SizeRotatingWriter>);
+impl Write for SharedRotatingWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let mut guard = self.0.file.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(f) = guard.as_mut() {
+            let n = f.write(buf)?;
+            let _ = f.flush();
+            drop(guard);
+            self.0.rotate_if_needed();
+            Ok(n)
+        } else {
+            drop(guard);
+            let _ = self.0.ensure_file();
+            let mut guard = self.0.file.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(f) = guard.as_mut() {
+                let n = f.write(buf)?;
+                let _ = f.flush();
+                drop(guard);
+                self.0.rotate_if_needed();
+                Ok(n)
+            } else {
+                Ok(buf.len())
+            }
+        }
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        let mut guard = self.0.file.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(f) = guard.as_mut() { f.flush() } else { Ok(()) }
+    }
+}
+
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for SharedRotatingWriter {
+    type Writer = SizeRotatingWriterGuard<'a>;
+    fn make_writer(&'a self) -> Self::Writer {
+        let _ = self.0.ensure_file();
+        SizeRotatingWriterGuard { parent: &self.0 }
+    }
+}
+
+fn build_env_filter() -> EnvFilter {
+    let raw = std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
+    let mut filter_str = raw.clone();
+    if !filter_str.contains("reqwest") {
+        filter_str.push_str(",reqwest=warn");
+    }
+    if !filter_str.contains("hyper") {
+        filter_str.push_str(",hyper=warn");
+    }
+    EnvFilter::try_new(filter_str).unwrap_or_else(|_| EnvFilter::new("info"))
+}
+
 pub fn init() {
-    let log_level = std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
+    let _ = tracing_log::LogTracer::init();
+    let filter = build_env_filter();
+    let file_writer: Option<(NonBlocking, WorkerGuard)> = log_file_path().map(|path| {
+        let rotating = SizeRotatingWriter::new(path, MAX_LOG_BYTES, MAX_BACKUPS);
+        tracing_appender::non_blocking(rotating)
+    });
+    // 前端独立文件：desktop.frontdesk.log（与 dsh 的 `target: "dsh"` 标识对称，`target: "frontend"`）
+    if let Some(path) = frontdesk_log_file_path() {
+        let w = Arc::new(Mutex::new(SizeRotatingWriter::new(
+            path, MAX_LOG_BYTES, MAX_BACKUPS,
+        )));
+        let _ = FRONTDESK_WRITER.set(w);
+    }
+    let timer = OffsetTime::new(
+        time::UtcOffset::UTC,
+        time::format_description::parse_borrowed::<2>("[year]-[month]-[day] [hour]:[minute]:[second].[subsecond digits:3]Z").unwrap(),
+    );
+    let file_timer = OffsetTime::new(
+        time::UtcOffset::UTC,
+        time::format_description::parse_borrowed::<2>("[year]-[month]-[day] [hour]:[minute]:[second].[subsecond digits:3]Z").unwrap(),
+    );
+    let stdout_layer = fmt::layer()
+        .with_writer(std::io::stdout)
+        .with_timer(timer)
+        .with_target(true)
+        .with_ansi(true)
+        .with_level(true);
+    if let Some((nb, guard)) = file_writer {
+        let _ = FILE_GUARD.set(guard);
+        let file_layer = fmt::layer()
+            .with_writer(nb)
+            .with_timer(file_timer)
+            .with_target(true)
+            .with_ansi(false)
+            .with_level(true);
+        let _ = tracing_subscriber::registry()
+            .with(filter)
+            .with(stdout_layer)
+            .with(file_layer)
+            .try_init();
+    } else {
+        let _ = tracing_subscriber::registry()
+            .with(filter)
+            .with(stdout_layer)
+            .try_init();
+    }
+}
 
-    let (global, rules) = parse_directives(&log_level);
-    let filter = global.unwrap_or(INFO);
+#[derive(Debug, Clone, Copy)]
+pub enum FrontendLevel {
+    Trace,
+    Debug,
+    Info,
+    Warn,
+    Error,
+}
 
-    FILTER_LEVEL.store(filter, Ordering::Relaxed);
-    let _ = FILTER_RULES.set(rules);
+impl FrontendLevel {
+    pub fn from_str(s: &str) -> Self {
+        match s.to_ascii_lowercase().as_str() {
+            "trace" => Self::Trace,
+            "debug" => Self::Debug,
+            "info" => Self::Info,
+            "warn" => Self::Warn,
+            "error" => Self::Error,
+            _ => Self::Info,
+        }
+    }
+}
 
-    log::set_logger(&LOGGER)
-        .map(|()| log::set_max_level(LevelFilter::Trace))
-        .expect("Failed to initialize logger");
+pub fn log_frontend(level: FrontendLevel, target: &str, message: &str) {
+    // 前端日志独立落盘到 `desktop.frontdesk.log`，与后端 `desktop.log`（含 `dsh` target）分离
+    // 标识与 `dsh` 对称：`frontend` 作为 target 出现在 LEVEL 之后（`... INFO frontend: [tag] message`）
+    // 同时经 `log` 代理到 `tracing` 的 stdout 层，使 `pnpm tauri dev` 终端可见（与后端/dsh 同屏）
+    // 当 JS 劫持以 `target: "frontend"` 透传时，避免 `frontend: [frontend]` 重复，退化为 `frontend: message`
+    let is_generic_frontend = target == "frontend";
+    let prefixed = if is_generic_frontend {
+        message.to_string()
+    } else {
+        format!("[{}] {}", target, message)
+    };
+    // 1) 终端 stdout（tracing 层，带 ANSI、受 RUST_LOG 过滤）
+    match level {
+        FrontendLevel::Trace => log::trace!(target: "frontend", "{}", prefixed),
+        FrontendLevel::Debug => log::debug!(target: "frontend", "{}", prefixed),
+        FrontendLevel::Info => log::info!(target: "frontend", "{}", prefixed),
+        FrontendLevel::Warn => log::warn!(target: "frontend", "{}", prefixed),
+        FrontendLevel::Error => log::error!(target: "frontend", "{}", prefixed),
+    }
+    // 2) 独立文件 desktop.frontdesk.log（自格式化，避免再经 EnvFilter 过滤丢失）
+    let level_str = match level {
+        FrontendLevel::Trace => "TRACE",
+        FrontendLevel::Debug => "DEBUG",
+        FrontendLevel::Info => "INFO",
+        FrontendLevel::Warn => "WARN",
+        FrontendLevel::Error => "ERROR",
+    };
+    let formatted = {
+        let now = time::OffsetDateTime::now_utc();
+        let fmt = time::format_description::parse_borrowed::<2>(
+            "[year]-[month]-[day] [hour]:[minute]:[second].[subsecond digits:3]Z",
+        )
+        .unwrap();
+        let ts = now.format(&fmt).unwrap_or_else(|_| "1970-01-01 00:00:00.000Z".to_string());
+        if is_generic_frontend {
+            format!("[{}] {:>5} frontend: {}\n", ts, level_str, message)
+        } else {
+            format!("[{}] {:>5} frontend: [{}] {}\n", ts, level_str, target, message)
+        }
+    };
+    let bytes = formatted.as_bytes();
+    if let Some(w) = FRONTDESK_WRITER.get() {
+        if let Ok(g) = w.lock() {
+            let _ = g.append_bytes(bytes);
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
-    fn civil_from_days_epoch_and_adjacent() {
-        assert_eq!(civil_from_days(0), (1970, 1, 1));
-        assert_eq!(civil_from_days(31), (1970, 2, 1));
-        assert_eq!(civil_from_days(364), (1970, 12, 31));
-        assert_eq!(civil_from_days(365), (1971, 1, 1)); // 1970 非闰年
-        assert_eq!(civil_from_days(366), (1971, 1, 2));
+    fn backup_path_naming() {
+        let base = PathBuf::from("/tmp/desktop.log");
+        assert_eq!(backup_path(&base, 0), PathBuf::from("/tmp/desktop.log"));
+        assert_eq!(backup_path(&base, 1), PathBuf::from("/tmp/desktop.log.1"));
+        assert_eq!(backup_path(&base, 3), PathBuf::from("/tmp/desktop.log.3"));
     }
-
     #[test]
-    fn civil_from_days_leap_year() {
-        // 1972-02-29（闰年 2 月最后一天）
-        assert_eq!(civil_from_days(789), (1972, 2, 29));
-        assert_eq!(civil_from_days(790), (1972, 3, 1));
+    fn env_filter_defaults_no_panic() {
+        let _ = build_env_filter();
     }
-
     #[test]
-    fn now_utc_format() {
-        let s = now_utc();
-        let ok = s.len() >= 20
-            && s.ends_with('Z')
-            && s.as_bytes().get(4) == Some(&b'-')
-            && s.as_bytes().get(7) == Some(&b'-')
-            && s.as_bytes().get(10) == Some(&b' ')
-            && s.as_bytes().get(13) == Some(&b':')
-            && s.as_bytes().get(16) == Some(&b':')
-            && s.as_bytes().get(19) == Some(&b'.');
-        assert!(ok, "unexpected timestamp format: {s}");
+    fn frontend_level_parse() {
+        assert!(matches!(FrontendLevel::from_str("warn"), FrontendLevel::Warn));
+        assert!(matches!(FrontendLevel::from_str("WARN"), FrontendLevel::Warn));
+        assert!(matches!(FrontendLevel::from_str("unknown"), FrontendLevel::Info));
     }
 }
