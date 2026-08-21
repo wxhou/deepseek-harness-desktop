@@ -18,6 +18,8 @@ use futures_util::StreamExt;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_opener::OpenerExt;
 
+use crate::config;
+
 /// 仓库主页（同时用于构造 atom / expanded_assets / 下载地址）
 const REPO_URL: &str = "https://github.com/hairyf/deepseek-harness-desktop";
 /// 版权信息（与 tauri.conf.json bundle.copyright 保持一致）
@@ -278,33 +280,22 @@ pub struct DesktopDownloadProgress {
     pub percentage: f64,
     pub downloaded: u64,
     pub total: u64,
+    /// 附加提示（如切换下载源），无提示时为 None
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
-/// 下载桌面端安装包；已下载则直接返回。
-///
-/// 下载期间通过 `desktop-update-progress` 事件推送进度；完成后返回
-/// `DesktopUpdateInfo`（path/downloaded 已更新）。
-pub async fn download(app_handle: &AppHandle) -> Result<DesktopUpdateInfo, String> {
-    let release = fetch_latest_release()
-        .await?
-        .ok_or_else(|| "UPDATE_NONE".to_string())?;
-    let path = installer_path(app_handle, &release.asset_name)?;
-
-    if path.exists() {
-        log::info!("Installer already downloaded: {}", path.display());
-        return check(app_handle)
-            .await?
-            .ok_or_else(|| "UPDATE_NONE".to_string());
-    }
-
-    log::info!("Downloading desktop installer from {}", release.url);
-    let client = reqwest::Client::builder()
-        .user_agent("deepseek-harness-desktop")
-        .build()
-        .map_err(|e| format!("UPDATE_CLIENT: {e}"))?;
-
+/// 从单个下载源流式下载安装包到临时文件；失败时清理半成品（避免残留
+/// 部分字节被误判为「已下载」）。
+async fn download_from_source(
+    client: &reqwest::Client,
+    url: &str,
+    tmp: &std::path::Path,
+    app_handle: &AppHandle,
+) -> Result<(), String> {
+    log::info!("Downloading desktop installer from {}", url);
     let res = client
-        .get(&release.url)
+        .get(url)
         .send()
         .await
         .map_err(|e| format!("UPDATE_DOWNLOAD: {e}"))?
@@ -312,10 +303,7 @@ pub async fn download(app_handle: &AppHandle) -> Result<DesktopUpdateInfo, Strin
         .map_err(|e| format!("UPDATE_DOWNLOAD: {e}"))?;
 
     let total = res.content_length().unwrap_or(0);
-    // 先写临时文件再原子改名，避免下载中断残留半成品被误判为「已下载」
-    let tmp = path.with_extension("part");
-    let mut file = std::fs::File::create(&tmp).map_err(|e| format!("UPDATE_FILE: {e}"))?;
-
+    let mut file = std::fs::File::create(tmp).map_err(|e| format!("UPDATE_FILE: {e}"))?;
     use std::io::Write;
     let mut downloaded: u64 = 0;
     let mut stream = res.bytes_stream();
@@ -334,10 +322,83 @@ pub async fn download(app_handle: &AppHandle) -> Result<DesktopUpdateInfo, Strin
                 percentage: pct,
                 downloaded,
                 total,
+                message: None,
             },
         );
     }
     drop(file);
+    Ok(())
+}
+
+/// 下载桌面端安装包；已下载则直接返回。
+///
+/// 下载期间通过 `desktop-update-progress` 事件推送进度；完成后返回
+/// `DesktopUpdateInfo`（path/downloaded 已更新）。
+///
+/// 下载源策略与 dsh 核心一致：默认先走 GitHub 官方直连，失败自动切换
+/// ghfast.top 镜像兜底；切换时通过进度事件的 message 字段在界面上告知用户。
+pub async fn download(app_handle: &AppHandle) -> Result<DesktopUpdateInfo, String> {
+    let release = fetch_latest_release()
+        .await?
+        .ok_or_else(|| "UPDATE_NONE".to_string())?;
+    let path = installer_path(app_handle, &release.asset_name)?;
+
+    if path.exists() {
+        log::info!("Installer already downloaded: {}", path.display());
+        return check(app_handle)
+            .await?
+            .ok_or_else(|| "UPDATE_NONE".to_string());
+    }
+
+    let client = reqwest::Client::builder()
+        .user_agent("deepseek-harness-desktop")
+        .build()
+        .map_err(|e| format!("UPDATE_CLIENT: {e}"))?;
+
+    // 官方直连 → ghfast.top 镜像兜底。安装包无 SHA-256 元数据，切换源时
+    // 丢弃上一源的部分字节从头下载，避免混用两个源的字节流。
+    let urls = vec![
+        release.url.clone(),
+        config::mirror_download_url(&release.url),
+    ];
+    let tmp = path.with_extension("part");
+    let mut last_err = String::new();
+    for (index, url) in urls.iter().enumerate() {
+        if index > 0 {
+            let host = reqwest::Url::parse(url)
+                .ok()
+                .and_then(|parsed| parsed.host_str().map(|h| h.to_string()))
+                .unwrap_or_else(|| url.clone());
+            log::warn!(
+                "Primary desktop update source failed, switching to fallback: {}",
+                url
+            );
+            let _ = app_handle.emit(
+                "desktop-update-progress",
+                DesktopDownloadProgress {
+                    percentage: 0.0,
+                    downloaded: 0,
+                    total: 0,
+                    message: Some(format!("主下载源不可用，已切换镜像源重试（{host}）")),
+                },
+            );
+        }
+        // 先写临时文件再原子改名，避免下载中断残留半成品被误判为「已下载」
+        let _ = std::fs::remove_file(&tmp);
+        match download_from_source(&client, url, &tmp, app_handle).await {
+            Ok(()) => {
+                last_err.clear();
+                break;
+            }
+            Err(e) => last_err = e,
+        }
+    }
+    if !last_err.is_empty() {
+        return Err(format!(
+            "UPDATE_DOWNLOAD: {last_err}（已尝试 {} 个下载源）",
+            urls.len()
+        ));
+    }
     std::fs::rename(&tmp, &path).map_err(|e| format!("UPDATE_FILE: {e}"))?;
 
     check(app_handle)

@@ -202,6 +202,13 @@ export const desktopUpdate = defineStore({
 // 模块级监听下载进度（应用生命周期内常驻）
 listen<DesktopDownloadProgress>('desktop-update-progress', (e) => {
   desktopUpdate.downloadProgress = e.payload.percentage
+  // 后端附加提示（如主源失败已切换镜像源重试）→ toast 告知用户
+  if (e.payload.message) {
+    toast(e.payload.message, {
+      variant: 'default',
+      placement: 'bottom end',
+    })
+  }
 }).catch((err) => {
   console.error('[DesktopUpdate] failed to listen desktop-update-progress:', err)
 })

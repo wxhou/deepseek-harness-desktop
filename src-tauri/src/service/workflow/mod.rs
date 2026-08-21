@@ -763,14 +763,27 @@ pub async fn install(
         // 下载 URL 对 dsh 也是完全确定可算的（DSH_CORE_URL + 平台文件名），
         // 无需依赖 GitHub API 元数据；api.github.com 限流/被代理拦截时
         // （mac 首次启动常见）仍能拿到真实下载地址，避免整次安装被瞬时失败卡死。
-        let url = task.get_download_url()?;
-        log::debug!("Download URL: {}", url);
+        // dsh 核心默认先走 GitHub 官方直连，失败自动切换 ghfast.top 镜像兜底
+        // （下载层会在界面上告知用户）；其余任务保持单一官方源。
+        let (urls, name) = if index == 1 {
+            let urls = config::get_dsh_download_urls()?;
+            let name = urls
+                .first()
+                .and_then(|u| u.rsplit('/').next())
+                .unwrap_or("")
+                .to_string();
+            (urls, name)
+        } else {
+            let url = task.get_download_url()?;
+            let name = url.rsplit('/').next().unwrap_or("").to_string();
+            (vec![url], name)
+        };
         // 取文件名用于解压类型判定；下载 URL 正常必含 '/'，但这里不 panic，
         // 防御性兜底为空串（后续 ensure_extract 会因无法判定类型而报错返回，
         // 不再让进程崩溃）。
-        let name = url.rsplit('/').next().unwrap_or("").to_string();
+        log::debug!("Download URL: {}", urls.join(" -> "));
         log::debug!("File name: {}", name);
-        let buffer = download::download_file(&tracker, url).await?;
+        let buffer = download::download_file_from_sources(&tracker, urls).await?;
         log::info!("Download completed, file size: {} bytes", buffer.len());
         let expected_digest = match index {
             0 => download::fetch_node_sha256(task.get_download_url()?.as_str()).await?,

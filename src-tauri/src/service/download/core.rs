@@ -20,8 +20,60 @@ pub async fn download_file<'a, R: Runtime>(
     tracker: &'a ProgressTracker<'a, R>,
     url: String,
 ) -> Result<Vec<u8>, String> {
+    download_file_from_sources(tracker, vec![url]).await
+}
+
+/// 按顺序依次尝试多个下载源（如 GitHub 官方直连 → ghfast.top 镜像兜底），
+/// 某个源全部重试失败后自动切换下一个源，并通过 `tracker` 在界面上告知用户
+/// 当前使用的下载源；全部源均失败时返回最后一个源的错误并注明尝试过的源数。
+///
+/// 每个源内部仍走 `download_with_retry` 的断点续传重试；切换源时保留已下载
+/// 的字节续传（镜像透传同一文件，内容一致，且最终有 SHA-256 完整性校验兜底；
+/// 服务端不支持 Range 时 `download_attempt` 会自动清空从头下载）。
+pub async fn download_file_from_sources<'a, R: Runtime>(
+    tracker: &'a ProgressTracker<'a, R>,
+    urls: Vec<String>,
+) -> Result<Vec<u8>, String> {
+    if urls.is_empty() {
+        return Err("DOWNLOAD_URL_EMPTY: no download source provided".to_string());
+    }
+    let mut last_err = String::new();
+    for (index, url) in urls.iter().enumerate() {
+        // 切换下载源时告知用户（detail 展示在进度面板，log 进入日志流）
+        if index > 0 {
+            let host = reqwest::Url::parse(url)
+                .ok()
+                .and_then(|parsed| parsed.host_str().map(|h| h.to_string()))
+                .unwrap_or_else(|| url.clone());
+            log::warn!(
+                "Primary download source failed, switching to fallback source: {}",
+                url
+            );
+            tracker.update(
+                0.0,
+                format!("主下载源不可用，已切换镜像源重试（{host}）"),
+                format!("Switch to fallback download source: {url}"),
+            );
+        }
+        match download_with_retry(tracker, url).await {
+            Ok(buffer) => return Ok(buffer),
+            Err(e) => last_err = e,
+        }
+    }
+    Err(if urls.len() > 1 {
+        format!("{last_err}（已尝试 {} 个下载源）", urls.len())
+    } else {
+        last_err
+    })
+}
+
+/// 对单个 URL 执行断点续传重试，全部尝试失败返回中文可读错误。
+async fn download_with_retry<'a, R: Runtime>(
+    tracker: &'a ProgressTracker<'a, R>,
+    url: &str,
+) -> Result<Vec<u8>, String> {
     log::info!("Starting file download: {}", url);
-    validate_download_url(&url)?;
+    validate_download_url(url)?;
 
     // 创建具备 User-Agent 的客户端
     let client = reqwest::Client::builder()
@@ -53,7 +105,7 @@ pub async fn download_file<'a, R: Runtime>(
             );
             tokio::time::sleep(delay).await;
         }
-        match download_attempt(&client, tracker, &url, attempt, MAX_DOWNLOAD_ATTEMPTS, &mut buffer)
+        match download_attempt(&client, tracker, url, attempt, MAX_DOWNLOAD_ATTEMPTS, &mut buffer)
             .await
         {
             Ok(()) => {

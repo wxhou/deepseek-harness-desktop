@@ -41,13 +41,15 @@ pub fn get_node_download_url() -> Result<String, String> {
     Ok(format!("{}/{}/{}", node_base_url(detect_region()), NODE_VERSION, filename))
 }
 
-/// 打包的 DeepSeek Harness 发行版官方/镜像下载前缀：
-/// 国内走 ghfast.top 中转 GitHub Release，其他直连 GitHub
-fn dsh_core_base_url(region: Region) -> &'static str {
-    match region {
-        Region::Domestic => DSH_MIRROR_CORE_URL,
-        Region::Overseas => DSH_CORE_URL,
-    }
+/// 打包的 DeepSeek Harness 发行版下载前缀：恒为 GitHub Release 官方直连，
+/// 作为首选下载源（镜像 ghfast.top 中转不稳定，仅作官方失败后的兜底）。
+fn dsh_core_base_url() -> &'static str {
+    DSH_CORE_URL
+}
+
+/// 打包的 DeepSeek Harness 发行版镜像下载前缀（ghfast.top 中转 GitHub Release）
+fn dsh_mirror_base_url() -> &'static str {
+    DSH_MIRROR_CORE_URL
 }
 
 /// Harness 发行版资产文件名（按平台与架构）
@@ -64,13 +66,30 @@ fn dsh_pkg_asset_filename() -> Result<String, String> {
     }
 }
 
-/// 打包的 DeepSeek Harness 发行版下载地址
+/// 打包的 DeepSeek Harness 发行版下载地址（GitHub 官方直连，首选源）
 pub fn get_dsh_download_url() -> Result<String, String> {
     Ok(format!(
         "{}{}",
-        dsh_core_base_url(detect_region()),
+        dsh_core_base_url(),
         dsh_pkg_asset_filename()?
     ))
+}
+
+/// 打包的 DeepSeek Harness 发行版下载地址列表（按顺序依次尝试）：
+/// GitHub 官方直连 → ghfast.top 镜像兜底。官方直连失败时由下载层自动
+/// 切换镜像并告知用户，避免 ghfast.top 不稳定导致首次安装失败。
+pub fn get_dsh_download_urls() -> Result<Vec<String>, String> {
+    let filename = dsh_pkg_asset_filename()?;
+    Ok(vec![
+        format!("{}{}", dsh_core_base_url(), filename),
+        format!("{}{}", dsh_mirror_base_url(), filename),
+    ])
+}
+
+/// 为任意 GitHub Release 资产 URL 生成 ghfast.top 镜像兜底地址
+/// （透传原 URL，下载内容一致，仍可做 SHA-256 完整性校验）。
+pub fn mirror_download_url(asset_url: &str) -> String {
+    format!("{DSH_MIRROR_PREFIX}{asset_url}")
 }
 
 /// 指定 tag 的 DeepSeek Harness 发行版下载地址。
@@ -79,7 +98,7 @@ pub fn get_dsh_download_url() -> Result<String, String> {
 /// `releases/download/<tag>/`，镜像/直连与平台文件名逻辑与最新版完全一致
 /// （GitHub 的 tag 下载路径是固定的 release 资产地址，可被确定性推导）。
 pub fn get_dsh_download_url_for_tag(tag: &str) -> Result<String, String> {
-    let base = dsh_core_base_url(detect_region())
+    let base = dsh_core_base_url()
         .replace("releases/latest/download/", &format!("releases/download/{tag}/"));
     Ok(format!("{}{}", base, dsh_pkg_asset_filename()?))
 }
@@ -386,9 +405,24 @@ mod tests {
     }
 
     #[test]
-    fn dsh_base_url_switches_on_region() {
-        assert_eq!(dsh_core_base_url(Region::Overseas), DSH_CORE_URL);
-        assert_eq!(dsh_core_base_url(Region::Domestic), DSH_MIRROR_CORE_URL);
+    fn dsh_download_urls_prefer_official_then_mirror() {
+        // 无论哪个地域，首选源都是 GitHub 官方直连；镜像仅作兜底
+        let urls = get_dsh_download_urls().expect("dsh urls");
+        assert_eq!(urls.len(), 2);
+        assert!(urls[0].starts_with(DSH_CORE_URL), "first source must be official GitHub: {}", urls[0]);
+        assert!(urls[1].starts_with(DSH_MIRROR_PREFIX), "fallback must be ghfast mirror: {}", urls[1]);
+        // 两个源的文件名一致（镜像只是换前缀，解压类型判定不受影响）
+        let name = |u: &str| u.rsplit('/').next().unwrap_or("").to_string();
+        assert_eq!(name(&urls[0]), name(&urls[1]));
+    }
+
+    #[test]
+    fn mirror_url_prepends_ghfast_prefix() {
+        let asset = "https://github.com/hairyf/deepseek-harness-pkg/releases/download/v1.0.0/deepseek-harness-pkg-windows.zip";
+        assert_eq!(
+            mirror_download_url(asset),
+            format!("{DSH_MIRROR_PREFIX}{asset}")
+        );
     }
 
     #[test]
