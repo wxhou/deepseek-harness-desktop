@@ -7,7 +7,7 @@ import { useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useStore } from 'valtio-define'
 import { store } from '@/store'
-import { InfoRow } from './info-row'
+import { Info } from './info'
 
 export interface DesktopAboutDialogProps extends PropsWithOverlays {}
 
@@ -45,8 +45,8 @@ export function DesktopAboutDialog(props: DesktopAboutDialogProps) {
                 </Description>
               </div>
               <div className="space-y-1.5 border-t border-line/40 pt-3">
-                <InfoRow term={t('ui.current_version')}>{about?.version ?? '-'}</InfoRow>
-                <InfoRow term={t('about.release_date')}>{about?.published_at ? formatDate(about.published_at) : '-'}</InfoRow>
+                <Info term={t('ui.current_version')}>{about?.version ?? '-'}</Info>
+                <Info term={t('about.release_date')}>{about?.published_at ? formatDate(about.published_at) : '-'}</Info>
                 <div className="flex items-center justify-between text-sm border-t border-line/40 pt-2 ">
                   <span className="text-muted">{t('about.source_code')}</span>
                   <Button

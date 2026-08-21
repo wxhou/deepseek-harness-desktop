@@ -8,7 +8,7 @@ import { If } from 'react-if-lite'
 import { useStore } from 'valtio-define'
 import { store } from '@/store'
 import { toast } from '@/utils'
-import { InfoRow } from './info-row'
+import { Info } from './info'
 
 export interface RuntimeInfo {
   app_version: string
@@ -189,8 +189,8 @@ export function ConfigDebug() {
       <div className="border-t border-line/30" />
       <div>
         <div className="space-y-1">
-          <InfoRow term={t('ui.current_version')}>{info?.app_version ?? '-'}</InfoRow>
-          <InfoRow term={t('ui.dsh_version')}>
+          <Info term={t('ui.current_version')}>{info?.app_version ?? '-'}</Info>
+          <Info term={t('ui.dsh_version')}>
             <span>{info?.dsh_version ?? '-'}</span>
             <If cond={updateInfo}>
               <Link className="ml-2 text-[10px] text-accent" onClick={store.harnessUpdater.showToast}>
@@ -199,11 +199,11 @@ export function ConfigDebug() {
               </Link>
             </If>
 
-          </InfoRow>
-          <InfoRow term={t('ui.node_version')}>{info?.node_version ? `v${info.node_version}` : '-'}</InfoRow>
-          <InfoRow term="Platform">
+          </Info>
+          <Info term={t('ui.node_version')}>{info?.node_version ? `v${info.node_version}` : '-'}</Info>
+          <Info term="Platform">
             {info ? `${info.platform} / ${info.arch}` : '-'}
-          </InfoRow>
+          </Info>
           <div className="flex items-center justify-between gap-2 text-xs">
             <span className="shrink-0 min-w-[30%] text-muted font-medium">{t('ui.data_dir')}</span>
             <span className="min-w-0 flex items-center gap-1">

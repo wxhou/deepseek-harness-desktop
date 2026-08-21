@@ -264,7 +264,7 @@ export function ConfigCore() {
                         onRemove(core)
                       }}
                     >
-                      <If cond={busyId === core.id} then={<Spinner size="sm" color="current" />} />
+                      <If cond={busyId === core.id && busy} then={<Spinner size="sm" color="current" />} />
                       {t('core.uninstall')}
                     </Button>
                   </If>

@@ -6,7 +6,7 @@ import { cn } from 'tailwind-variants'
  * 供 config-debug 的运行时信息与「关于 / 检查更新」对话框共用，
  * 值默认用等宽字体（版本号/路径等类代码内容）。
  */
-export interface InfoRowProps {
+export interface InfoProps {
   /** 左侧项名 */
   term: string
   /** 右侧值（可为节点；无则显示 '-' 由调用方决定） */
@@ -14,7 +14,7 @@ export interface InfoRowProps {
   className?: string
 }
 
-export function InfoRow({ term, children, className }: InfoRowProps) {
+export function Info({ term, children, className }: InfoProps) {
   return (
     <div className={cn('flex items-center justify-between gap-2 text-xs py-0.5', className)}>
       <span className="shrink-0 text-muted font-medium">{term}</span>

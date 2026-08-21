@@ -1,13 +1,13 @@
 import type { PropsWithOverlays } from '@overlastic/react'
 import { useWatch } from '@hairy/react-lib'
-import { Button, Description, Modal, ProgressBar } from '@heroui/react'
+import { AlertDialog, Button, Description, ProgressBar } from '@heroui/react'
 import { useDisclosure } from '@overlastic/react'
 import { useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { If } from 'react-if-lite'
 import { useStore } from 'valtio-define'
 import { store } from '@/store'
-import { InfoRow } from './info-row'
+import { Info } from './info'
 
 export interface DesktopUpdateDialogProps extends PropsWithOverlays {}
 
@@ -47,19 +47,20 @@ export function DesktopUpdateDialog(props: DesktopUpdateDialogProps) {
   }
 
   return (
-    <Modal isOpen={disclosure.visible} onOpenChange={disclosure.cancel}>
-      <Modal.Backdrop isDismissable={!downloading}>
-        <Modal.Container size="sm">
-          <Modal.Dialog>
-            <Modal.Header>
-              <Modal.Heading>{t('update.desktop_title')}</Modal.Heading>
-              <Modal.CloseTrigger isDisabled={downloading} />
-            </Modal.Header>
-            <Modal.Body className="space-y-3">
+    <AlertDialog onOpenChange={disclosure.cancel} isOpen={disclosure.visible}>
+      <AlertDialog.Backdrop isDismissable={!downloading}>
+        <AlertDialog.Container>
+          <AlertDialog.Dialog className="sm:max-w-[420px]">
+            <AlertDialog.CloseTrigger isDisabled={downloading} />
+            <AlertDialog.Header>
+              <AlertDialog.Icon status="default" />
+              <AlertDialog.Heading>{t('update.desktop_title')}</AlertDialog.Heading>
+            </AlertDialog.Header>
+            <AlertDialog.Body className="space-y-3">
               <If cond={updateInfo != null}>
                 <div className="space-y-1.5">
-                  <InfoRow term={t('ui.current_version')}>{updateInfo?.currentVersion}</InfoRow>
-                  <InfoRow term={t('update.new_version_label')}>{updateInfo?.version}</InfoRow>
+                  <Info term={t('ui.current_version')}>{updateInfo?.currentVersion}</Info>
+                  <Info term={t('update.new_version_label')}>{updateInfo?.version}</Info>
                   <If cond={updateInfo?.downloaded}>
                     <Description className="text-xs">
                       {t('update.desktop_downloaded')}
@@ -84,8 +85,8 @@ export function DesktopUpdateDialog(props: DesktopUpdateDialogProps) {
                   </ProgressBar>
                 </div>
               </If>
-            </Modal.Body>
-            <Modal.Footer>
+            </AlertDialog.Body>
+            <AlertDialog.Footer>
               <Button
                 variant="tertiary"
                 className="rounded-md"
@@ -104,10 +105,10 @@ export function DesktopUpdateDialog(props: DesktopUpdateDialogProps) {
                   ? t('update.open_installer')
                   : t('update.now')}
               </Button>
-            </Modal.Footer>
-          </Modal.Dialog>
-        </Modal.Container>
-      </Modal.Backdrop>
-    </Modal>
+            </AlertDialog.Footer>
+          </AlertDialog.Dialog>
+        </AlertDialog.Container>
+      </AlertDialog.Backdrop>
+    </AlertDialog>
   )
 }
