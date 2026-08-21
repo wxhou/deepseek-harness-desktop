@@ -6,9 +6,9 @@ mod utils;
 
 // 导出公共接口
 pub use core::{
-    download_file, ensure_extract, fetch_dsh_pkg_asset, fetch_dsh_pkg_tags,
-    fetch_latest_dsh_pkg_info, fetch_node_sha256, parse_version_from_tag, resolve_update,
-    verify_sha256, LatestDshPkg, UpdateCheck,
+    download_file, download_file_from_sources, ensure_extract, fetch_dsh_pkg_asset,
+    fetch_dsh_pkg_tags, fetch_latest_dsh_pkg_info, fetch_node_sha256, parse_version_from_tag,
+    resolve_update, verify_sha256, LatestDshPkg, UpdateCheck,
 };
 // 供核心面板切换版本时使用（跨模块内部接口，不进公共 API）
 pub(crate) use core::{remove_dir_with_retry, rename_with_retry};
