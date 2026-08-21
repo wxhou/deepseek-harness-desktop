@@ -22,7 +22,8 @@ export function toast(
   message: string,
   options: HeroUIToastOptions & { placement?: Placement },
 ) {
-  const { placement = 'top', ...rest } = options
+  // 默认右下角；个别调用方需要其他位置时显式传 placement
+  const { placement = 'bottom end', ...rest } = options
   const key = queues[placement].add({ title: message, ...rest })
   placementsKeys.set(key, placement)
   return key

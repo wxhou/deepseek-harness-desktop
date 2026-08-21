@@ -10,9 +10,10 @@
 
 import { invoke } from '@tauri-apps/api/core'
 
-// 保存原始 console，避免劫持后递归
-const _origConsole: Record<string, (...a: unknown[]) => void> | null =
-  typeof console !== 'undefined'
+// 保存原始 console，避免劫持后递归；本模块职责即劫持 console，需要引用原始方法
+/* eslint-disable no-console -- 有意引用原始 console 方法 */
+const _origConsole: Record<string, (...a: unknown[]) => void> | null
+  = typeof console !== 'undefined'
     ? {
         log: console.log.bind(console),
         info: console.info.bind(console),
@@ -22,6 +23,7 @@ const _origConsole: Record<string, (...a: unknown[]) => void> | null =
         trace: (console.trace ?? console.log).bind(console),
       }
     : null
+/* eslint-enable no-console */
 
 export type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'off'
 
@@ -48,7 +50,7 @@ function resolveLevel(): LogLevel {
   return 'info'
 }
 
-let currentLevel: LogLevel = resolveLevel()
+const currentLevel: LogLevel = resolveLevel()
 
 function shouldLog(level: LogLevel): boolean {
   return LEVEL_ORDER[level] >= LEVEL_ORDER[currentLevel]
@@ -114,16 +116,19 @@ if (typeof window !== 'undefined' && typeof console !== 'undefined' && _origCons
   for (const m of ['log', 'info', 'debug', 'warn', 'error', 'trace'] as const) {
     const orig = (_origConsole as Record<string, (...a: unknown[]) => void>)[m] ?? _origConsole.log
     const lvl = _consoleLevel[m] ?? 'info'
-    if ((orig as unknown as { __hijacked?: boolean }).__hijacked) continue
+    if ((orig as unknown as { __hijacked?: boolean }).__hijacked)
+      continue
     const hijacked = (...args: unknown[]) => {
-      if (!shouldLog(lvl)) return
+      if (!shouldLog(lvl))
+        return
       if (import.meta.env.PROD && LEVEL_ORDER[lvl] < LEVEL_ORDER.warn) {
         forwardToRust(lvl, 'frontend', args)
         return
       }
       try {
         orig(...args)
-      } catch {
+      }
+      catch {
         // 忽略控制台异常
       }
       forwardToRust(lvl, 'frontend', args)

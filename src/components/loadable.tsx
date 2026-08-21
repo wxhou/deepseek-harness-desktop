@@ -1,11 +1,10 @@
 import type { ComponentType, ReactNode, SVGProps } from 'react'
 import { useTranslation } from 'react-i18next'
 import { button } from './primitives'
+import { ProgressPanel } from './progress-panel'
 
 /** 图标组件类型（@gravity-ui/icons 均为 SVG 组件） */
 export type IconComponent = ComponentType<SVGProps<SVGSVGElement>>
-
-const LOG_LIMIT = 5
 
 /**
  * 通用加载/安装界面。
@@ -86,29 +85,7 @@ export default function Loadable({
 
         {showPanel && (
           <div className="flex w-full flex-col gap-4">
-            {percentage != null && (
-              <div className="flex items-center gap-3">
-                <div className="h-2 flex-1 overflow-hidden rounded-full bg-panel2" role="progressbar" aria-valuenow={Math.round(percentage)}>
-                  <div className="h-full bg-gradient-to-r from-accent to-accent2 transition-[width] duration-150" style={{ width: `${Math.min(percentage, 100)}%` }} />
-                </div>
-                <span className="min-w-[44px] text-right text-[13px] font-semibold tabular-nums text-accent2">
-                  {Math.round(percentage)}
-                  %
-                </span>
-              </div>
-            )}
-            {hasLogs && (
-              <div className="min-h-[112px] max-h-[184px] overflow-y-auto rounded-lg border border-line bg-log-bg px-3.5 py-2.5 text-left font-mono text-xs leading-[1.7]" aria-label={t('ui.install_log')}>
-                {(logs!.length ? logs! : [t('ui.waiting_logs')]).slice(-LOG_LIMIT).map((line, index) => (
-                  // 日志行内容可能重复，需以 index 区分 key
-                  // eslint-disable-next-line react/no-array-index-key
-                  <p key={`${line}-${index}`} className="m-0 flex gap-2 overflow-hidden text-ellipsis whitespace-nowrap text-log-ink">
-                    <span className="shrink-0 text-accent select-none">›</span>
-                    <span className="min-w-0 overflow-hidden text-ellipsis">{line}</span>
-                  </p>
-                ))}
-              </div>
-            )}
+            <ProgressPanel percentage={percentage} logs={hasLogs ? logs! : undefined} />
           </div>
         )}
 
