@@ -53,32 +53,30 @@ fn find_available_port(start: u16) -> Result<u16, String> {
 /// 0.1.0-rc.8 起 `dsh web` 默认在系统浏览器打开 UI（桌面端内嵌 WebView，
 /// 不希望每次启动都弹浏览器），并新增 `--no-open` 关闭该行为。更早的 rc
 /// 版本没有这个标志，commander 会把未知选项当作错误、导致 web profile
-/// 启动失败，因此追加标志前必须按已装版本判定：rc.8 及以上（含无 rc 后缀
-/// 的稳定版）传标志；rc.7 及更早不传（保持旧行为）。无法解析的版本号保守
-/// 按不支持处理。
+/// 启动失败，因此追加标志前必须按已装版本判定：0.1.0-rc.8 及以上传标志；
+/// 更早不传（保持旧行为）。
+///
+/// 比较用 `semver` 库按完整语义化版本进行：只比 rc 序号会把基础版本更大的
+/// 新版本误判为旧版——`0.1.1-rc.1` 的 rc 号（1）虽小于 8，但晚于
+/// 0.1.0-rc.8，同样支持 `--no-open`（该误判是浏览器复弹的回归根因）。
+/// 版本号非法（无法解析）时保守处理：不追加标志。
 fn version_supports_no_open(version: &str) -> bool {
-    if version.is_empty() {
+    // 首个支持 `--no-open` 的 dsh 版本（0.1.0-rc.8）
+    const NO_OPEN_MIN_VERSION: &str = "0.1.0-rc.8";
+    let Ok(min) = semver::Version::parse(NO_OPEN_MIN_VERSION) else {
         return false;
-    }
-    // 版本形如 "0.1.0-rc.8"，取 rc 号数值比较
-    if let Some((_, rc_part)) = version.split_once("-rc") {
-        // rc 号前的分隔点可有可无；解析失败视为无法判定，保守不传
-        rc_part
-            .trim_start_matches('.')
-            .parse::<u32>()
-            .map(|n| n >= 8)
-            .unwrap_or(false)
-    } else {
-        // 无 rc 标识（0.2.0 等稳定版）必然晚于 rc.8
-        true
-    }
+    };
+    semver::Version::parse(version)
+        .map(|v| v >= min)
+        .unwrap_or(false)
 }
 
-/// 按已安装 dsh 版本决定是否追加 `--no-open`（见 [`version_supports_no_open`]）。
+/// 按当前活动核心的 dsh 版本决定是否追加 `--no-open`（见 [`version_supports_no_open`]）。
 ///
-/// 读不到版本清单（未安装/损坏）时保守处理：不追加标志。
+/// 版本以活动核心为准：本地核心（用户 CLI 安装）与预打包核心各自读自己的
+/// 包清单；读不到时保守处理：不追加标志。
 fn web_supports_no_open_flag(app_handle: &tauri::AppHandle) -> bool {
-    match config::get_dsh_version(app_handle) {
+    match crate::service::core::active_version(app_handle) {
         Some(version) => version_supports_no_open(&version),
         None => false,
     }
@@ -367,7 +365,8 @@ fn relaunch_via_shell_escape(app_handle: &tauri::AppHandle) {
 pub async fn start(app_handle: tauri::AppHandle) -> Result<(), String> {
     let setting = config::get_store_dat_setting(&app_handle);
     let node_binary_path = config::get_node_binary_path(&app_handle);
-    let dsh_binary_path = config::get_dsh_binary_path(&app_handle);
+    // 活动核心的入口：本地核心存在时优先本地（需求 3），否则预打包
+    let dsh_binary_path = crate::service::core::active_dsh_binary(&app_handle);
 
     if !setting.installed {
         log::debug!("Harness not installed, skipping startup");
@@ -428,7 +427,8 @@ pub async fn restart(app_handle: tauri::AppHandle) -> Result<(), String> {
 pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     let mut setting = config::get_store_dat_setting(&app_handle);
     let node_binary_path = config::get_node_binary_path(&app_handle);
-    let dsh_binary_path = config::get_dsh_binary_path(&app_handle);
+    // 活动核心的 dsh 入口（本地核心优先，未检测到走预打包）
+    let dsh_binary_path = crate::service::core::active_dsh_binary(&app_handle);
 
     log::debug!("Checking Node.js path: {:?}", node_binary_path);
     if !node_binary_path.exists() {
@@ -902,21 +902,33 @@ mod tests {
     fn no_open_supported_on_rc8_and_later() {
         assert!(version_supports_no_open("0.1.0-rc.8"));
         assert!(version_supports_no_open("0.1.0-rc.9"));
+        // 基础版本更大的新版本：0.1.1-rc.1 的 rc 号（1）虽小于 8，但晚于
+        // 0.1.0-rc.8，同样支持 --no-open（只比 rc 号会把这里误判为旧版）
+        assert!(version_supports_no_open("0.1.1-rc.1"));
+        assert!(version_supports_no_open("0.1.2-rc.1"));
         // 稳定版必然晚于 rc.8
+        assert!(version_supports_no_open("0.1.0"));
         assert!(version_supports_no_open("0.2.0"));
+        assert!(version_supports_no_open("1.0.0"));
     }
 
     #[test]
     fn no_open_absent_before_rc8() {
         assert!(!version_supports_no_open("0.1.0-rc.7"));
         assert!(!version_supports_no_open("0.1.0-rc.0"));
+        // 基础版本更早的 rc 系列一律不支持
+        assert!(!version_supports_no_open("0.0.1-rc.5"));
+        assert!(!version_supports_no_open("0.0.9-rc.99"));
     }
 
     #[test]
     fn no_open_unknown_version_is_conservative() {
         assert!(!version_supports_no_open(""));
-        // rc 号缺失/非数字：无法判定，保守按不支持处理
+        // rc 号缺失：`0.1.0-rc` 的预发布 [rc] 短于 [rc, 8]，判为早于 rc.8
         assert!(!version_supports_no_open("0.1.0-rc"));
-        assert!(!version_supports_no_open("0.1.0-rc.a"));
+        // 不完整/非法版本号（缺 patch、带 v 前缀、无 semver 结构）：无法解析
+        assert!(!version_supports_no_open("0.1"));
+        assert!(!version_supports_no_open("v0.1.0"));
+        assert!(!version_supports_no_open("not-a-version"));
     }
 }

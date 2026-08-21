@@ -50,21 +50,38 @@ fn dsh_core_base_url(region: Region) -> &'static str {
     }
 }
 
-/// 打包的 DeepSeek Harness 发行版下载地址
-pub fn get_dsh_download_url() -> Result<String, String> {
+/// Harness 发行版资产文件名（按平台与架构）
+fn dsh_pkg_asset_filename() -> Result<String, String> {
     let arch = env::consts::ARCH;
     let os = env::consts::OS;
 
-    // 根据平台和架构生成文件名
-    let filename = match (os, arch) {
-        ("windows", _) => "deepseek-harness-pkg-windows.zip".to_string(),
-        ("macos", "aarch64") => "deepseek-harness-pkg-macos-arm64.zip".to_string(),
-        ("macos", "x86_64") => "deepseek-harness-pkg-macos-x64.zip".to_string(),
-        ("linux", _) => "deepseek-harness-pkg-linux.zip".to_string(),
-        _ => return Err(format!("Unsupported platform: {} {}", os, arch)),
-    };
+    match (os, arch) {
+        ("windows", _) => Ok("deepseek-harness-pkg-windows.zip".to_string()),
+        ("macos", "aarch64") => Ok("deepseek-harness-pkg-macos-arm64.zip".to_string()),
+        ("macos", "x86_64") => Ok("deepseek-harness-pkg-macos-x64.zip".to_string()),
+        ("linux", _) => Ok("deepseek-harness-pkg-linux.zip".to_string()),
+        _ => Err(format!("Unsupported platform: {} {}", os, arch)),
+    }
+}
 
-    Ok(format!("{}{}", dsh_core_base_url(detect_region()), filename))
+/// 打包的 DeepSeek Harness 发行版下载地址
+pub fn get_dsh_download_url() -> Result<String, String> {
+    Ok(format!(
+        "{}{}",
+        dsh_core_base_url(detect_region()),
+        dsh_pkg_asset_filename()?
+    ))
+}
+
+/// 指定 tag 的 DeepSeek Harness 发行版下载地址。
+///
+/// 把 latest 下载地址中的 `releases/latest/download/` 替换为
+/// `releases/download/<tag>/`，镜像/直连与平台文件名逻辑与最新版完全一致
+/// （GitHub 的 tag 下载路径是固定的 release 资产地址，可被确定性推导）。
+pub fn get_dsh_download_url_for_tag(tag: &str) -> Result<String, String> {
+    let base = dsh_core_base_url(detect_region())
+        .replace("releases/latest/download/", &format!("releases/download/{tag}/"));
+    Ok(format!("{}{}", base, dsh_pkg_asset_filename()?))
 }
 
 /// 在 PATH 及常见安装目录中查找 node 可执行文件（不校验版本）

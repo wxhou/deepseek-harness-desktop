@@ -35,6 +35,10 @@ pub struct Setting {
     /// 桌面端启动服务与插件管理都以它为准（见 service::profile）。
     #[serde(default = "default_active_profile")]
     pub active_profile: String,
+    /// 活动核心的显式选择：`Some("local")` = 用户 CLI 安装的本地核心，
+    /// `Some("app")` = 桌面端预打包核心；`None` = 自动（本地核心存在时优先）。
+    #[serde(default)]
+    pub active_core: Option<String>,
 }
 
 /// 默认档案：桌面端内置的 web 档案
@@ -70,6 +74,7 @@ impl Default for Setting {
             preset_hash: None,
             dsh_home_migrated: false,
             active_profile: default_active_profile(),
+            active_core: None,
         }
     }
 }

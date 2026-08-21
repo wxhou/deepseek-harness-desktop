@@ -245,7 +245,7 @@ pub async fn fetch_node_sha256(download_url: &str) -> Result<String, String> {
 /// 锁等待期间用 `tokio::time::sleep` 让出异步运行时，而不是阻塞占用一个
 /// Tokio worker：安装流程的进度事件与其它异步任务（健康检查、日志轮转）
 /// 不会因一次长锁等待而被一并冻结。
-async fn remove_dir_with_retry(dest: &Path) -> bool {
+pub(crate) async fn remove_dir_with_retry(dest: &Path) -> bool {
     const MAX_ATTEMPTS: u32 = 40;
     const RETRY_DELAY: Duration = Duration::from_millis(250);
 
@@ -302,7 +302,7 @@ async fn remove_path_if_exists(path: &Path) -> Result<(), String> {
 /// 这里轮询重试，最长约 30 秒；除进程句柄外，Windows 杀毒/索引服务也可能
 /// 在大规模解压后短暂持有目录句柄，10 秒窗口不足以等待其释放。
 /// 重试仍失败才返回底层错误交由调用方映射。
-async fn rename_with_retry(from: &Path, to: &Path) -> Result<(), std::io::Error> {
+pub(crate) async fn rename_with_retry(from: &Path, to: &Path) -> Result<(), std::io::Error> {
     const MAX_ATTEMPTS: u32 = 60;
     const RETRY_DELAY: Duration = Duration::from_millis(500);
 
@@ -742,6 +742,77 @@ pub async fn fetch_latest_dsh_pkg_info() -> Result<LatestDshPkg, String> {
     Ok(LatestDshPkg {
         tag: tag_name,
         commit,
+        asset_url,
+        digest,
+    })
+}
+
+/// 拉取指定 tag 的发行版信息（资产 URL + 可信摘要），供核心面板按版本下载。
+///
+/// 与 `fetch_latest_dsh_pkg_info` 同源策略：优先走 api.github.com
+/// （`/releases/tags/{tag}` 拿资产与摘要），失败时资产 URL 平台确定性推导
+/// （latest 地址的 tag 位替换）、摘要走 expanded_assets HTML；digest 仍取不到
+/// 则置 `None`，调用方据此安全中止下载（沿用 DSH_INTEGRITY_UNAVAILABLE 设计）。
+pub async fn fetch_dsh_pkg_asset(tag: &str) -> Result<LatestDshPkg, String> {
+    let client = github_client()?;
+    let expected_name = config::get_dsh_download_url()?
+        .rsplit('/')
+        .next()
+        .ok_or_else(|| "Missing DSH asset filename".to_string())?
+        .to_string();
+
+    // 1. 优先 API 拉该 tag 的 release（含资产 + 可信摘要）
+    let release = github_api_get(&client, &format!("{DSH_PKG_GITHUB_API}/releases/tags/{tag}"))
+        .await
+        .map_err(|e| format!("Release {tag} request failed: {e}"))?;
+    let json: serde_json::Value = release
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse release {tag} response: {e}"))?;
+
+    let asset = json.get("assets").and_then(|value| value.as_array()).and_then(
+        |assets| {
+            assets.iter().find(|asset| {
+                asset.get("name").and_then(|value| value.as_str())
+                    == Some(expected_name.as_str())
+            })
+        },
+    );
+    let asset_url = asset
+        .and_then(|a| a.get("browser_download_url").and_then(|v| v.as_str()))
+        .map(|u| u.to_string())
+        .unwrap_or_else(|| config::get_dsh_download_url_for_tag(tag).unwrap_or_default());
+    let mut digest = asset
+        .and_then(|a| a.get("digest").and_then(|v| v.as_str()))
+        .filter(|v| v.starts_with("sha256:"))
+        .map(|v| v.to_string());
+
+    // 2. 摘要兜底：expanded_assets HTML（github.com，非 api.github.com）
+    if digest.is_none() {
+        match fetch_dsh_digest_from_expanded_assets(&client, tag, &expected_name).await {
+            Ok(Some(d)) => {
+                log::info!(
+                    "Trusted digest unavailable from GitHub API, recovered from release HTML for {}",
+                    expected_name
+                );
+                digest = Some(d);
+            }
+            Ok(None) => {
+                log::warn!(
+                    "No digest found in release HTML for {} (tag {})",
+                    expected_name,
+                    tag
+                );
+            }
+            Err(e) => {
+                log::warn!("Failed to fetch digest from release HTML: {}", e);
+            }
+        }
+    }
+
+    Ok(LatestDshPkg {
+        tag: tag.to_string(),
+        commit: commit_fallback_from_tag(tag),
         asset_url,
         digest,
     })
