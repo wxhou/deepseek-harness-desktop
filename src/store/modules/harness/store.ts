@@ -8,12 +8,13 @@ import type {
   SetupStatus,
   SidebarBusyAction,
 } from './types'
+import { emitter } from '@hairy/react-lib'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import i18next from 'i18next'
 import { defineStore } from 'valtio-define'
 import { queryClient } from '@/config/client'
-import { updater } from '../updater'
+import { harnessUpdater } from '../harness-updater'
 
 const MAX_RETRIES = 8
 const IFRAME_LOAD_TIMEOUT = 20000
@@ -320,7 +321,7 @@ export const harness = defineStore({
           return
         // 已安装时后台静默检查新版，发现后提示用户
         if (config.installed) {
-          void updater.checkForUpdate()
+          void harnessUpdater.checkForUpdate()
         }
       }
       catch (err) {
@@ -356,6 +357,7 @@ export const harness = defineStore({
         return
       this.busyAction = 'restart'
       try {
+        emitter.emit('config:dialog:hidden')
         await invoke('shutdown_harness')
       }
       catch (err) {
@@ -376,6 +378,8 @@ export const harness = defineStore({
       if (this.busyAction)
         return
       this.busyAction = 'shutdown'
+      // 停止服务后应用回到「已停止」态，配置弹窗已无意义，与 restart 一致地关闭它
+      emitter.emit('config:dialog:hidden')
       try {
         await invoke('shutdown_harness')
       }
@@ -512,7 +516,7 @@ export const harness = defineStore({
     /** 预装引导结束后的收尾：拉起服务等待就绪，并静默检查更新 */
     async continueAfterPreinstall() {
       await this.launchAndWait()
-      void updater.checkForUpdate()
+      void harnessUpdater.checkForUpdate()
     },
 
     /**
@@ -522,6 +526,7 @@ export const harness = defineStore({
     async openPreinstall() {
       if (this.preinstall.installing)
         return
+      emitter.emit('config:dialog:hidden')
       this.preinstall.error = ''
       this.preinstall.logs = []
       this.status = 'preinstall'

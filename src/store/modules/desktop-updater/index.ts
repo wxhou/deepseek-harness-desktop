@@ -1,4 +1,4 @@
-export { desktopUpdate } from './store'
+export { desktopUpdater } from './store'
 export type {
   DesktopAboutInfo,
   DesktopDownloadProgress,

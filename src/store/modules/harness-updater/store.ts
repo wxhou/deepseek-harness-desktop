@@ -10,7 +10,7 @@ import { harness } from '../harness'
  * 版本更新模块：后台静默检查 + 手动更新安装。
  * 安装进度与启动等待复用 harness 模块的能力，本模块只负责"有没有新版本"的决策。
  */
-export const updater = defineStore({
+export const harnessUpdater = defineStore({
   state: () => ({
     /** 发现的新版本信息（null 表示暂无/已被忽略） */
     updateInfo: null as DshUpdateInfo | null,
@@ -87,7 +87,7 @@ export const updater = defineStore({
           children: t('update.now'),
           onPress: () => {
             toast.clear()
-            void updater.handleUpdate()
+            void this.handleUpdate()
           },
           variant: 'tertiary',
         },

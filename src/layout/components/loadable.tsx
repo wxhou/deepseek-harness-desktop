@@ -1,7 +1,7 @@
 import type { ComponentType, ReactNode, SVGProps } from 'react'
 import { useTranslation } from 'react-i18next'
+import { PanelProgress } from '@/components/panel-progress'
 import { button } from '@/components/primitives'
-import { ProgressPanel } from '@/components/progress-panel'
 
 /** 图标组件类型（@gravity-ui/icons 均为 SVG 组件） */
 export type IconComponent = ComponentType<SVGProps<SVGSVGElement>>
@@ -37,7 +37,7 @@ export interface LoadableProps {
   children?: ReactNode
 }
 
-export default function Loadable({
+export function Loadable({
   icon: Icon,
   title,
   subtitle,
@@ -85,7 +85,7 @@ export default function Loadable({
 
         {showPanel && (
           <div className="flex w-full flex-col gap-4">
-            <ProgressPanel percentage={percentage} logs={hasLogs ? logs! : undefined} />
+            <PanelProgress percentage={percentage} logs={hasLogs ? logs! : undefined} />
           </div>
         )}
 

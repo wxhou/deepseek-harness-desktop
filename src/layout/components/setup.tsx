@@ -1,10 +1,10 @@
-import type { SetupStatus } from '@/store/modules/harness'
 import type { IconComponent } from './loadable'
+import type { SetupStatus } from '@/store/modules/harness'
 import { ArrowDownToLine, CircleCheck, CircleExclamation, CircleInfo, Magnifier, Rocket } from '@gravity-ui/icons'
 import { useTranslation } from 'react-i18next'
 import { useStore } from 'valtio-define'
-import { harness } from '@/store/modules/harness'
-import Loadable from './loadable'
+import { store } from '@/store'
+import { Loadable } from './loadable'
 
 // 各阶段对应不同图标，保持与 logo 一致的黑白中性色调
 const STATUS_ICONS: Record<SetupStatus, IconComponent> = {
@@ -21,9 +21,9 @@ const STATUS_ICONS: Record<SetupStatus, IconComponent> = {
  * 视觉与官方 web shell 的 boot 加载页（AppRoot）一致。
  * 状态与重试动作直接从 harness store 读取，不再接收 props。
  */
-export default function Setup() {
+export function Setup() {
   const { t } = useTranslation()
-  const { status, installer, errorMsg, errorLogs, pluginConflictHint } = useStore(harness)
+  const { status, installer, errorMsg, errorLogs, pluginConflictHint } = useStore(store.harness)
   const error = status === 'error'
   const installing = status === 'installing'
   const heading = error ? t('status.error') : installer.title || t('status.installing')
@@ -42,7 +42,7 @@ export default function Setup() {
       percentage={installing ? installer.percentage : undefined}
       logs={logs}
       errorMsg={error ? errorMsg : undefined}
-      onRetry={error ? harness.boot : undefined}
+      onRetry={error ? store.harness.boot : undefined}
     >
       {error && pluginConflictHint && (
         <p className="m-0 text-xs leading-[18px] break-all text-load-muted">{pluginConflictHint}</p>

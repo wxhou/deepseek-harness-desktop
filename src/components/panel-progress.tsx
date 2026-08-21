@@ -1,4 +1,4 @@
-import { useTranslation } from 'react-i18next'
+import { Logs } from './logs'
 
 const LOG_LIMIT = 5
 
@@ -8,15 +8,14 @@ const LOG_LIMIT = 5
  * 从 Loadable 中拆出，供首次安装（setup）与核心版本下载对话框共用：
  * 两处都要展示 `install-progress` 事件驱动的百分比与日志流。
  */
-export interface ProgressPanelProps {
+export interface PanelProgressProps {
   /** 进度百分比（0-100）；不传则不渲染进度条 */
   percentage?: number
   /** 日志行；不传则不渲染日志面板（空数组渲染"等待日志"占位） */
   logs?: readonly string[]
 }
 
-export function ProgressPanel({ percentage, logs }: ProgressPanelProps) {
-  const { t } = useTranslation()
+export function PanelProgress({ percentage, logs }: PanelProgressProps) {
   const hasLogs = logs != null
   const showPanel = hasLogs || percentage != null
 
@@ -38,16 +37,7 @@ export function ProgressPanel({ percentage, logs }: ProgressPanelProps) {
         </div>
       )}
       {hasLogs && (
-        <div className="min-h-[112px] max-h-[184px] overflow-y-auto rounded-lg border border-line bg-log-bg px-3.5 py-2.5 text-left font-mono text-xs leading-[1.7]" aria-label={t('ui.install_log')}>
-          {(logs!.length ? logs! : [t('ui.waiting_logs')]).slice(-LOG_LIMIT).map((line, index) => (
-            // 日志行内容可能重复，需以 index 区分 key
-            // eslint-disable-next-line react/no-array-index-key
-            <p key={`${line}-${index}`} className="m-0 flex gap-2 overflow-hidden text-ellipsis whitespace-nowrap text-log-ink">
-              <span className="shrink-0 text-accent select-none">›</span>
-              <span className="min-w-0 overflow-hidden text-ellipsis">{line}</span>
-            </p>
-          ))}
-        </div>
+        <Logs logs={logs!} limit={LOG_LIMIT} bodyClassName="max-h-[184px]" />
       )}
     </div>
   )

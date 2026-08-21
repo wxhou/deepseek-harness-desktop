@@ -1,13 +1,16 @@
 import type { PreinstallPlugin } from '@/store/modules/harness'
 import { CircleInfo, Copy, Xmark } from '@gravity-ui/icons'
-import { Button, Card, Checkbox, Chip } from '@heroui/react'
+import { Button, Checkbox, Chip, Label, Spinner, Typography } from '@heroui/react'
 import { invoke } from '@tauri-apps/api/core'
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { If } from 'react-if-lite'
 import { useStore } from 'valtio-define'
-import { harness } from '@/store/modules/harness'
-import { toast } from '@/utils/toast'
+import { Empty } from '@/components/empty'
+import { Item } from '@/components/item'
+import { Logs } from '@/components/logs'
+import { store } from '@/store'
+import { toast } from '@/utils'
 
 /**
  * 预装插件引导页：首次安装（或老版本升级）后展示推荐插件列表，
@@ -15,7 +18,7 @@ import { toast } from '@/utils/toast'
  * 或跳过；两者都会标记完成并继续启动服务。
  */
 
-/** 插件列表的一行：勾选框 + 名称 + 推荐/已安装标签 + 仓库跳转按钮 */
+/** 插件列表的一行：名称 + 推荐/已安装标签在左，勾选框 + 仓库跳转按钮在右 */
 function PluginRow({ plugin, checked, disabled, onToggle, onOpenRepo }: {
   plugin: PreinstallPlugin
   checked: boolean
@@ -26,50 +29,57 @@ function PluginRow({ plugin, checked, disabled, onToggle, onOpenRepo }: {
   const { t } = useTranslation()
 
   return (
-    <div className="flex items-center justify-between gap-3 border-b border-line/40 px-4 py-3 last:border-b-0">
-      <Checkbox
-        isSelected={checked || plugin.installed}
-        isDisabled={disabled || plugin.installed}
-        onChange={isSelected => onToggle(plugin.id, isSelected)}
-        className="min-w-0 flex-1"
-      >
-        <Checkbox.Content className="min-w-0">
-          <Checkbox.Control className="bg-panel2 rounded-md">
-            <Checkbox.Indicator className="rounded-md" />
-          </Checkbox.Control>
-          <span className="min-w-0">
-            <span className={`flex min-w-0 items-center gap-2 text-sm font-medium ${plugin.installed ? 'text-muted line-through' : 'text-ink'}`}>
-              <span className="truncate">{plugin.name}</span>
-              <If cond={plugin.recommended && !plugin.installed}>
-                <Chip size="sm" variant="soft" color="success" className="font-medium">
-                  {t('preinstall.recommend')}
-                </Chip>
-              </If>
-              <If cond={plugin.fix && !plugin.installed}>
-                <Chip size="sm" variant="soft" color="warning" className="font-medium">
-                  {t('preinstall.fix')}
-                </Chip>
-              </If>
-              <If cond={plugin.installed}>
-                <Chip size="sm" variant="soft" color="success" className="font-medium">
-                  {t('preinstall.installed')}
-                </Chip>
-              </If>
-            </span>
-          </span>
-        </Checkbox.Content>
-      </Checkbox>
-      <Button
-        isIconOnly
-        size="sm"
-        variant="ghost"
-        className="shrink-0 rounded-md"
-        aria-label={t('preinstall.open_repo', { name: plugin.name })}
-        onPress={() => onOpenRepo(plugin.id)}
-      >
-        <CircleInfo className="size-4" />
-      </Button>
-    </div>
+    <Item
+      left={(
+        <>
+          <Label className={`min-w-0 truncate text-sm font-medium ${plugin.installed ? 'text-muted line-through' : 'text-ink'}`}>
+            {plugin.name}
+          </Label>
+          <If cond={plugin.recommended && !plugin.installed}>
+            <Chip size="sm" variant="soft" color="success" className="shrink-0 font-medium">
+              {t('preinstall.recommend')}
+            </Chip>
+          </If>
+          <If cond={plugin.fix && !plugin.installed}>
+            <Chip size="sm" variant="soft" color="warning" className="shrink-0 font-medium">
+              {t('preinstall.fix')}
+            </Chip>
+          </If>
+          <If cond={plugin.installed}>
+            <Chip size="sm" variant="soft" color="success" className="shrink-0 font-medium">
+              {t('preinstall.installed')}
+            </Chip>
+          </If>
+        </>
+      )}
+      right={(
+        <>
+          <Checkbox
+            isSelected={checked || plugin.installed}
+            isDisabled={disabled || plugin.installed}
+            onChange={isSelected => onToggle(plugin.id, isSelected)}
+            className="shrink-0"
+            aria-label={plugin.name}
+          >
+            <Checkbox.Content>
+              <Checkbox.Control>
+                <Checkbox.Indicator />
+              </Checkbox.Control>
+            </Checkbox.Content>
+          </Checkbox>
+          <Button
+            isIconOnly
+            size="sm"
+            variant="ghost"
+            className="size-6 shrink-0 rounded-md"
+            aria-label={t('preinstall.open_repo', { name: plugin.name })}
+            onPress={() => onOpenRepo(plugin.id)}
+          >
+            <CircleInfo className="size-4" />
+          </Button>
+        </>
+      )}
+    />
   )
 }
 
@@ -89,49 +99,36 @@ function LogPanel({ logs }: { logs: readonly string[] }) {
   }
 
   return (
-    <div className="overflow-hidden rounded-lg border border-line bg-log-bg">
-      {/* 面板头：复制日志（右上角） */}
-      <div className="flex items-center justify-end border-b border-line/40 bg-panel2/60 px-2 py-1">
+    <Logs
+      logs={logs}
+      limit={100}
+      bodyClassName="max-h-[240px]"
+      header={(
         <Button
           size="sm"
           variant="ghost"
           isIconOnly
-          className="size-6 min-w-6 rounded-md"
+          className="size-6 shrink-0 rounded-md"
           aria-label={t('buttons.copy')}
           onPress={copyLogs}
         >
           <Copy className="size-3.5" />
         </Button>
-      </div>
-      <div
-        className="max-h-[240px] min-h-[112px] overflow-y-auto px-3.5 py-2.5 text-left font-mono text-xs leading-[1.7]"
-        aria-label={t('ui.install_log')}
-      >
-        <If cond={logs.length > 0} else={<p className="m-0 text-load-muted">{t('ui.waiting_logs')}</p>}>
-          {logs.slice(-100).map((line, index) => (
-            // 日志行内容可能重复，以 index 区分 key
-            // eslint-disable-next-line react/no-array-index-key
-            <p key={`${line}-${index}`} className="m-0 flex gap-2 overflow-hidden text-ellipsis whitespace-nowrap text-log-ink">
-              <span className="shrink-0 text-accent select-none">›</span>
-              <span className="min-w-0 overflow-hidden text-ellipsis">{line}</span>
-            </p>
-          ))}
-        </If>
-      </div>
-    </div>
+      )}
+    />
   )
 }
 
-export default function PreinstallSetup() {
+export function PreinstallSetup() {
   const { t } = useTranslation()
-  const { preinstall } = useStore(harness)
+  const { preinstall } = useStore(store.harness)
   // 用户手动调整后的选择（一旦交互即接管默认勾选）
   const [selected, setSelected] = useState<Set<string>>(() => new Set())
   const [touched, setTouched] = useState(false)
 
   // 进入引导页时拉取插件列表
   useEffect(() => {
-    void harness.loadPreinstallPlugins()
+    void store.harness.loadPreinstallPlugins()
   }, [])
 
   // 默认勾选：未安装的推荐插件 +「修复」类项 + 无 chip 但标记默认勾选的项（如 dsh-notification）。
@@ -162,11 +159,11 @@ export default function PreinstallSetup() {
   }
 
   function handleConfirm() {
-    void harness.confirmPreinstall([...effectiveSelected])
+    void store.harness.confirmPreinstall([...effectiveSelected])
   }
 
   function handleSkip() {
-    void harness.skipPreinstall()
+    void store.harness.skipPreinstall()
   }
 
   // 可选中的插件（未安装项）勾选数，用于禁用"确定"
@@ -178,8 +175,8 @@ export default function PreinstallSetup() {
     <div className="flex h-full w-full items-center justify-center bg-canvas">
       <div className="flex w-[min(560px,88vw)] flex-col gap-5">
         <header className="flex flex-col items-center gap-1.5 text-center">
-          <h1 className="text-base font-semibold tracking-[0.08em] text-load-ink">{t('preinstall.title')}</h1>
-          <p className="max-w-[440px] text-xs leading-5 text-load-muted">{t('preinstall.subtitle')}</p>
+          <Typography type="h4">{t('preinstall.title')}</Typography>
+          <Typography color="muted" type="body-sm" className="max-w-[440px]">{t('preinstall.subtitle')}</Typography>
         </header>
 
         <If
@@ -191,11 +188,11 @@ export default function PreinstallSetup() {
               else={(
                 <>
                   {/* 插件列表 */}
-                  <Card className="p-0 rounded-md">
+                  <div className="space-y-3 flex-wrap gap-2">
                     <If
                       cond={preinstall.plugins.length > 0}
                       else={(
-                        <p className="text-center text-xs text-load-muted">{t('preinstall.empty')}</p>
+                        <Empty>{t('preinstall.empty')}</Empty>
                       )}
                     >
                       {preinstall.plugins.map(plugin => (
@@ -209,15 +206,15 @@ export default function PreinstallSetup() {
                         />
                       ))}
                     </If>
-                  </Card>
+                  </div>
 
                   {/* 操作区：跳过 / 确定 */}
                   <div className="flex items-center justify-end gap-2">
-                    <Button className="rounded-md" size="sm" variant="tertiary" onPress={handleSkip} isDisabled={installing}>
+                    <Button className="h-8 rounded-md" size="sm" variant="tertiary" onPress={handleSkip} isDisabled={installing}>
                       {t('preinstall.skip')}
                     </Button>
                     <Button
-                      className="rounded-md"
+                      className="h-8 rounded-md"
                       size="sm"
                       variant="primary"
                       onPress={handleConfirm}
@@ -231,19 +228,19 @@ export default function PreinstallSetup() {
             >
               {/* 安装失败：错误信息 + 日志 + 操作 */}
               <div className="flex flex-col gap-2.5">
-                <div className="flex flex-col gap-2 rounded-lg border border-danger/30 bg-danger/5 px-3.5 py-3">
+                <div className="flex flex-col gap-2 rounded-md border border-danger/30 bg-danger/5 p-3">
                   <p className="text-xs font-medium text-danger">{t('preinstall.failed')}</p>
-                  <p className="max-h-[120px] overflow-y-auto break-all font-mono text-[11px] leading-relaxed text-load-muted">
+                  <p className="max-h-[120px] overflow-y-auto break-all font-mono text-[11px] leading-relaxed text-muted">
                     {preinstall.error}
                   </p>
                 </div>
                 <LogPanel logs={preinstall.logs} />
                 <div className="flex items-center justify-end gap-2">
-                  <Button className="rounded-md" size="sm" variant="tertiary" onPress={handleSkip} isDisabled={installing}>
+                  <Button className="h-8 rounded-md" size="sm" variant="tertiary" onPress={handleSkip} isDisabled={installing}>
                     {t('preinstall.skip')}
                   </Button>
                   <Button
-                    className="rounded-md"
+                    className="h-8 rounded-md"
                     size="sm"
                     variant="primary"
                     onPress={handleConfirm}
@@ -256,20 +253,20 @@ export default function PreinstallSetup() {
             </If>
           )}
         >
-          {/* 安装中：与 Loadable 加载页一致的指示样式（spinner 在上、文案在下，图标旁不加文字） */}
+          {/* 安装中：spinner 在上、文案在下，图标旁不加文字 */}
           <div className="flex flex-col gap-2.5">
             <div className="flex flex-col items-center gap-3">
-              <span className="h-5 w-5 animate-load-spin rounded-full border-2 border-load-ring border-t-load-ink" />
-              <p className="text-xs leading-[18px] text-load-muted">{t('preinstall.installing')}</p>
+              <Spinner size="md" color="current" />
+              <p className="text-xs text-muted">{t('preinstall.installing')}</p>
             </div>
             <LogPanel logs={preinstall.logs} />
             {/* 取消安装：网络抖动/限流（429）时可能长时间卡在重试，给用户退出入口 */}
             <div className="flex items-center justify-center">
               <Button
-                className="rounded-md"
+                className="h-8 rounded-md"
                 size="sm"
                 variant="tertiary"
-                onPress={harness.cancelPreinstall}
+                onPress={store.harness.cancelPreinstall}
                 isDisabled={preinstall.cancelling}
               >
                 <Xmark className="size-3.5" />

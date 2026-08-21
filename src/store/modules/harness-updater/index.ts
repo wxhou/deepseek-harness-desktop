@@ -1,2 +1,2 @@
-export { updater } from './store'
+export { harnessUpdater } from './store'
 export type { DshUpdateInfo } from './types'

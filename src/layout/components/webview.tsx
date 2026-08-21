@@ -4,11 +4,11 @@ import { useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useStore } from 'valtio-define'
 import { useIframeShim } from '@/hooks/use-iframe-shim'
-import { harness } from '@/store/modules/harness'
-import Loadable from './loadable'
-import Navbar from './navbar'
-import PreinstallSetup from './preinstall-setup'
-import Setup from './setup'
+import { store } from '@/store'
+import { Loadable } from './loadable'
+import { Navbar } from './navbar'
+import { PreinstallSetup } from './preinstall-setup'
+import { Setup } from './setup'
 
 /**
  * 主区域视图：壳层导航栏（Navbar）常驻顶部，
@@ -16,7 +16,7 @@ import Setup from './setup'
  * （挂载后加载职责交给 dsh 应用内官方 boot 页，避免两套 loading 叠加）。
  * 状态与方法全部来自 harness store，不再接收 props。
  */
-export default function HarnessWebview() {
+export function Webview() {
   const { t } = useTranslation()
   const {
     status,
@@ -25,7 +25,7 @@ export default function HarnessWebview() {
     iframeKey,
     iframeSrc,
     serviceUrl,
-  } = useStore(harness)
+  } = useStore(store.harness)
 
   const iframeRef = useRef<HTMLIFrameElement>(null)
 
@@ -80,8 +80,8 @@ export default function HarnessWebview() {
                 src={iframeSrc}
                 allow="clipboard-read; clipboard-write; fullscreen"
                 sandbox="allow-same-origin allow-scripts allow-popups allow-forms allow-modals allow-downloads allow-storage-access-by-user-activation"
-                onLoad={harness.markIframeLoaded}
-                onError={harness.markIframeError}
+                onLoad={store.harness.markIframeLoaded}
+                onError={store.harness.markIframeError}
                 title={t('app.open_editor')}
               />
             )
@@ -95,7 +95,7 @@ export default function HarnessWebview() {
               icon={CircleExclamation}
               title={t('ui.iframe_error')}
               errorMsg={t('ui.ensure_running', { url: serviceUrl })}
-              onRetry={harness.refreshIframe}
+              onRetry={store.harness.refreshIframe}
             />
           </div>
         )}

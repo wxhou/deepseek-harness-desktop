@@ -27,7 +27,7 @@ function readDismissedTag(): string {
   }
 }
 
-export const desktopUpdate = defineStore({
+export const desktopUpdater = defineStore({
   state: () => ({
     /** 发现的新版本信息（null 表示暂无） */
     updateInfo: null as DesktopUpdateInfo | null,
@@ -91,7 +91,7 @@ export const desktopUpdate = defineStore({
           this.about = await invoke<DesktopAboutInfo>('get_desktop_about')
         }
         catch (err) {
-          console.warn('[DesktopUpdate] failed to load about info:', err)
+          console.warn('[DesktopUpdater] failed to load about info:', err)
         }
       }
       return this.about
@@ -123,7 +123,7 @@ export const desktopUpdate = defineStore({
           await this.openInstaller(updated.path)
       }
       catch (err) {
-        console.error('[DesktopUpdate] download failed:', err)
+        console.error('[DesktopUpdater] download failed:', err)
         toast(i18next.t('update.desktop_download_failed'), {
           variant: 'danger',
           placement: 'bottom end',
@@ -145,7 +145,7 @@ export const desktopUpdate = defineStore({
         })
       }
       catch (err) {
-        console.error('[DesktopUpdate] failed to open installer:', err)
+        console.error('[DesktopUpdater] failed to open installer:', err)
         toast(i18next.t('update.desktop_open_failed'), {
           variant: 'danger',
           placement: 'bottom end',
@@ -157,7 +157,7 @@ export const desktopUpdate = defineStore({
 
 // 模块级监听下载进度（应用生命周期内常驻）
 listen<DesktopDownloadProgress>('desktop-update-progress', (e) => {
-  desktopUpdate.downloadProgress = e.payload.percentage
+  desktopUpdater.downloadProgress = e.payload.percentage
   // 后端附加提示（如主源失败已切换镜像源重试）→ toast 告知用户
   if (e.payload.message) {
     toast(e.payload.message, {
@@ -166,5 +166,5 @@ listen<DesktopDownloadProgress>('desktop-update-progress', (e) => {
     })
   }
 }).catch((err) => {
-  console.error('[DesktopUpdate] failed to listen desktop-update-progress:', err)
+  console.error('[DesktopUpdater] failed to listen desktop-update-progress:', err)
 })

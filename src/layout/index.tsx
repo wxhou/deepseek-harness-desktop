@@ -1,11 +1,11 @@
 import { useEffect } from 'react'
 import { useStore } from 'valtio-define'
-import DesktopUpdater from '../components/desktop-updater'
-import DownloadToast from '../components/download-toast'
-import HarnessUpdater from '../components/harness-updater'
-import HarnessWebview from './components/harness-webview'
 import { useDshTheme } from '../hooks/use-dsh-theme'
 import { store } from '../store'
+import { DesktopUpdater } from './components/desktop-updater'
+import { DownloadToast } from './components/download-toast-trigger'
+import { HarnessUpdater } from './components/harness-updater'
+import { Webview } from './components/webview'
 import '../i18n'
 /**
  * 应用根布局：只负责首次启动与整体壳层结构。
@@ -14,7 +14,7 @@ import '../i18n'
  * 弹出层（关于 / 检查更新 / 应用配置）统一由 overlastic 命令式打开，
  * 仅在需要时挂载，不常驻渲染。
  */
-export default function App() {
+export function App() {
   useDshTheme()
   const { status } = useStore(store.harness)
   // 首次挂载自动启动 harness（store 内部对 StrictMode 重复挂载去重）
@@ -24,7 +24,7 @@ export default function App() {
 
   return (
     <div className="flex h-screen w-screen">
-      <HarnessWebview />
+      <Webview />
       {status === 'ready' && <HarnessUpdater />}
       {status === 'ready' && <DownloadToast />}
       <DesktopUpdater />

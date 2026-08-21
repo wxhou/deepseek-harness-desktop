@@ -4,12 +4,12 @@ import { invoke } from '@tauri-apps/api/core'
 import { useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useStore } from 'valtio-define'
+import { store } from '@/store'
 import { toast } from '@/utils'
-import { download } from '../store/modules/download'
 
-export default function DownloadToast() {
+export function DownloadToast() {
   const { t } = useTranslation()
-  const { notice } = useStore(download)
+  const { notice } = useStore(store.download)
   const toastKey = useRef<string | null>(null)
 
   useWatch([notice], () => {
@@ -32,16 +32,15 @@ export default function DownloadToast() {
             children: t('download.show_in_folder'),
             variant: 'tertiary',
             onPress: () => {
-              const close = toast.close
               if (toastKey.current)
-                close(toastKey.current)
+                toast.close(toastKey.current)
               void invoke('reveal_in_folder', { path }).catch((err) => {
                 console.error('[Harness] reveal_in_folder failed:', err)
               })
             },
           }
         : undefined,
-      onClose: () => download.dismiss(),
+      onClose: () => store.download.dismiss(),
     })
   })
 

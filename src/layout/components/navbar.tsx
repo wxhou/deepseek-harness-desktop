@@ -15,13 +15,13 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import { useTranslation } from 'react-i18next'
 import { If } from 'react-if-lite'
 import { useStore } from 'valtio-define'
-import { toast } from '@/utils'
+import { ConfigDialog } from '@/components/config-dialog'
+import { DesktopAboutDialog } from '@/components/desktop-about-dialog'
+import { DesktopUpdateDialog } from '@/components/desktop-update-dialog'
 import { useDshPlugins } from '@/hooks/use-dsh-plugins'
 import { useIframeTauri } from '@/hooks/use-iframe-tauri'
-import { desktopUpdate } from '@/store/modules/desktop-update'
-import { ConfigDialog } from '@/components/config-dialog'
-import DesktopAboutDialog from '@/components/desktop-about-dialog'
-import DesktopUpdateDialog from '@/components/desktop-update-dialog'
+import { store } from '@/store'
+import { toast } from '@/utils'
 
 /**
  * 壳层窗口顶部导航栏（44px，常驻）：
@@ -49,16 +49,16 @@ import DesktopUpdateDialog from '@/components/desktop-update-dialog'
  */
 const TAURI_PLUGIN_ID = 'dsh-tauri'
 
-interface NavbarProps {
+export interface NavbarProps {
   /** 就绪态 iframe；传入时启用左侧导航控制 */
   iframeRef?: RefObject<HTMLIFrameElement | null>
 }
 
-export default function Navbar({ iframeRef }: NavbarProps) {
+export function Navbar({ iframeRef }: NavbarProps) {
   const { t } = useTranslation()
   const { plugins } = useDshPlugins()
   const { sidebarCollapsed, canGoBack, canGoForward, sendNav } = useIframeTauri(iframeRef)
-  const { updateInfo } = useStore(desktopUpdate)
+  const { updateInfo } = useStore(store.desktopUpdater)
 
   const openConfigDialog = useOverlay(ConfigDialog)
   const openAboutDialog = useOverlay(DesktopAboutDialog)
@@ -85,7 +85,7 @@ export default function Navbar({ iframeRef }: NavbarProps) {
     if (key === 'check-update')
       void handleCheckUpdate()
     else if (key === 'about')
-      openAboutDialog()
+      void openAboutDialog().catch(() => {})
     else if (key === 'copy-run-logs')
       void copyRunLogs()
   }
@@ -93,9 +93,9 @@ export default function Navbar({ iframeRef }: NavbarProps) {
   /** 「检查更新」：先检查，有更新才弹框；检查失败提示错误而非「已是最新」 */
   async function handleCheckUpdate() {
     try {
-      const info = await desktopUpdate.check()
+      const info = await store.desktopUpdater.check()
       if (info)
-        openUpdateDialog()
+        void openUpdateDialog().catch(() => {})
       else
         toast(t('update.up_to_date'), {})
     }
@@ -163,7 +163,7 @@ export default function Navbar({ iframeRef }: NavbarProps) {
           className="rounded-lg h-6 text-xs px-1.5"
           size="sm"
           variant="ghost"
-          onPress={() => openConfigDialog()}
+          onPress={() => void openConfigDialog().catch(() => {})}
         >
           {t('app.config')}
         </Button>
