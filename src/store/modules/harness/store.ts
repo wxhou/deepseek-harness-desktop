@@ -253,6 +253,8 @@ export const harness = defineStore({
         void queryClient.invalidateQueries({ queryKey: ['info'] })
         void queryClient.invalidateQueries({ queryKey: ['config'] })
         void queryClient.invalidateQueries({ queryKey: ['cli_status'] })
+        // 档案/核心切换后重启：当前档案的插件列表、核心来源状态一并刷新
+        void queryClient.invalidateQueries({ queryKey: ['profiles'] })
       }
       catch (err) {
         // 失败时附上服务日志里的真实错误行，供错误界面展示而不是只显示超时文案

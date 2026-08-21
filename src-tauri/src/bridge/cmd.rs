@@ -2,6 +2,7 @@ use crate::config;
 use crate::service::cli;
 use crate::service::download::{self, Installable};
 use crate::service::plugin;
+use crate::service::profile;
 use crate::service::update;
 use crate::service::workflow;
 use tauri::AppHandle;
@@ -304,6 +305,33 @@ pub async fn open_preinstall_repo(app_handle: AppHandle, id: String) -> Result<(
 #[tauri::command]
 pub fn get_dsh_plugins(app_handle: AppHandle) -> Vec<plugin::DshPlugin> {
     plugin::watch::list(&app_handle)
+}
+
+/// 档案列表（$DSH_HOME/profiles 下的目录，含 active/default 标记）
+#[tauri::command]
+pub fn get_profiles(app_handle: AppHandle) -> Vec<profile::Profile> {
+    profile::list(&app_handle)
+}
+
+/// 新建档案（初始化 $DSH_HOME/profiles/<id>，web 模板）
+#[tauri::command]
+pub fn create_profile(app_handle: AppHandle, name: String) -> Result<profile::Profile, String> {
+    profile::create(&app_handle, &name)
+}
+
+/// 切换当前使用中的档案（持久化；重启服务后生效，由前端触发）
+#[tauri::command]
+pub fn set_active_profile(
+    app_handle: AppHandle,
+    id: String,
+) -> Result<profile::Profile, String> {
+    profile::set_active(&app_handle, &id)
+}
+
+/// 删除档案（默认档案与使用中的档案不可删除）
+#[tauri::command]
+pub fn remove_profile(app_handle: AppHandle, id: String) -> Result<(), String> {
+    profile::remove(&app_handle, &id)
 }
 
 

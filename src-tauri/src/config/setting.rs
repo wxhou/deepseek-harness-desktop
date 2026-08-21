@@ -31,6 +31,15 @@ pub struct Setting {
     /// 幂等标记：迁移成功并删除旧目录后置位，避免重复合并。
     #[serde(default)]
     pub dsh_home_migrated: bool,
+    /// 当前使用的档案 id（`$DSH_HOME/profiles/<id>`，默认 web）。
+    /// 桌面端启动服务与插件管理都以它为准（见 service::profile）。
+    #[serde(default = "default_active_profile")]
+    pub active_profile: String,
+}
+
+/// 默认档案：桌面端内置的 web 档案
+fn default_active_profile() -> String {
+    "web".to_string()
 }
 
 /// 命令行集成默认开启（开发者工具场景，安装完成即可用）
@@ -60,6 +69,7 @@ impl Default for Setting {
             preinstall_done: false,
             preset_hash: None,
             dsh_home_migrated: false,
+            active_profile: default_active_profile(),
         }
     }
 }

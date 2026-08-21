@@ -33,11 +33,13 @@ pub async fn cancel(app_handle: &AppHandle) {
 
     #[cfg(windows)]
     {
+        // 按当前档案匹配命令行：`dsh plugin --profile <当前档案> add`（不再写死 web）
+        let profile = crate::service::profile::active_profile(app_handle);
         let base = config::get_dsh_install_path(app_handle)
             .to_string_lossy()
             .replace('\\', "\\\\");
         let ps_cmd = format!(
-            "Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" | Where-Object {{ ($_.CommandLine -like '*plugin*--profile*web*add*') -and ($_.ExecutablePath -like '{base}\\*') }} | ForEach-Object {{ taskkill /PID $_.ProcessId /T /F 2>$null }}"
+            "Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" | Where-Object {{ ($_.CommandLine -like '*plugin*--profile*{profile}*add*') -and ($_.ExecutablePath -like '{base}\\*') }} | ForEach-Object {{ taskkill /PID $_.ProcessId /T /F 2>$null }}"
         );
 
         let mut cmd = Command::new("powershell");

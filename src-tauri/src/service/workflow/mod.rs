@@ -530,13 +530,14 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     // Windows 打包版是 GUI 进程（没有控制台）。直接以 CREATE_NO_WINDOW 启动
     // node 会让 dsh 派生的子进程各自新建可见控制台窗口（频繁闪烁 cmd 黑窗），
     // 因此 Windows 上改用“隐藏控制台”方式启动，见 win_spawn 模块。
+    let active_profile = crate::service::profile::active_profile(&app_handle);
     let spawn_result = {
         #[cfg(windows)]
         {
             let mut args: Vec<OsString> = vec![
                 dsh_binary_path.as_os_str().to_os_string(),
                 OsString::from("--profile"),
-                OsString::from("web"),
+                OsString::from(active_profile.as_str()),
                 OsString::from("--host"),
                 OsString::from("127.0.0.1"),
                 OsString::from("--port"),
@@ -593,7 +594,7 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
             let mut cmd = Command::new(&node_binary_path);
             cmd.arg(&dsh_binary_path)
                 .arg("--profile")
-                .arg("web")
+                .arg(active_profile.as_str())
                 .arg("--host")
                 .arg("127.0.0.1")
                 .arg("--port")

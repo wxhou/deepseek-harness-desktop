@@ -69,11 +69,12 @@ mod imp {
         r"C:\Program Files (x86)\Git\usr\bin\bash.exe",
     ];
 
-    /// web profile 目录：`<DSH_HOME>/profiles/web`。
+    /// 当前档案的 profile 目录：`<DSH_HOME>/profiles/<当前档案>`。
     fn profile_dir(app_handle: &tauri::AppHandle) -> PathBuf {
-        crate::config::get_dsh_data_path(app_handle)
-            .join("profiles")
-            .join("web")
+        crate::service::profile::profile_dir_of(
+            app_handle,
+            &crate::service::profile::active_profile(app_handle),
+        )
     }
 
     /// dsh 用户数据目录（`$DSH_HOME`）。
