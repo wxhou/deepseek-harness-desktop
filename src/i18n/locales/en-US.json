@@ -200,5 +200,11 @@
   "core.remove_failed": "Failed to uninstall the core version",
   "core.local_missing_hint": "No local core detected. Install @deepseek-ai/dsh globally via npm/pnpm and the desktop will prefer it automatically.",
   "app.dev_env": "Development",
-  "app.config": "Configuration"
+  "app.config": "Configuration",
+  "config.debug": "Debug",
+  "config.profiles": "Profiles",
+  "config.plugins": "Plugins",
+  "config.harness": "Harness",
+  "buttons.cancel": "Cancel",
+  "buttons.confirm": "Confirm"
 }

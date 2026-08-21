@@ -3,6 +3,7 @@ import type { AlertDialogStatus } from 'node_modules/@heroui/react/dist/componen
 import type { ReactNode } from 'react'
 import { AlertDialog, Button } from '@heroui/react'
 import { useDisclosure } from '@overlastic/react'
+import { useTranslation } from 'react-i18next'
 
 export interface DialogProps extends PropsWithOverlays {
   status: AlertDialogStatus
@@ -15,6 +16,7 @@ export interface DialogProps extends PropsWithOverlays {
 
 export function Dialog(props: DialogProps) {
   const disclosure = useDisclosure({ props })
+  const { t } = useTranslation()
 
   const buttonVariant = props.status === 'danger' ? 'danger' : 'primary'
 
@@ -33,10 +35,10 @@ export function Dialog(props: DialogProps) {
             </AlertDialog.Body>
             <AlertDialog.Footer>
               <Button className="rounded-md" variant="tertiary" onPress={disclosure.cancel}>
-                {props.cancelText || 'Cancel'}
+                {props.cancelText || t('buttons.cancel')}
               </Button>
               <Button className="rounded-md" variant={buttonVariant} onPress={disclosure.confirm}>
-                {props.confirmText || 'Confirm'}
+                {props.confirmText || t('buttons.confirm')}
               </Button>
             </AlertDialog.Footer>
           </AlertDialog.Dialog>
