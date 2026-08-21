@@ -2,7 +2,7 @@
 //!
 //! 目标：
 //! - 后端：`log::*`（业务，`dsh` target 表示 Harness 输出）→ `tracing` 经 `tracing_log::LogTracer` → `tracing-subscriber` + `tracing-appender`（non-blocking）+ `EnvFilter`
-//! - 前端：`console.*` 劫持 → `log_frontend`（`target: "frontend"`）→ 独立 `desktop.frontdesk.log`（标识 `frontend`，同格式）
+//! - 前端：`console.*` 劫持 → `log_frontend`（`target: "frontend"`）→ 独立 `desktop.frontdesk.log`（标识 `frontend`，同格式）；文件层对 `frontend` target 直接跳过，后端 `desktop.log` 不混入前端日志（前端日志仅终端 / `desktop.frontdesk.log` 可见）
 //! - 格式：`[YYYY-MM-DD HH:MM:SS.mmmZ] LEVEL target: message`（例 `INFO dsh:` / `INFO frontend:`）
 //! - 轮转：`desktop.log` + `desktop.frontdesk.log` 各 5MiB，保留 `.1 ~ .3`
 //! - 降噪：`reqwest`/`hyper` 默认 `warn`，可通过 `RUST_LOG=reqwest=debug` 覆盖
@@ -14,7 +14,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use tracing_appender::non_blocking::{NonBlocking, WorkerGuard};
 use tracing_subscriber::fmt::time::OffsetTime;
-use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use tracing_subscriber::filter::filter_fn;
+use tracing_subscriber::layer::{Layer, SubscriberExt};
+use tracing_subscriber::{fmt, util::SubscriberInitExt, EnvFilter};
 const APP_IDENTIFIER: &str = "io.github.hairyf.deepseek-harness-desktop";
 const LOG_FILE_NAME: &str = "desktop.log";
 const FRONTDESK_LOG_FILE_NAME: &str = "desktop.frontdesk.log";
@@ -275,12 +277,16 @@ pub fn init() {
         .with_level(true);
     if let Some((nb, guard)) = file_writer {
         let _ = FILE_GUARD.set(guard);
+        // 文件层对前端 `target: "frontend"` 直接跳过：前端 `console.*` 只进
+        // `desktop.frontdesk.log`（log_frontend 直写），不混入后端 `desktop.log`，
+        // 避免前端日志及其多行堆栈把后端日志挤没（复制运行日志时更清晰）。
         let file_layer = fmt::layer()
             .with_writer(nb)
             .with_timer(file_timer)
             .with_target(true)
             .with_ansi(false)
-            .with_level(true);
+            .with_level(true)
+            .with_filter(filter_fn(|meta| meta.target() != "frontend"));
         let _ = tracing_subscriber::registry()
             .with(filter)
             .with(stdout_layer)
@@ -317,9 +323,9 @@ impl FrontendLevel {
 }
 
 pub fn log_frontend(level: FrontendLevel, target: &str, message: &str) {
-    // 前端日志独立落盘到 `desktop.frontdesk.log`，与后端 `desktop.log`（含 `dsh` target）分离
+    // 前端日志独立落盘到 `desktop.frontdesk.log`，与后端 `desktop.log`（含 `dsh` target）分离；
+    // 文件层已跳过 `frontend` target（见 init），此处经 `log` 代理仅为 `pnpm tauri dev` 终端可见
     // 标识与 `dsh` 对称：`frontend` 作为 target 出现在 LEVEL 之后（`... INFO frontend: [tag] message`）
-    // 同时经 `log` 代理到 `tracing` 的 stdout 层，使 `pnpm tauri dev` 终端可见（与后端/dsh 同屏）
     // 当 JS 劫持以 `target: "frontend"` 透传时，避免 `frontend: [frontend]` 重复，退化为 `frontend: message`
     let is_generic_frontend = target == "frontend";
     let prefixed = if is_generic_frontend {
