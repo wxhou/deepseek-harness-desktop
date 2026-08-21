@@ -17,6 +17,8 @@ export interface DesktopDownloadProgress {
   percentage: number
   downloaded: number
   total: number
+  /** 附加提示（如切换下载源），无提示时缺省 */
+  message?: string
 }
 
 /** Rust 侧 get_desktop_about 返回的关于信息 */

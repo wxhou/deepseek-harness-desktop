@@ -9,12 +9,15 @@ pub const NODE_BASE_URL: &str = "https://nodejs.org/dist/";
 /// Node.js 镜像下载地址（npmmirror，302 重定向至 cdn.npmmirror.com）
 pub const NODE_MIRROR_BASE_URL: &str = "https://npmmirror.com/mirrors/node/";
 
-/// 打包的 DeepSeek Harness 发行版下载地址（GitHub Release）
+/// 打包的 DeepSeek Harness 发行版下载地址（GitHub Release，默认首选源）
 pub const DSH_CORE_URL: &str =
     "https://github.com/hairyf/deepseek-harness-pkg/releases/latest/download/";
 
-/// 打包的 DeepSeek Harness 发行版镜像下载地址（ghfast.top 中转 GitHub Release，
-/// 直接拼接官方 URL，下载内容一致、仍可做 SHA-256 完整性校验）
+/// GitHub Release 的 ghfast.top 中转前缀（透传官方 URL，下载内容一致、
+/// 仍可做 SHA-256 完整性校验），用作官方直连失败时的兜底镜像。
+pub const DSH_MIRROR_PREFIX: &str = "https://ghfast.top/";
+
+/// 打包的 DeepSeek Harness 发行版镜像下载地址（ghfast.top 中转 GitHub Release）
 pub const DSH_MIRROR_CORE_URL: &str =
     "https://ghfast.top/https://github.com/hairyf/deepseek-harness-pkg/releases/latest/download/";
 
