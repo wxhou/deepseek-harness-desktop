@@ -1,14 +1,14 @@
 import { useEffect } from 'react'
 import { useStore } from 'valtio-define'
-import DesktopUpdater from './components/desktop-updater'
-import DownloadToast from './components/download-toast'
-import HarnessUpdater from './components/harness-updater'
+import DesktopUpdater from '../components/desktop-updater'
+import DownloadToast from '../components/download-toast'
+import HarnessUpdater from '../components/harness-updater'
 import HarnessWebview from './components/harness-webview'
-import { useDshTheme } from './hooks/use-dsh-theme'
-import { store } from './store'
-import './i18n'
+import { useDshTheme } from '../hooks/use-dsh-theme'
+import { store } from '../store'
+import '../i18n'
 /**
- * 应用根组件：只负责首次启动与整体布局。
+ * 应用根布局：只负责首次启动与整体壳层结构。
  * 业务状态与操作方法全部收敛到 valtio-define store，
  * 各子组件自行订阅 store，不再通过 props 透传回调与状态。
  * 弹出层（关于 / 检查更新 / 应用配置）统一由 overlastic 命令式打开，

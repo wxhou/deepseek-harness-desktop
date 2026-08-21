@@ -2,8 +2,8 @@ import { Wrench } from '@gravity-ui/icons'
 import { Button } from '@heroui/react'
 import { useTranslation } from 'react-i18next'
 import { useStore } from 'valtio-define'
-import { setting } from '../store/modules/setting'
-import { updater } from '../store/modules/updater'
+import { setting } from '@/store/modules/setting'
+import { updater } from '@/store/modules/updater'
 
 /**
  * 右下角侧边栏展开按钮：显隐与位置都从 store 读取。

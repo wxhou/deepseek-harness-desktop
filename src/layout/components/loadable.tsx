@@ -1,7 +1,7 @@
 import type { ComponentType, ReactNode, SVGProps } from 'react'
 import { useTranslation } from 'react-i18next'
-import { button } from './primitives'
-import { ProgressPanel } from './progress-panel'
+import { button } from '@/components/primitives'
+import { ProgressPanel } from '@/components/progress-panel'
 
 /** 图标组件类型（@gravity-ui/icons 均为 SVG 组件） */
 export type IconComponent = ComponentType<SVGProps<SVGSVGElement>>

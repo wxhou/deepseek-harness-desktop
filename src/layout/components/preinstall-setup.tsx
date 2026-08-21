@@ -1,4 +1,4 @@
-import type { PreinstallPlugin } from '../store/modules/harness'
+import type { PreinstallPlugin } from '@/store/modules/harness'
 import { CircleInfo, Copy, Xmark } from '@gravity-ui/icons'
 import { Button, Card, Checkbox, Chip } from '@heroui/react'
 import { invoke } from '@tauri-apps/api/core'
@@ -6,8 +6,8 @@ import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { If } from 'react-if-lite'
 import { useStore } from 'valtio-define'
-import { harness } from '../store/modules/harness'
-import { toast } from '../utils/toast'
+import { harness } from '@/store/modules/harness'
+import { toast } from '@/utils/toast'
 
 /**
  * 预装插件引导页：首次安装（或老版本升级）后展示推荐插件列表，

@@ -1,9 +1,9 @@
-import type { SetupStatus } from '../store/modules/harness'
+import type { SetupStatus } from '@/store/modules/harness'
 import type { IconComponent } from './loadable'
 import { ArrowDownToLine, CircleCheck, CircleExclamation, CircleInfo, Magnifier, Rocket } from '@gravity-ui/icons'
 import { useTranslation } from 'react-i18next'
 import { useStore } from 'valtio-define'
-import { harness } from '../store/modules/harness'
+import { harness } from '@/store/modules/harness'
 import Loadable from './loadable'
 
 // 各阶段对应不同图标，保持与 logo 一致的黑白中性色调

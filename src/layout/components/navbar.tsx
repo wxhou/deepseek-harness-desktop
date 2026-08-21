@@ -16,12 +16,12 @@ import { useTranslation } from 'react-i18next'
 import { If } from 'react-if-lite'
 import { useStore } from 'valtio-define'
 import { toast } from '@/utils'
-import { useDshPlugins } from '../hooks/use-dsh-plugins'
-import { useIframeTauri } from '../hooks/use-iframe-tauri'
-import { desktopUpdate } from '../store/modules/desktop-update'
-import { ConfigDialog } from './config-dialog'
-import DesktopAboutDialog from './desktop-about-dialog'
-import DesktopUpdateDialog from './desktop-update-dialog'
+import { useDshPlugins } from '@/hooks/use-dsh-plugins'
+import { useIframeTauri } from '@/hooks/use-iframe-tauri'
+import { desktopUpdate } from '@/store/modules/desktop-update'
+import { ConfigDialog } from '@/components/config-dialog'
+import DesktopAboutDialog from '@/components/desktop-about-dialog'
+import DesktopUpdateDialog from '@/components/desktop-update-dialog'
 
 /**
  * 壳层窗口顶部导航栏（44px，常驻）：
