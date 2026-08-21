@@ -109,9 +109,93 @@ pub fn list(app_handle: &AppHandle) -> Vec<PreinstallPlugin> {
         .collect()
 }
 
+const NPMRC_KEY: &str = "confirmModulesPurge=false";
+
+/// 在给定 `.npmrc` 路径上写入 `confirmModulesPurge=false`（幂等合并）。
+///
+/// 拆出纯路径版便于单元测试（不依赖 AppHandle）；`ensure_profile_npmrc` 仅负责
+/// 把 profile 路径传进来。
+fn ensure_npmrc_at(npmrc_path: &PathBuf) -> Result<(), String> {
+    // 读取既有内容（不存在按空处理）
+    let existing = match std::fs::read_to_string(npmrc_path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(format!("NPMRC_READ_FAILED: {e}")),
+    };
+
+    // 已含目标键则无需改动（逐行精确匹配，避免重复追加）
+    if existing.lines().any(|l| l.trim() == NPMRC_KEY) {
+        return Ok(());
+    }
+
+    // 合并写入：保留原内容，末尾另起一行追加目标键
+    let mut content = existing;
+    if !content.is_empty() && !content.ends_with('\n') {
+        content.push('\n');
+    }
+    content.push_str(NPMRC_KEY);
+    content.push('\n');
+
+    if let Some(dir) = npmrc_path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("NPMRC_DIR_CREATE_FAILED: {e}"))?;
+    }
+    std::fs::write(npmrc_path, content).map_err(|e| format!("NPMRC_WRITE_FAILED: {e}"))?;
+    log::info!("Ensured profile .npmrc: {}", npmrc_path.display());
+    Ok(())
+}
+
+/// pnpm 在无 TTY 环境（dsh-market 等以子进程方式调用 pnpm 的插件 UI）下重装/更新
+/// 插件时，若需要清理或重建 node_modules 会触发交互式确认，没有 TTY 就会直接中止
+/// （`ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY`），表现为插件更新失败。
+///
+/// 在 profile 目录写入 `confirmModulesPurge=false` 让 pnpm 跳过该确认、直接执行，
+/// 从根源上避免这类更新失败。幂等合并：若已存在相同配置或另有其它配置内容，
+/// 一律原样保留，绝不覆盖用户已有的 `.npmrc`。最佳努力调用方不应让失败阻断启动。
+pub(crate) fn ensure_profile_npmrc(app_handle: &AppHandle) -> Result<(), String> {
+    ensure_npmrc_at(&profile_dir(app_handle).join(".npmrc"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+
+    fn temp_npmrc(label: &str) -> PathBuf {
+        std::env::temp_dir()
+            .join(format!("dsh-npmrc-test-{}-{label}", std::process::id()))
+            .join(".npmrc")
+    }
+
+    #[test]
+    fn npmrc_created_when_missing() {
+        let path = temp_npmrc("created");
+        let _ = std::fs::remove_file(&path);
+        ensure_npmrc_at(&path).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.lines().any(|l| l.trim() == NPMRC_KEY));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn npmrc_preserves_existing_content_and_is_idempotent() {
+        let path = temp_npmrc("preserve");
+        let _ = std::fs::remove_file(&path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "registry=https://registry.npmjs.org/\n").unwrap();
+
+        // 首次：保留既有配置并追加目标键
+        ensure_npmrc_at(&path).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("registry=https://registry.npmjs.org/"));
+        assert_eq!(content.matches(NPMRC_KEY).count(), 1);
+
+        // 再次调用：幂等，不重复追加
+        ensure_npmrc_at(&path).unwrap();
+        let content2 = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("registry=https://registry.npmjs.org/"));
+        assert_eq!(content2.matches(NPMRC_KEY).count(), 1);
+        std::fs::remove_file(&path).ok();
+    }
 
     #[test]
     fn list_installed_parses_manifest() {
