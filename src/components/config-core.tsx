@@ -21,18 +21,9 @@ export interface HarnessVersion {
   active: boolean
   /** 额外说明的 i18n key（可选） */
   hint?: string
+  /** 是否存在错误信息 */
+  error?: string
 }
-
-/**
- * 「Harness Core」面板：管理各版本引擎副本，切换使用 / 卸载不再需要的版本。
- *
- * 与「档案」面板保持一致：`Card` 行布局 + `Typography` 标题、右侧 `Checkbox`
- * 表示当前使用版本，切换/卸载用 `Dialog`（`useOverlay` holder）二次确认。
- *
- * 注意：后端尚无 get_harness_versions / set_harness_version / uninstall_harness_version
- * 命令，按需求约定「仅前端 + 内置示范数据」在此用本地状态驱动 UI；
- * 后端命令落地后用真实查询与接口替换本地更新逻辑。
- */
 const DEMO_VERSIONS: HarnessVersion[] = [
   { id: 'local-rc7', version: 'v0.1.0-rc.7', source: 'local', present: true, active: false, hint: 'core.local_hint' },
   { id: 'app-rc8', version: 'v0.1.0-rc.8', source: 'app', present: true, active: true },
@@ -46,10 +37,7 @@ export function ConfigCore() {
   const { t } = useTranslation()
   const [versions, setVersions] = useState<HarnessVersion[]>(DEMO_VERSIONS)
 
-  /** 当前可卸载（已下载）的版本数：仅剩一个时隐藏卸载入口 */
-  const presentCount = versions.filter(v => v.present).length
-
-  async function activate(version: HarnessVersion) {
+  async function onActivate(version: HarnessVersion) {
     if (version.active)
       return
     await openDialog({
@@ -65,7 +53,7 @@ export function ConfigCore() {
     toast(t('core.activate_toast', { version: version.version }), {})
   }
 
-  async function remove(version: HarnessVersion) {
+  async function onRemove(version: HarnessVersion) {
     await openDialog({
       status: 'danger',
       title: t('core.remove_confirm_title'),
@@ -76,8 +64,9 @@ export function ConfigCore() {
       ),
       confirmText: t('core.uninstall'),
     })
-    // 卸载后整行移除，保证「本地条目删除后即消失」
-    setVersions(prev => prev.filter(v => v.id !== version.id))
+    setVersions(prev => prev.map(v => (
+      v.id === version.id ? { ...v, present: false, active: false } : v
+    )))
     toast(t('core.uninstalled_toast', { version: version.version }), {})
   }
 
@@ -98,7 +87,7 @@ export function ConfigCore() {
           <Card
             key={version.id}
             className="cursor-pointer rounded-md bg-[#f5f5f5] py-3"
-            onClick={() => activate(version)}
+            onClick={() => onActivate(version)}
           >
             <Card.Content className="flex flex-row items-center justify-between">
               <div className="flex min-w-0 items-center gap-1">
@@ -134,7 +123,7 @@ export function ConfigCore() {
                     </Checkbox.Control>
                   </Checkbox.Content>
                 </Checkbox>
-                <If cond={version.present && presentCount > 1}>
+                <If cond={version.present}>
                   <Chip
                     className="rounded-md"
                     variant="primary"
@@ -142,7 +131,7 @@ export function ConfigCore() {
                     size="sm"
                     onClick={(event) => {
                       event.stopPropagation()
-                      void remove(version)
+                      onRemove(version)
                     }}
                   >
                     {t('core.uninstall')}

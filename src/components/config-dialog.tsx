@@ -1,4 +1,4 @@
-import { Cpu, LayoutHeaderSideContent, PersonPencil, Puzzle } from '@gravity-ui/icons'
+import { Cpu, PersonPencil, Puzzle, Wrench } from '@gravity-ui/icons'
 import { cn, Modal } from '@heroui/react'
 import { useDisclosure } from '@overlastic/react'
 import { useState } from 'react'
@@ -15,7 +15,7 @@ export function ConfigDialog() {
       title: '调试',
       label: 'Debug',
       value: 'debug',
-      icon: LayoutHeaderSideContent,
+      icon: Wrench,
     },
     {
       title: '档案',

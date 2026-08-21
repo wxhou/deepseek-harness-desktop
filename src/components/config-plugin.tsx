@@ -33,15 +33,11 @@ export function ConfigPlugin() {
   const [dialogHolder, openDialog] = useOverlay(Dialog, { type: 'holder' })
 
   /** 升级插件（接入尚未实现的后端命令） */
-  function upgrade(_id: string, _source?: PluginErrorDialogState) {
+  async function onUpgrade(_id: string, _source?: PluginErrorDialogState) {
   }
 
   /** 卸载插件（接入尚未实现的后端命令） */
-  function remove(_id: string) {
-  }
-
-  /** 卸载确认（用与「档案」面板一致的 Dialog） */
-  async function confirmRemove(id: string, name: string) {
+  async function onRemove(id: string, name: string) {
     await openDialog({
       status: 'danger',
       title: t('plugins.remove_confirm_title'),
@@ -52,7 +48,7 @@ export function ConfigPlugin() {
       ),
       confirmText: t('plugins.uninstall'),
     })
-    remove(id)
+    // TODO: 实现卸载逻辑
   }
 
   return (
@@ -134,7 +130,7 @@ export function ConfigPlugin() {
                         className="rounded-md cursor-pointer"
                         variant="primary"
                         color="accent"
-                        onClick={() => upgrade(plugin.id)}
+                        onClick={() => onUpgrade(plugin.id)}
                         size="sm"
                       >
                         更新
@@ -145,7 +141,7 @@ export function ConfigPlugin() {
                       variant="primary"
                       color="danger"
                       size="sm"
-                      onClick={() => confirmRemove(plugin.id, plugin.name)}
+                      onClick={() => onRemove(plugin.id, plugin.name)}
                     >
                       卸载
                     </Chip>
