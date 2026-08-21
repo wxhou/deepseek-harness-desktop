@@ -299,10 +299,12 @@ async fn remove_path_if_exists(path: &Path) -> Result<(), String> {
 ///
 /// 结束 dsh/node 进程树后，子进程加载进内存的 DLL 句柄释放存在短暂滞后
 /// （与 remove_dir_with_retry 相同的场景），紧跟其后的目录重命名可能一次失败。
-/// 这里轮询重试，最长约 10 秒；重试仍失败才返回底层错误交由调用方映射。
+/// 这里轮询重试，最长约 30 秒；除进程句柄外，Windows 杀毒/索引服务也可能
+/// 在大规模解压后短暂持有目录句柄，10 秒窗口不足以等待其释放。
+/// 重试仍失败才返回底层错误交由调用方映射。
 async fn rename_with_retry(from: &Path, to: &Path) -> Result<(), std::io::Error> {
-    const MAX_ATTEMPTS: u32 = 40;
-    const RETRY_DELAY: Duration = Duration::from_millis(250);
+    const MAX_ATTEMPTS: u32 = 60;
+    const RETRY_DELAY: Duration = Duration::from_millis(500);
 
     for attempt in 1..=MAX_ATTEMPTS {
         match fs::rename(from, to) {
