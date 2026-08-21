@@ -32,6 +32,7 @@ pub mod watch;
 pub use cancel::cancel;
 pub use install::install;
 pub use installed::{list, PreinstallPlugin};
+pub(crate) use installed::ensure_profile_npmrc;
 pub use preset::repo_url_of;
 pub(crate) use preset::{current_preset_hash, preinstall_pending};
 pub use watch::DshPlugin;

@@ -476,6 +476,14 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     if let Err(e) = win_inspector::apply(&app_handle) {
         log::warn!("win32 terminal support apply failed: {e}");
     }
+    // 预防性处理：pnpm 在无 TTY 环境（dsh-market 等子进程）下重装/更新插件时，
+    // 清理/重建 node_modules 会触发交互确认并因无 TTY 直接中止
+    // （ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY），表现为插件更新失败。
+    // 启动时确保 profile 的 .npmrc 写入 confirmModulesPurge=false（幂等、保留
+    // 已有配置）。最佳努力：失败只告警，不阻断启动。
+    if let Err(e) = crate::service::plugin::ensure_profile_npmrc(&app_handle) {
+        log::warn!("ensure profile .npmrc failed: {e}");
+    }
     let mut envs: HashMap<String, String> = HashMap::new();
     envs.insert(
         "DSH_HOME".to_string(),

@@ -9,6 +9,7 @@ import {
   Xmark,
 } from '@gravity-ui/icons'
 import { Button, Description, Dropdown, Label } from '@heroui/react'
+import { useOverlay } from '@overlastic/react'
 import { invoke } from '@tauri-apps/api/core'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { useTranslation } from 'react-i18next'
@@ -18,7 +19,7 @@ import { toast } from '@/utils'
 import { useDshPlugins } from '../hooks/use-dsh-plugins'
 import { useIframeTauri } from '../hooks/use-iframe-tauri'
 import { desktopUpdate } from '../store/modules/desktop-update'
-import { DebugSidebar } from './debug-sidebar'
+import { ConfigDialog } from './config-dialog'
 
 /**
  * 壳层窗口顶部导航栏（44px，常驻）：
@@ -56,6 +57,8 @@ export default function Navbar({ iframeRef }: NavbarProps) {
   const { plugins } = useDshPlugins()
   const { sidebarCollapsed, canGoBack, canGoForward, sendNav } = useIframeTauri(iframeRef)
   const { updateInfo } = useStore(desktopUpdate)
+
+  const openConfigDialog = useOverlay(ConfigDialog)
   // 仅当 dsh-tauri 插件启用（已安装）时显示左侧导航控件
   const tauriEnabled = plugins.some(plugin => plugin.id === TAURI_PLUGIN_ID)
   function handleWindowAction(action: 'minimize' | 'maximize' | 'background') {
@@ -137,16 +140,14 @@ export default function Navbar({ iframeRef }: NavbarProps) {
         </Button>
       </If>
       <div className="ml-1">
-        <DebugSidebar>
-          <Button
-            className="rounded-lg h-6 text-xs px-1.5"
-            size="sm"
-            variant="ghost"
-            aria-label={t('app.expand_sidebar')}
-          >
-            {t('app.debug')}
-          </Button>
-        </DebugSidebar>
+        <Button
+          className="rounded-lg h-6 text-xs px-1.5"
+          size="sm"
+          variant="ghost"
+          onPress={() => openConfigDialog()}
+        >
+          应用配置
+        </Button>
         <Dropdown>
           <Button
             className="rounded-lg h-6 text-xs px-1.5"
