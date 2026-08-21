@@ -18,6 +18,11 @@ import { toast } from '@/utils'
  * 或跳过；两者都会标记完成并继续启动服务。
  */
 
+/** 派生默认勾选集合：未安装的推荐/修复/默认勾选项（用户手动调整前的基础态） */
+function defaultSelectedSet(plugins: readonly PreinstallPlugin[]): Set<string> {
+  return new Set(plugins.filter(p => !p.installed && (p.recommended || p.fix || p.defaultChecked)).map(p => p.id))
+}
+
 /** 插件列表的一行：名称 + 推荐/已安装标签在左，勾选框 + 仓库跳转按钮在右 */
 function PluginRow({ plugin, checked, disabled, onToggle, onOpenRepo }: {
   plugin: PreinstallPlugin
@@ -135,13 +140,17 @@ export function PreinstallSetup() {
   // 派生计算而非在加载回调里 setState，避免与 store 的加载去重守卫竞争，
   // 保证插件到位后默认勾选必定生效（用户手动调整后以用户选择为准）。
   const effectiveSelected = !touched
-    ? new Set(preinstall.plugins.filter(p => !p.installed && (p.recommended || p.fix || p.defaultChecked)).map(p => p.id))
+    ? defaultSelectedSet(preinstall.plugins)
     : selected
 
   function toggle(id: string, checked: boolean) {
+    // 首次交互以「当前默认勾选」为起点：selected 初始为空，若直接在其上增删，
+    // 取消一个会误把其余默认项一并取消。这里先以 defaultSelectedSet 播种，
+    // 再应用本次勾选，保证「取消一个 = 只取消这一个」。
+    const seed = !touched ? defaultSelectedSet(preinstall.plugins) : null
     setTouched(true)
     setSelected((prev) => {
-      const next = new Set(prev)
+      const next = new Set(seed ?? prev)
       if (checked) {
         next.add(id)
       }
