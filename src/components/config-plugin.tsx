@@ -145,7 +145,7 @@ export function ConfigPlugin() {
         >
           <div className="space-y-3 flex-wrap gap-2">
             {plugins.map(plugin => (
-              <Card key={plugin.id} className="rounded-md bg-[#f5f5f5] py-3">
+              <Card key={plugin.id} className="rounded-md bg-[#f5f5f5] dark:bg-[#222222] py-3">
                 <Card.Content className="flex flex-row items-center justify-between">
                   <div className="min-w-0">
                     <div className="flex min-w-0 items-center gap-1">

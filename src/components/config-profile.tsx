@@ -143,7 +143,7 @@ export function ConfigProfile() {
       >
         <div className="space-y-3 flex-wrap gap-2">
           {profiles.map(profile => (
-            <Card key={profile.id} className="bg-[#f5f5f5] rounded-md py-3 cursor-pointer" onClick={() => activate(profile.id)}>
+            <Card key={profile.id} className="bg-[#f5f5f5] dark:bg-[#222222] rounded-md py-3 cursor-pointer" onClick={() => activate(profile.id)}>
               <Card.Content className="flex flex-row justify-between">
                 <div className="flex items-center gap-1">
                   <Label className="min-w-0 truncate text-sm font-medium text-ink">
