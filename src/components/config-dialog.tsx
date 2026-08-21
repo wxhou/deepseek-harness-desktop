@@ -42,14 +42,14 @@ export function ConfigDialog() {
     <Modal isOpen={disclosure.visible} onOpenChange={disclosure.confirm}>
       <Modal.Backdrop>
         <Modal.Container size="lg">
-          <Modal.Dialog className="w-[800px] max-w-[calc(100vw-48px)]">
+          <Modal.Dialog className="w-[800px] max-w-[calc(100vw-48px)] pr-2.5">
             <Modal.CloseTrigger />
             <Modal.Header className="mb-3">
               <Modal.Heading>
                 应用配置
               </Modal.Heading>
             </Modal.Header>
-            <Modal.Body className="flex gap-6">
+            <Modal.Body className="flex gap-6 pr-0">
               <aside className="w-[164px]">
                 <nav className="flex flex-col gap-2 w-full">
                   {navs.map((item) => {
@@ -59,21 +59,18 @@ export function ConfigDialog() {
                         key={item.value}
                         onClick={() => setActiveTab(item.value)}
                         className={cn(
-                          'text-foreground h-[40px] rounded-md flex items-center gap-2 py-[9px] px-[16px] hover:bg-[#ebeef2] cursor-pointer',
-                          isActive ? 'bg-[#ebeef2]' : '',
+                          'text-foreground h-[40px] rounded-md flex items-center gap-2 py-[9px] px-[16px] hover:bg-background-secondary cursor-pointer',
+                          isActive ? 'bg-background-secondary' : '',
                         )}
                       >
                         <item.icon className="w-5 h-5 mr-2" />
-                        <div className="flex flex-col flex-1 items-start">
-                          <span>{item.title}</span>
-                          {/* <span className="text-[10px] text-foreground-2 -mt-1 text-muted">{item.label}</span> */}
-                        </div>
+                        <span>{item.title}</span>
                       </button>
                     )
                   })}
                 </nav>
               </aside>
-              <div className="flex flex-col flex-1 overflow-auto h-[628px]">
+              <div className="flex flex-col flex-1 overflow-auto h-[628px] pr-2.5">
                 <Switch value={activeTab}>
                   <Case cond="debug">
                     <ConfigDebug />

@@ -8,7 +8,7 @@ import {
   Square,
   Xmark,
 } from '@gravity-ui/icons'
-import { Button, Description, Dropdown, Label } from '@heroui/react'
+import { Button, Chip, Description, Dropdown, Label } from '@heroui/react'
 import { useOverlay } from '@overlastic/react'
 import { invoke } from '@tauri-apps/api/core'
 import { getCurrentWindow } from '@tauri-apps/api/window'
@@ -146,7 +146,7 @@ export default function Navbar({ iframeRef }: NavbarProps) {
           variant="ghost"
           onPress={() => openConfigDialog()}
         >
-          应用配置
+          {t('app.config')}
         </Button>
         <Dropdown>
           <Button
@@ -191,6 +191,11 @@ export default function Navbar({ iframeRef }: NavbarProps) {
             </Dropdown.Menu>
           </Dropdown.Popover>
         </Dropdown>
+        <If cond={import.meta.env.DEV}>
+          <Chip size="sm" variant="primary" color="warning" className="text-xs text-background ml-1">
+            {t('app.dev_env')}
+          </Chip>
+        </If>
 
       </div>
 
