@@ -29,6 +29,19 @@
   <img src="./docs/images/hero-zh.png" width="100%" alt="DSH Desktop 中文宣传横幅" />
 </p>
 
+## 界面预览
+
+<table>
+  <tr>
+    <td align="center"><img src="./docs/images/preview-1.png" alt="应用配置 · 调试" /></td>
+    <td align="center"><img src="./docs/images/preview-2.png" alt="应用配置 · 档案" /></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="./docs/images/preview-3.png" alt="应用配置 · 插件" /></td>
+    <td align="center"><img src="./docs/images/preview-4.png" alt="应用配置 · 核心" /></td>
+  </tr>
+</table>
+
 ## 功能
 
 - ⚡️ **零环境** — 首次启动自动装配内置 Node 运行时与 Harness 内核；本机已有兼容 Node / Pnpm 时直接复用，不修改已有的系统环境。

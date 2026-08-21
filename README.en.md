@@ -29,6 +29,19 @@
   <img src="./docs/images/hero-en.png" width="100%" alt="DSH Desktop English promotional banner" />
 </p>
 
+## Preview
+
+<table>
+  <tr>
+    <td align="center"><img src="./docs/images/preview-1.png" alt="App settings · Debug" /></td>
+    <td align="center"><img src="./docs/images/preview-2.png" alt="App settings · Profiles" /></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="./docs/images/preview-3.png" alt="App settings · Plugins" /></td>
+    <td align="center"><img src="./docs/images/preview-4.png" alt="App settings · Core" /></td>
+  </tr>
+</table>
+
 ## Features
 
 - ⚡️ **Zero setup** — First launch bootstraps the bundled Node runtime and Harness core automatically; a compatible local Node / Pnpm setup is reused as-is when present.
