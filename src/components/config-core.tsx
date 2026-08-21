@@ -276,7 +276,7 @@ export function ConfigCore() {
                           onRemove(core)
                         }}
                       >
-                        {busyId === core.id ? <Spinner size="sm" color="current" /> : undefined}
+                        <If cond={busyId === core.id} then={<Spinner size="sm" color="current" />} />
                         {t('core.uninstall')}
                       </Button>
                     </If>
@@ -295,7 +295,7 @@ export function ConfigCore() {
                         onUpdateLocal()
                       }}
                     >
-                      {busyId === core.id ? <Spinner size="sm" color="current" /> : <ArrowRotateRight className="size-3.5" />}
+                      <If cond={busyId === core.id} then={<Spinner size="sm" color="current" />} else={<ArrowRotateRight className="size-3.5" />} />
                       {t('core.update_local')}
                     </Button>
                   </div>

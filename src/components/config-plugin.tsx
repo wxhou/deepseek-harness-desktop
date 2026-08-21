@@ -199,9 +199,7 @@ export function ConfigPlugin() {
                         onClick={() => onUpgrade(plugin.id)}
                       >
                         <span className="flex items-center gap-1">
-                          {busy?.id === plugin.id && busy.action === 'update'
-                            ? <Spinner size="sm" color="current" />
-                            : null}
+                          <If cond={busy?.id === plugin.id && busy.action === 'update'} then={<Spinner size="sm" color="current" />} />
                           {t('plugins.upgrade')}
                         </span>
                       </Chip>
@@ -214,9 +212,7 @@ export function ConfigPlugin() {
                       onClick={() => onRemove(plugin.id, plugin.name)}
                     >
                       <span className="flex items-center gap-1">
-                        {busy?.id === plugin.id && busy.action === 'remove'
-                          ? <Spinner size="sm" color="current" />
-                          : null}
+                        <If cond={busy?.id === plugin.id && busy.action === 'remove'} then={<Spinner size="sm" color="current" />} />
                         {t('plugins.uninstall')}
                       </span>
                     </Chip>

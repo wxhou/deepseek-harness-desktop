@@ -152,7 +152,7 @@ export function ConfigDebug() {
               isDisabled={busyAction !== null}
               aria-label={t('app.open_browser')}
             >
-              {busyAction === 'openBrowser' ? <Spinner size="sm" color="current" /> : <ArrowUpRightFromSquare className="size-3.5" />}
+              <If cond={busyAction === 'openBrowser'} then={<Spinner size="sm" color="current" />} else={<ArrowUpRightFromSquare className="size-3.5" />} />
             </Button>
           </div>
         </div>
@@ -166,7 +166,7 @@ export function ConfigDebug() {
             onPress={store.harness.restart}
             isDisabled={busyAction !== null}
           >
-            {busyAction === 'restart' ? <Spinner size="sm" color="current" /> : <ArrowRotateRight className="size-3.5" />}
+            <If cond={busyAction === 'restart'} then={<Spinner size="sm" color="current" />} else={<ArrowRotateRight className="size-3.5" />} />
             {t('app.restart')}
           </Button>
           <Button
@@ -176,7 +176,7 @@ export function ConfigDebug() {
             onPress={store.harness.shutdown}
             isDisabled={busyAction !== null}
           >
-            {busyAction === 'shutdown' ? <Spinner size="sm" color="current" /> : <Power className="size-3.5" />}
+            <If cond={busyAction === 'shutdown'} then={<Spinner size="sm" color="current" />} else={<Power className="size-3.5" />} />
             {t('app.shutdown')}
           </Button>
         </If>
@@ -189,7 +189,7 @@ export function ConfigDebug() {
             <span>{info?.dsh_version ?? '-'}</span>
             <If cond={updateInfo}>
               <Link className="ml-2 text-[10px] text-[rgb(65,118,230)]" onClick={store.updater.showToast}>
-                存在新版本
+                {t('menu.new_version')}
                 <ChevronRight className="scale-75" />
               </Link>
             </If>
@@ -235,23 +235,23 @@ export function ConfigDebug() {
               </Switch.Content>
             </Switch>
           </div>
-          {cliStatus && (
+          <If cond={cliStatus != null}>
             <div className="flex flex-col">
               <If
-                cond={!cliStatus.user_dsh_preserved}
+                cond={!cliStatus?.user_dsh_preserved}
                 else={(
                   <Description className="text-[10px] text-muted/70">
                     {t('ui.cli_link_user_dsh_preserved')}
                   </Description>
                 )}
               >
-                <Description className="text-[10px] text-muted/70">{cliStatus.bin_dir}</Description>
+                <Description className="text-[10px] text-muted/70">{cliStatus?.bin_dir}</Description>
                 <Description className="text-[10px] text-muted/70">
                   {t('ui.cli_link_hint')}
                 </Description>
               </If>
             </div>
-          )}
+          </If>
         </div>
 
         <div className="flex items-center justify-between gap-2">
