@@ -1,7 +1,7 @@
 import { CircleExclamation } from '@gravity-ui/icons'
 import { Button, Card, Chip, Label, Spinner, Tooltip, Typography } from '@heroui/react'
 import { useOverlay } from '@overlastic/react'
-import { useMutation } from '@tanstack/react-query'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { invoke } from '@tauri-apps/api/core'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -24,6 +24,7 @@ import { Ellipsis as TextEllipsis } from './ellipsis'
  */
 export function ConfigPlugin() {
   const { t } = useTranslation()
+  const queryClient = useQueryClient()
   const { plugins, loading, error } = useDshPlugins()
 
   const [dialogHolder, openDialog] = useOverlay(Dialog, { type: 'holder' })
@@ -35,6 +36,9 @@ export function ConfigPlugin() {
     mutationFn: (id: string) => invoke<void>('update_dsh_plugin', { id }),
     onSuccess: (_data, id) => {
       const name = plugins.find(p => p.id === id)?.name ?? id
+      // 失效插件列表查询：dsh-plugins-updated 事件在停服务重启场景下可能丢失
+      // （插件操作会停止运行中的服务），必须显式重拉以确保列表落盘后刷新。
+      void queryClient.invalidateQueries({ queryKey: ['plugins'] })
       toast(t('plugins.updated_toast', { name }), {})
     },
     onError: (err, id) => {
@@ -47,6 +51,8 @@ export function ConfigPlugin() {
     mutationFn: (id: string) => invoke<void>('remove_dsh_plugin', { id }),
     onSuccess: (_data, id) => {
       const name = plugins.find(p => p.id === id)?.name ?? id
+      // 同上：卸载成功后显式重拉插件列表，避免事件推送丢失导致列表未更新。
+      void queryClient.invalidateQueries({ queryKey: ['plugins'] })
       toast(t('plugins.removed_toast', { name }), {})
     },
     onError: (err, id) => {

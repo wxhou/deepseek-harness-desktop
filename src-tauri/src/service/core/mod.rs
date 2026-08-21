@@ -262,6 +262,14 @@ pub async fn list(app_handle: &AppHandle) -> Vec<HarnessCore> {
     let active_tag = config::get_dsh_pkg_tag(app_handle);
     let active_dir = config::get_dsh_install_path(app_handle);
     let active_present = config::get_dsh_binary_path(app_handle).exists();
+    // 激活核心按「版本」而非 tag 匹配版本行：pkg 仓库会对同一版本重打包/打
+    // 测试 tag，版本行去重后保留的 tag 未必等于本机安装时的记录 tag。按 tag
+    // 精确匹配会让激活版本行误标「未下载」并在列表底部多出一条重复激活行。
+    let active_version = if source == CoreSource::App {
+        active_app_version(&active_tag, config::get_dsh_version(app_handle))
+    } else {
+        None
+    };
 
     // 版本行：GitHub tags（最新在前）→ 按版本去重，同版本只保留最后一个 tag
     let tags = match download::fetch_dsh_pkg_tags().await {
@@ -284,10 +292,10 @@ pub async fn list(app_handle: &AppHandle) -> Vec<HarnessCore> {
         }
     }
 
-    // 激活行就地标记：激活 tag 落在哪个版本行，就在哪行标 active，不置顶
+    // 激活行就地标记：按版本匹配激活核心（不置顶，作为普通版本行标 active）
     let mut active_rendered = false;
     for (version, tag) in &version_tags {
-        let is_active = source == CoreSource::App && active_tag.as_deref() == Some(tag.as_str());
+        let is_active = active_version.as_deref() == Some(version.as_str());
         if is_active {
             active_rendered = true;
         }
@@ -317,7 +325,7 @@ pub async fn list(app_handle: &AppHandle) -> Vec<HarnessCore> {
         });
     }
 
-    // 激活行未出现在版本列表（离线/限流/tag 被移除/旧版无 tag 记录）：
+    // 激活版本未出现在版本列表（离线/限流/tag 被移除/旧版无 tag 记录）：
     // 追加在版本行之后，保持列表不置顶
     if source == CoreSource::App && !active_rendered {
         rows.push(HarnessCore {
@@ -338,7 +346,11 @@ pub async fn list(app_handle: &AppHandle) -> Vec<HarnessCore> {
 
     // 磁盘扫描：tags 拉取失败/限流，或存在已下载但不在 tags 列表的版本（被移除的
     // 测试打包）时，把已下载的 `dsh-*` 槽位补进列表；同样按版本去重。
+    // 激活版本已由版本行（或底部激活行）呈现，先放入 seen 避免扫描再补一条重复行。
     let mut seen_versions: HashSet<String> = version_tags.iter().map(|(v, _)| v.clone()).collect();
+    if let Some(v) = &active_version {
+        seen_versions.insert(v.clone());
+    }
     if let Ok(entries) = std::fs::read_dir(dependencies_dir(app_handle)) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
@@ -565,6 +577,15 @@ pub async fn remove_version(app_handle: &AppHandle, id: &str) -> Result<(), Stri
         ));
     }
     Ok(())
+}
+
+/// 解析激活预打包核心的版本号：优先记录 tag（`dsh-<version>-<commit>`），
+/// 解析不出（无 tag 记录/格式不符）时用安装目录清单版本兜底。
+fn active_app_version(active_tag: &Option<String>, manifest_version: Option<String>) -> Option<String> {
+    active_tag
+        .as_deref()
+        .and_then(download::parse_version_from_tag)
+        .or(manifest_version)
 }
 
 /// 构造某个已下载 tag 的核心行（下载完成/已存在时返回）。
