@@ -12,8 +12,10 @@
 
 use crate::config;
 use crate::service::cli;
+use crate::service::core;
 use crate::service::download;
 use crate::service::download::Installable;
+use crate::service::profile::active_profile;
 use crate::service::workflow;
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -21,7 +23,8 @@ use std::path::PathBuf;
 use serde_yaml::{Mapping, Value};
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 
-use super::installed::{PREINSTALL_PROFILE, profile_dir};
+use super::errors;
+use super::installed::profile_dir;
 use super::preset::load_presets;
 use super::process::{run_plugin_process, PreinstallLogPayload, PREINSTALL_LOG_EVENT};
 
@@ -37,7 +40,7 @@ const MAX_ALLOW_LIST_RETRIES: usize = 8;
 /// 自动合成 peer 后 `No matching version found for @deepseek-ai/...` 的假失败。
 const MIN_TRUSTED_PNPM_MAJOR: u32 = 10;
 
-/// 校验并安装选中的预装插件：`dsh plugin --profile web add <ids...>`
+/// 校验并安装选中的预装插件：`dsh plugin --profile <当前档案> add <ids...>`
 pub async fn install(app_handle: &AppHandle, ids: &[String]) -> Result<(), String> {
     if ids.is_empty() {
         return Err("PREINSTALL_EMPTY: no plugins selected".to_string());
@@ -66,7 +69,8 @@ pub async fn install(app_handle: &AppHandle, ids: &[String]) -> Result<(), Strin
     cli::ensure_shims(app_handle)?;
 
     let node = config::get_node_binary_path(app_handle);
-    let dsh_bin = config::get_dsh_binary_path(app_handle);
+    // 活动核心的 dsh 入口：本地核心存在时用本地 CLI，否则预打包
+    let dsh_bin = core::active_dsh_binary(app_handle);
     if !node.exists() {
         return Err("NODE_NOT_FOUND: Node.js runtime missing".to_string());
     }
@@ -90,51 +94,20 @@ pub async fn install(app_handle: &AppHandle, ids: &[String]) -> Result<(), Strin
                 line: "[harness] 正在停止运行中的服务（安装插件需要短暂重启）…".to_string(),
             },
         );
-        log::info!("Stopping running harness service before installing preinstall plugins");
+        log::info!("Stopping running harness service before installing plugins");
         if let Err(e) = workflow::stop(app_handle.clone()).await {
-            log::warn!("failed to stop harness before preinstall: {e}");
+            log::warn!("failed to stop harness before plugin install: {e}");
         }
     }
 
-    // 构建环境变量
-    let bin_dir = cli::get_bin_dir(app_handle);
-    let mut envs = HashMap::from([
-        (
-            "DSH_HOME".to_string(),
-            config::get_dsh_data_path(app_handle)
-                .to_string_lossy()
-                .into_owned(),
-        ),
-        ("DSH_TELEMETRY_DISABLED".to_string(), "1".to_string()),
-        ("NO_COLOR".to_string(), "1".to_string()),
-    ]);
-    // 用户 pnpm 过旧/不可探测时强制 pnpm shim 优先捆绑版，避免 8/9 的
-    // autoInstallPeers 语义与 workspace-root gate 破坏插件安装（见 ensure_pnpm）
-    if prefer_bundled_pnpm {
-        envs.insert(
-            "DSH_PREFER_BUNDLED_PNPM".to_string(),
-            "1".to_string(),
-        );
-    }
-
-    let mut paths = vec![bin_dir];
-    if let Some(node_dir) = node.parent() {
-        paths.push(node_dir.to_path_buf());
-    }
-    paths.extend(std::env::split_paths(
-        &std::env::var_os("PATH").unwrap_or_default(),
-    ));
-
-    if let Ok(joined) = std::env::join_paths(paths) {
-        envs.insert("PATH".to_string(), joined.to_string_lossy().into_owned());
-    }
+    let envs = build_plugin_envs(app_handle, prefer_bundled_pnpm);
 
     // 拼装命令行参数
     let mut args = vec![
         dsh_bin.as_os_str().to_os_string(),
         OsString::from("plugin"),
         OsString::from("--profile"),
-        OsString::from(PREINSTALL_PROFILE),
+        OsString::from(active_profile(app_handle)),
         OsString::from("add"),
     ];
     args.extend(specs.iter().map(|s| OsString::from(s.as_str())));
@@ -182,6 +155,14 @@ pub async fn install(app_handle: &AppHandle, ids: &[String]) -> Result<(), Strin
         // （用户环境无 SSH 配置），后者才是补充白名单可自愈的。传输层错误给出
         // 可读指引，避免用户被 dsh 那条 allowBuilds 提示误导。
         let hint = git_transport_hint(&last_output);
+        let message = pick_error_message(&last_output, hint);
+        // 批量安装失败时给本次选中的每个插件记一条错误（前端据此展示异常标记，
+        // 可针对单个插件重试更新/卸载）
+        for id in ids {
+            if let Err(e) = errors::record(app_handle, id, "install", &message) {
+                log::warn!("failed to record plugin error for {id}: {e}");
+            }
+        }
         if let Some(hint) = hint {
             log::warn!("git transport failure detected during plugin install: {hint}");
             let _ = window.emit(
@@ -197,6 +178,13 @@ pub async fn install(app_handle: &AppHandle, ids: &[String]) -> Result<(), Strin
         return Err(format!(
             "PREINSTALL_FAILED: dsh plugin exited with code {exit_code}"
         ));
+    }
+
+    // 安装成功：清除这些插件的历史错误记录
+    for id in ids {
+        if let Err(e) = errors::clear(app_handle, id) {
+            log::warn!("failed to clear plugin error for {id}: {e}");
+        }
     }
 
     // Windows 极简模式专项修复
@@ -218,33 +206,247 @@ pub async fn install(app_handle: &AppHandle, ids: &[String]) -> Result<(), Strin
     Ok(())
 }
 
+/// 构建 `dsh plugin` 子进程的环境变量：隔离 $DSH_HOME、关闭遥测与颜色，
+/// PATH 前置 shim 目录与 node 目录；用户 pnpm 过旧时强制捆绑版（见 ensure_pnpm）。
+fn build_plugin_envs(app_handle: &AppHandle, prefer_bundled_pnpm: bool) -> HashMap<String, String> {
+    let node = config::get_node_binary_path(app_handle);
+    let bin_dir = cli::get_bin_dir(app_handle);
+    let mut envs = HashMap::from([
+        (
+            "DSH_HOME".to_string(),
+            config::get_dsh_data_path(app_handle)
+                .to_string_lossy()
+                .into_owned(),
+        ),
+        ("DSH_TELEMETRY_DISABLED".to_string(), "1".to_string()),
+        ("NO_COLOR".to_string(), "1".to_string()),
+    ]);
+    // 用户 pnpm 过旧/不可探测时强制 pnpm shim 优先捆绑版，避免 8/9 的
+    // autoInstallPeers 语义与 workspace-root gate 破坏插件安装（见 ensure_pnpm）
+    if prefer_bundled_pnpm {
+        envs.insert("DSH_PREFER_BUNDLED_PNPM".to_string(), "1".to_string());
+    }
+
+    let mut paths = vec![bin_dir];
+    if let Some(node_dir) = node.parent() {
+        paths.push(node_dir.to_path_buf());
+    }
+    paths.extend(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    ));
+
+    if let Ok(joined) = std::env::join_paths(paths) {
+        envs.insert("PATH".to_string(), joined.to_string_lossy().into_owned());
+    }
+    envs
+}
+
+/// 升级单个插件：`dsh plugin --profile <当前档案> update <id>`
+pub async fn update(app_handle: &AppHandle, id: &str) -> Result<(), String> {
+    run_single_plugin_command(app_handle, id, "update", &["update".to_string(), id.to_string()])
+        .await
+}
+
+/// 卸载单个插件：`dsh plugin --profile <当前档案> remove <id>`
+pub async fn remove(app_handle: &AppHandle, id: &str) -> Result<(), String> {
+    run_single_plugin_command(app_handle, id, "remove", &["remove".to_string(), id.to_string()])
+        .await
+}
+
+/// 执行单个插件的升级/卸载：准备环境 → 停止服务 → 运行 `dsh plugin` →
+/// 失败记录错误、成功清除错误。
+async fn run_single_plugin_command(
+    app_handle: &AppHandle,
+    id: &str,
+    action: &str,
+    sub_args: &[String],
+) -> Result<(), String> {
+    if id.is_empty() {
+        return Err("PLUGIN_EMPTY_ID: plugin id is empty".to_string());
+    }
+    let window = app_handle
+        .get_webview_window("main")
+        .ok_or("WINDOW_NOT_FOUND: main window missing")?;
+
+    cli::ensure_shims(app_handle)?;
+
+    let node = config::get_node_binary_path(app_handle);
+    let dsh_bin = core::active_dsh_binary(app_handle);
+    if !node.exists() {
+        return Err("NODE_NOT_FOUND: Node.js runtime missing".to_string());
+    }
+    if !dsh_bin.exists() {
+        return Err("HARNESS_NOT_FOUND: dsh CLI missing".to_string());
+    }
+
+    let prefer_bundled_pnpm = ensure_pnpm(app_handle, &window).await?;
+
+    // 插件操作会改写 profile，先停止运行中的服务（与安装一致）
+    if workflow::has_owned_process() {
+        let _ = window.emit(
+            PREINSTALL_LOG_EVENT,
+            PreinstallLogPayload {
+                line: format!("[harness] 正在停止运行中的服务（{action}插件需要短暂重启）…"),
+            },
+        );
+        if let Err(e) = workflow::stop(app_handle.clone()).await {
+            log::warn!("failed to stop harness before plugin {action}: {e}");
+        }
+    }
+
+    let envs = build_plugin_envs(app_handle, prefer_bundled_pnpm);
+
+    let mut args = vec![
+        dsh_bin.as_os_str().to_os_string(),
+        OsString::from("plugin"),
+        OsString::from("--profile"),
+        OsString::from(active_profile(app_handle)),
+        OsString::from(action),
+    ];
+    args.extend(sub_args.iter().map(OsString::from));
+
+    let cwd = config::get_dsh_install_path(app_handle);
+    log::info!("Running dsh plugin {action} for {id}");
+    let (exit_code, output) =
+        run_plugin_process(&node, &args, &cwd, &envs, &window).await?;
+
+    if exit_code != 0 {
+        log::error!("dsh plugin {action} failed for {id} with exit code {exit_code}");
+        let message = pick_error_message(&output, git_transport_hint(&output));
+        if let Err(e) = errors::record(app_handle, id, action, &message) {
+            log::warn!("failed to record plugin error for {id}: {e}");
+        }
+        return Err(format!(
+            "PLUGIN_{}_FAILED: dsh plugin exited with code {exit_code}",
+            action.to_uppercase()
+        ));
+    }
+
+    // 成功：清除历史错误；卸载 win-terminal-inspector 时顺带清理 patch 挂载
+    if let Err(e) = errors::clear(app_handle, id) {
+        log::warn!("failed to clear plugin error for {id}: {e}");
+    }
+    if action == "remove" && id == "dsh-win-terminal-inspector" {
+        if let Err(e) = workflow::win_inspector::apply(app_handle) {
+            log::warn!("win inspector patch prune failed after remove: {e}");
+        }
+    }
+    log::info!("dsh plugin {action} succeeded for {id}");
+    Ok(())
+}
+
+/// 从 dsh/pnpm 失败输出中提取可展示的错误消息：优先 git 传输层提示；
+/// 否则挑出命中错误标记的行（最多 8 行），没有则取输出尾部，ANSI 清洗后
+/// 截断到 2000 字符。
+fn pick_error_message(output: &str, hint: Option<&str>) -> String {
+    if let Some(hint) = hint {
+        return hint.to_string();
+    }
+    let cleaned: Vec<String> = output
+        .split('\n')
+        .filter_map(|line| {
+            let trimmed = strip_ansi(line);
+            let trimmed = trimmed.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_string())
+        })
+        .filter(|line| {
+            line.contains("ERR_")
+                || line.contains("error")
+                || line.contains("Error")
+                || line.contains("failed")
+                || line.contains("✖")
+                || line.contains("warning")
+        })
+        .take(8)
+        .collect();
+    let base = if cleaned.is_empty() {
+        output.trim().to_string()
+    } else {
+        cleaned.join("\n")
+    };
+    base.chars().take(2000).collect()
+}
+
+/// 去除 ANSI 转义序列（`\x1B[...m`，含颜色/样式码）。
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' && chars.peek() == Some(&'[') {
+            chars.next(); // '['
+            while let Some(&n) = chars.peek() {
+                if n.is_ascii_digit() || n == ';' {
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+            if chars.peek() == Some(&'m') {
+                chars.next();
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// 确保插件安装使用的 pnpm 可用，返回是否应强制使用捆绑版
 /// （true 时调用方注入 `DSH_PREFER_BUNDLED_PNPM=1`，pnpm shim 优先捆绑版）。
 ///
 /// 版本感知策略，避免给已装正确 pnpm 的用户增加下载步骤：
-/// - 捆绑版已存在 → 直接用捆绑版（零额外下载，确定性最强）；
-/// - 用户 pnpm 主版本 ≥ MIN_TRUSTED_PNPM_MAJOR → 复用用户 pnpm，零额外步骤；
-/// - 用户 pnpm 过旧（8/9：不读 pnpm-workspace.yaml 的 autoInstallPeers、有
-///   workspace-root gate；corepack shim 在 Node 24 上还会 ERR_INVALID_THIS 崩溃）
-///   或版本不可探测 → 下载捆绑版并强制使用。
+/// - 档案 store 主版本已知 → 只接受与其一致的 pnpm（用户版或捆绑版）。
+///   pnpm 10 与 11 的 store 布局互不兼容（`.../store/v10` vs `v11`），用与
+///   store 主版本不一致的 pnpm 更新已装插件会直接 `ERR_PNPM_UNEXPECTED_STORE`
+///   退出码 1 失败——升级失败的根因（此前捆绑版 v11 一存在就强制使用，
+///   对 v10 store 的档案必然失败）；
+/// - 用户 pnpm 主版本 == store 主版本 → 复用用户 pnpm，零额外步骤；
+/// - 捆绑版 pnpm 主版本 == store 主版本 → 用捆绑版（不下载）；
+/// - store 未知（全新档案/未装过依赖）或无可匹配版本 → 用户 pnpm ≥ 10 优先，
+///   否则捆绑版已存在则用，再否则下载捆绑版并强制使用。
+///
+/// 用户 pnpm 过旧（8/9：不读 pnpm-workspace.yaml 的 autoInstallPeers、有
+/// workspace-root gate；corepack shim 在 Node 24 上还会 ERR_INVALID_THIS 崩溃）
+/// 或版本不可探测 → 走捆绑版。
 async fn ensure_pnpm(app_handle: &AppHandle, window: &WebviewWindow) -> Result<bool, String> {
-    if config::get_pnpm_binary_path(app_handle).exists() {
-        return Ok(true);
+    // 档案的 node_modules 由哪个 pnpm 主版本创建（.modules.yaml 的 storeDir 段）
+    let store_major = profile_store_major(app_handle);
+    let user_major = user_pnpm_major_version(app_handle);
+
+    // 1) store 主版本已知 → 优先选与 store 一致的 pnpm（用户版或捆绑版）
+    if let Some(store) = store_major {
+        if user_major == Some(store) {
+            log::info!("Reusing user-installed pnpm (major {store}) matching profile store");
+            return Ok(false);
+        }
+        if bundled_pnpm_major(app_handle) == Some(store) {
+            log::info!("Using bundled pnpm (major {store}) matching profile store");
+            return Ok(true);
+        }
+        log::warn!(
+            "No pnpm matches profile store major {store} (user {user_major:?}), falling back to user pnpm"
+        );
     }
 
-    match user_pnpm_major_version(app_handle) {
+    // 2) store 未知（全新档案/未装过依赖）或无可匹配版本 → 用户 pnpm ≥ 10 优先
+    match user_major {
         Some(major) if major >= MIN_TRUSTED_PNPM_MAJOR => {
             log::info!("Reusing user-installed pnpm (major {major}) for plugin install");
             return Ok(false);
         }
         Some(major) => {
             log::warn!(
-                "User pnpm major {major} < {MIN_TRUSTED_PNPM_MAJOR} (missing autoInstallPeers/workspace-root semantics), downloading bundled pnpm"
+                "User pnpm major {major} < {MIN_TRUSTED_PNPM_MAJOR} (missing autoInstallPeers/workspace-root semantics), using bundled pnpm"
             );
         }
         None => {
-            log::warn!("User pnpm version not detectable (broken/blocked shim?), downloading bundled pnpm");
+            log::warn!("User pnpm version not detectable (broken/blocked shim?), using bundled pnpm");
         }
+    }
+
+    // 捆绑版已存在 → 直接用（零额外下载）；否则下载。
+    if config::get_pnpm_binary_path(app_handle).exists() {
+        return Ok(true);
     }
 
     let _ = window.emit(
@@ -290,6 +492,49 @@ fn user_pnpm_major_version(app_handle: &AppHandle) -> Option<u32> {
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
     stdout.split('.').next()?.trim().parse::<u32>().ok()
+}
+
+/// 档案 `node_modules` 使用的 pnpm store 主版本（`<profile>/node_modules/.modules.yaml`
+/// 的 `storeDir` 路径段，如 `...\store\v10` → 10）。
+///
+/// pnpm 10 与 11 的 store 布局互不兼容：用与 store 主版本不一致的 pnpm 更新
+/// 已装插件会 `ERR_PNPM_UNEXPECTED_STORE` 退出。档案尚未安装过依赖（没有
+/// node_modules）时返回 `None`，由调用方走"全新档案"逻辑。
+fn profile_store_major(app_handle: &AppHandle) -> Option<u32> {
+    let modules_yaml = profile_dir(app_handle)
+        .join("node_modules")
+        .join(".modules.yaml");
+    let content = std::fs::read_to_string(modules_yaml).ok()?;
+    parse_store_major_from_modules_yaml(&content)
+}
+
+/// 从 `.modules.yaml` 文本解析 store 主版本（纯函数，便于单测）。
+fn parse_store_major_from_modules_yaml(content: &str) -> Option<u32> {
+    let store_dir = content.lines().find_map(|line| {
+        line.trim().strip_prefix("storeDir:").map(str::trim)
+    })?;
+    // storeDir 形如 `C:\Users\xx\AppData\Local\pnpm\store\v10`，取末段 `v10` 的数字
+    let major = store_dir
+        .trim_matches(['"', '\''])
+        .rsplit(['\\', '/'])
+        .next()?
+        .strip_prefix('v')?;
+    major.parse().ok()
+}
+
+/// 捆绑版 pnpm 的主版本（读 `dependencies/pnpm/package.json` 的 version 字段）；
+/// 未安装或清单缺失返回 None。
+fn bundled_pnpm_major(app_handle: &AppHandle) -> Option<u32> {
+    let manifest = config::get_pnpm_install_path(app_handle).join("package.json");
+    let content = std::fs::read_to_string(manifest).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&content).ok()?;
+    value
+        .get("version")?
+        .as_str()?
+        .split('.')
+        .next()?
+        .parse()
+        .ok()
 }
 
 /// 从 pnpm 失败输出中解析需写入 `allowBuilds` 的键集合：
@@ -347,7 +592,7 @@ fn extract_allow_line_key(line: &str) -> Option<String> {
     Some(key.to_string())
 }
 
-/// profile 下的 `pnpm-workspace.yaml` 路径（$DSH_HOME/profiles/web）
+/// profile 下的 `pnpm-workspace.yaml` 路径（$DSH_HOME/profiles/<当前档案>）
 fn profile_workspace_path(app_handle: &AppHandle) -> PathBuf {
     profile_dir(app_handle).join("pnpm-workspace.yaml")
 }
@@ -577,7 +822,47 @@ fn git_transport_hint(output: &str) -> Option<&'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_allow_build_keys, collapse_allow_builds_duplicates, extract_allow_line_key, git_transport_hint, normalize_git_spec, parse_allowlist_keys};
+    use super::{apply_allow_build_keys, collapse_allow_builds_duplicates, extract_allow_line_key, git_transport_hint, normalize_git_spec, parse_allowlist_keys, parse_store_major_from_modules_yaml};
+
+    #[test]
+    fn store_major_parsed_from_modules_yaml() {
+        // 真实 pnpm v10 写入的 .modules.yaml：storeDir 指向 store\v10
+        let content = "\
+lockfileVersion: '9.0'
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+dependencies:
+  '@deepseek-ai/dsh-base': 0.0.4
+  '@deepseek-ai/dsh-web-app': 0.0.4
+storeDir: C:\\Users\\test\\AppData\\Local\\pnpm\\store\\v10
+virtualStoreDir: node_modules/.pnpm
+";
+        assert_eq!(parse_store_major_from_modules_yaml(content), Some(10));
+    }
+
+    #[test]
+    fn store_major_supports_unix_and_quoted_paths() {
+        assert_eq!(
+            parse_store_major_from_modules_yaml("storeDir: /home/test/.local/share/pnpm/store/v11\n"),
+            Some(11)
+        );
+        assert_eq!(
+            parse_store_major_from_modules_yaml("storeDir: \"C:\\\\pnpm store\\\\v3\"\n"),
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn store_major_missing_when_no_store_dir() {
+        // 档案尚未装过依赖：无 storeDir 段 → None
+        assert_eq!(parse_store_major_from_modules_yaml("lockfileVersion: '9.0'\n"), None);
+        assert_eq!(parse_store_major_from_modules_yaml(""), None);
+        assert_eq!(
+            parse_store_major_from_modules_yaml("storeDir: C:\\Users\\x\\pnpm\\store\n"),
+            None
+        );
+    }
 
     #[test]
     fn parse_git_dep_path_key() {

@@ -18,6 +18,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
+use super::errors::{self, PluginError};
 use super::installed::{profile_dir, ProfilePackageJson};
 use super::preset::{load_presets, PreinstallPluginInfo};
 
@@ -47,6 +48,9 @@ pub struct DshPlugin {
     pub recommended: bool,
     /// 预设清单中的「修复」标记（黄色 chip）
     pub fix: bool,
+    /// 异常信息（安装/升级/卸载失败或页面运行期上报）；`None` = 正常
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<PluginError>,
 }
 
 /// 用于强类型解析插件自身 package.json 的辅助结构
@@ -163,15 +167,44 @@ fn parse_plugins(profile: &Path, presets: &[PreinstallPluginInfo]) -> Vec<DshPlu
                 bundled: bundled.contains(id.as_str()),
                 recommended: preset.map(|p| p.recommended).unwrap_or(false),
                 fix: preset.map(|p| p.fix).unwrap_or(false),
+                error: None,
             })
         })
         .collect()
 }
 
-/// 已安装插件列表（含解析后的元信息），前端首次加载/手动刷新用
+/// 已安装插件列表（含解析后的元信息与错误记录），前端首次加载/手动刷新用
 pub fn list(app_handle: &AppHandle) -> Vec<DshPlugin> {
     let presets = load_presets(app_handle);
-    parse_plugins(&profile_dir(app_handle), &presets)
+    let mut plugins = parse_plugins(&profile_dir(app_handle), &presets);
+    // 合并错误注册表：错误记录变化不反映在文件指纹里，这里每次列表重建时并入
+    let registry = errors::load(app_handle);
+    for plugin in &mut plugins {
+        plugin.error = registry.get(&plugin.id).cloned();
+    }
+    plugins
+}
+
+/// 主动推送一次插件列表（插件安装/升级/卸载/错误记录后调用，不等指纹轮询
+/// 防抖；错误数据变化不改变文件指纹，必须显式推送）。
+///
+/// 同时把监控指纹同步到当前状态，避免紧接着的下一次轮询重复推送同一列表。
+pub fn force_emit(app_handle: &AppHandle) {
+    let fp = fingerprint(app_handle);
+    let mut state = STATE
+        .get_or_init(|| {
+            Mutex::new(WatchState {
+                last_fp: None,
+                last_emit: None,
+                pending_fp: None,
+            })
+        })
+        .lock()
+        .unwrap();
+    state.pending_fp = None;
+    state.last_fp = fp;
+    drop(state);
+    emit(app_handle);
 }
 
 /// 变化指纹：profile package.json 与各直接依赖插件 package.json 的内容拼接。

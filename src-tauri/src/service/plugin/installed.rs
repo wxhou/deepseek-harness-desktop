@@ -1,16 +1,12 @@
 //! 已安装插件检测：强类型解析 profile 下 package.json 的 `dependencies` 键与
 //! `dsh.profile.bundles` 列表，得到已安装插件 id 集合，并组装前端渲染列表。
 
-use crate::config;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use tauri::AppHandle;
 
 use super::preset::{load_presets, PreinstallPluginInfo};
-
-/// 预装插件安装到的 profile（与 dsh 服务启动的 profile 一致）
-pub(crate) const PREINSTALL_PROFILE: &str = "web";
 
 /// 用于强类型解析 profile 下 package.json 的辅助结构
 /// （字段 pub(crate)：供 watch 模块解析已安装插件清单复用）
@@ -34,11 +30,15 @@ pub(crate) struct ProfileInner {
     pub(crate) bundles: Vec<String>,
 }
 
-/// 预装插件所在的 profile 目录（$DSH_HOME/profiles/web）
+/// 插件所在的 profile 目录（$DSH_HOME/profiles/<当前档案>）。
+///
+/// 档案由桌面端设置（`active_profile`）决定，不再写死 web；启动服务与插件
+/// 操作都以同一份「当前档案」为准（见 service::profile::active_profile）。
 pub(crate) fn profile_dir(app_handle: &AppHandle) -> PathBuf {
-    config::get_dsh_data_path(app_handle)
-        .join("profiles")
-        .join(PREINSTALL_PROFILE)
+    crate::service::profile::profile_dir_of(
+        app_handle,
+        &crate::service::profile::active_profile(app_handle),
+    )
 }
 
 /// 已安装的插件 id 集合：通过强类型反序列化读取 package.json 的 `dependencies` 键与 `bundles` 列表

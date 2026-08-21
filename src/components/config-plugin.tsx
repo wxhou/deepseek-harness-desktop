@@ -1,43 +1,79 @@
-import { Card, Chip, Label, Spinner, Typography } from '@heroui/react'
+import { CircleExclamation } from '@gravity-ui/icons'
+import { Button, Card, Chip, Label, Spinner, Tooltip, Typography } from '@heroui/react'
 import { useOverlay } from '@overlastic/react'
+import { useMutation } from '@tanstack/react-query'
+import { invoke } from '@tauri-apps/api/core'
+import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { If } from 'react-if-lite'
+import { toast } from '@/utils'
 import { useDshPlugins } from '../hooks/use-dsh-plugins'
 import { Dialog } from './dialog'
 import { Ellipsis as TextEllipsis } from './ellipsis'
 
 /**
- * 「插件」面板：只读展示已安装插件，作为「插件出问题时」的卸载/升级入口。
+ * 「插件」面板：展示已安装插件，作为「插件出问题时」的卸载/升级入口。
  *
- * 与「档案」面板保持一致：`Card` 行布局 + `Typography` 标题，行尾放交互操作，
- * 卸载用 `Dialog`（`useOverlay` holder）二次确认；异常详情因需「复制日志 +
- * 升级 + 卸载」三个动作，保留为独立 `Modal`。
- *
- * - 数据来自 `useDshPlugins`（`get_dsh_plugins` + `dsh-plugins-updated` 实时事件）。
- * - 卸载 `remove_dsh_plugin`、升级 `upgrade_dsh_plugin` 两个后端命令尚未实现，
- *   目前按需求约定接入「未来命令」（invoke 会失败并 toast 提示，不崩溃）。
- * - 「异常」标记：后端暂未提供插件错误字段，前端暂以「元信息解析失败
- *   （version 为空）」粗判为异常并允许查看详情；后端落地后替换为真实 error 字段。
+ * - 数据来自 `useDshPlugins`（`get_dsh_plugins` 查询 + `dsh-plugins-updated`
+ *   实时事件，react-query 缓存同步）。
+ * - 升级 `update_dsh_plugin` / 卸载 `remove_dsh_plugin` 已接入后端
+ *   （`dsh plugin --profile <当前档案> update|remove <id>`，进程输出经
+ *   `preinstall-log` 事件实时推送）。
+ * - 「异常」标记：插件带 `error` 字段（安装/升级/卸载失败或页面运行期上报）
+ *   时显示 danger 图标按钮，Tooltip 展示错误详情，行内可直接升级/卸载修复。
  */
-
-interface PluginErrorDialogState {
-  id: string
-  name: string
-  log: string
-}
-
 export function ConfigPlugin() {
   const { t } = useTranslation()
   const { plugins, loading, error } = useDshPlugins()
 
   const [dialogHolder, openDialog] = useOverlay(Dialog, { type: 'holder' })
 
-  /** 升级插件（接入尚未实现的后端命令） */
-  async function onUpgrade(_id: string, _source?: PluginErrorDialogState) {
+  /** 行内操作进行中状态：id + 操作类型（update/remove），保证单例运行 */
+  const [busy, setBusy] = useState<{ id: string, action: 'update' | 'remove' } | null>(null)
+
+  const upgrade = useMutation({
+    mutationFn: (id: string) => invoke<void>('update_dsh_plugin', { id }),
+    onSuccess: (_data, id) => {
+      const name = plugins.find(p => p.id === id)?.name ?? id
+      toast(t('plugins.updated_toast', { name }), {})
+    },
+    onError: (err, id) => {
+      const name = plugins.find(p => p.id === id)?.name ?? id
+      console.error('[ConfigPlugin] upgrade failed:', err)
+      toast(t('plugins.upgrade_failed', { name }), {})
+    },
+  })
+  const remove = useMutation({
+    mutationFn: (id: string) => invoke<void>('remove_dsh_plugin', { id }),
+    onSuccess: (_data, id) => {
+      const name = plugins.find(p => p.id === id)?.name ?? id
+      toast(t('plugins.removed_toast', { name }), {})
+    },
+    onError: (err, id) => {
+      const name = plugins.find(p => p.id === id)?.name ?? id
+      console.error('[ConfigPlugin] remove failed:', err)
+      toast(t('plugins.remove_failed', { name }), {})
+    },
+  })
+
+  async function onUpgrade(id: string) {
+    if (busy)
+      return
+    setBusy({ id, action: 'update' })
+    try {
+      await upgrade.mutateAsync(id)
+    }
+    catch {
+      // 错误提示已由 mutation 的 onError 处理
+    }
+    finally {
+      setBusy(null)
+    }
   }
 
-  /** 卸载插件（接入尚未实现的后端命令） */
   async function onRemove(id: string, name: string) {
+    if (busy)
+      return
     await openDialog({
       status: 'danger',
       title: t('plugins.remove_confirm_title'),
@@ -48,7 +84,16 @@ export function ConfigPlugin() {
       ),
       confirmText: t('plugins.uninstall'),
     })
-    // TODO: 实现卸载逻辑
+    setBusy({ id, action: 'remove' })
+    try {
+      await remove.mutateAsync(id)
+    }
+    catch {
+      // 错误提示已由 mutation 的 onError 处理
+    }
+    finally {
+      setBusy(null)
+    }
   }
 
   return (
@@ -96,18 +141,31 @@ export function ConfigPlugin() {
             {plugins.map(plugin => (
               <Card key={plugin.id} className="rounded-md bg-[#f5f5f5] py-3">
                 <Card.Content className="flex flex-row items-center justify-between">
-                  <div>
+                  <div className="min-w-0">
                     <div className="flex min-w-0 items-center gap-1">
-                      {/* TODO: 检测该插件异常时显示
-                      <Button
-                        isIconOnly
-                        size="sm"
-                        variant="ghost"
-                        className="size-6 shrink-0 rounded-md text-danger"
-                        aria-label={t('plugins.abnormal_tooltip')}
-                      >
-                        <CircleExclamation />
-                      </Button> */}
+                      <If cond={plugin.error != null}>
+                        <Tooltip delay={0}>
+                          <Button
+                            isIconOnly
+                            size="sm"
+                            variant="ghost"
+                            className="size-6 shrink-0 rounded-md text-danger"
+                            aria-label={t('plugins.abnormal_tooltip')}
+                          >
+                            <CircleExclamation />
+                          </Button>
+                          <Tooltip.Content className="max-w-[320px]">
+                            <div className="space-y-1">
+                              <p className="text-xs font-medium">
+                                {t('plugins.abnormal_desc', { name: plugin.name })}
+                              </p>
+                              <p className="whitespace-pre-wrap break-all font-mono text-[11px] opacity-80">
+                                {plugin.error?.message}
+                              </p>
+                            </div>
+                          </Tooltip.Content>
+                        </Tooltip>
+                      </If>
                       <Label className="min-w-0 truncate text-sm font-medium text-ink">
                         {plugin.name}
                       </Label>
@@ -125,25 +183,36 @@ export function ConfigPlugin() {
                   </div>
 
                   <div className="flex shrink-0 items-center gap-1.5">
-                    <If cond={true /* isNewUpgrade */}>
+                    {/* 更新入口仅在插件异常时显示（需求 2：异常插件的修复入口） */}
+                    <If cond={plugin.error != null}>
                       <Chip
-                        className="rounded-md cursor-pointer"
+                        className={`rounded-md${busy ? ' cursor-not-allowed opacity-50' : ' cursor-pointer'}`}
                         variant="primary"
                         color="accent"
-                        onClick={() => onUpgrade(plugin.id)}
                         size="sm"
+                        onClick={() => onUpgrade(plugin.id)}
                       >
-                        更新
+                        <span className="flex items-center gap-1">
+                          {busy?.id === plugin.id && busy.action === 'update'
+                            ? <Spinner size="sm" color="current" />
+                            : null}
+                          {t('plugins.upgrade')}
+                        </span>
                       </Chip>
                     </If>
                     <Chip
-                      className="rounded-md cursor-pointer"
+                      className={`rounded-md${busy ? ' cursor-not-allowed opacity-50' : ' cursor-pointer'}`}
                       variant="primary"
                       color="danger"
                       size="sm"
                       onClick={() => onRemove(plugin.id, plugin.name)}
                     >
-                      卸载
+                      <span className="flex items-center gap-1">
+                        {busy?.id === plugin.id && busy.action === 'remove'
+                          ? <Spinner size="sm" color="current" />
+                          : null}
+                        {t('plugins.uninstall')}
+                      </span>
                     </Chip>
                   </div>
                 </Card.Content>

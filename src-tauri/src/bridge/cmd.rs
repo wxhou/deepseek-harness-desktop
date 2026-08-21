@@ -308,6 +308,37 @@ pub fn get_dsh_plugins(app_handle: AppHandle) -> Vec<plugin::DshPlugin> {
     plugin::watch::list(&app_handle)
 }
 
+/// 升级单个已安装插件：`dsh plugin --profile <当前档案> update <id>`，
+/// 进程输出通过 `preinstall-log` 事件实时推送。
+#[tauri::command]
+pub async fn update_dsh_plugin(app_handle: AppHandle, id: String) -> Result<(), String> {
+    plugin::update(&app_handle, &id).await?;
+    plugin::watch::force_emit(&app_handle);
+    Ok(())
+}
+
+/// 卸载单个已安装插件：`dsh plugin --profile <当前档案> remove <id>`，
+/// 进程输出通过 `preinstall-log` 事件实时推送。
+#[tauri::command]
+pub async fn remove_dsh_plugin(app_handle: AppHandle, id: String) -> Result<(), String> {
+    plugin::remove(&app_handle, &id).await?;
+    plugin::watch::force_emit(&app_handle);
+    Ok(())
+}
+
+/// 上报插件运行期异常（内嵌页面 / dsh-tauri 桥调用），记录后立即推送新列表。
+#[tauri::command]
+pub fn report_plugin_error(
+    app_handle: AppHandle,
+    id: String,
+    error: String,
+    action: Option<String>,
+) -> Result<(), String> {
+    plugin::errors::record(&app_handle, &id, action.as_deref().unwrap_or("runtime"), &error)?;
+    plugin::watch::force_emit(&app_handle);
+    Ok(())
+}
+
 /// 档案列表（$DSH_HOME/profiles 下的目录，含 active/default 标记）
 #[tauri::command]
 pub fn get_profiles(app_handle: AppHandle) -> Vec<profile::Profile> {
