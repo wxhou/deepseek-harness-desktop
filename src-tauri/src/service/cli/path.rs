@@ -1,5 +1,5 @@
 //! 用户 PATH 注册与路径计算：bin 目录定位、Windows 注册表读写与
-//! `WM_SETTINGCHANGE` 广播、Unix shell rc 幂等注入，以及用户 pnpm 探测。
+//! `WM_SETTINGCHANGE` 广播、Unix shell rc 幂等块更新（备份 + 失败回滚），以及用户 pnpm 探测。
 
 #[cfg(not(windows))]
 use std::fs;
@@ -18,14 +18,14 @@ const CLI_ROOT_DIR_NAME: &str = "deepseek-harness";
 #[cfg(unix)]
 const UNIX_BIN_DIR: &str = ".local/bin";
 
-/// shell rc 注入标记（用于幂等增删）
-#[cfg(unix)]
+/// shell rc 注入标记（用于幂等增删；Windows 无 rc 逻辑，仅测试引用）
+#[cfg_attr(windows, allow(dead_code))]
 const RC_MARK_START: &str = "# >>> deepseek-harness dsh >>>";
-#[cfg(unix)]
+#[cfg_attr(windows, allow(dead_code))]
 const RC_MARK_END: &str = "# <<< deepseek-harness dsh <<<";
 
-/// Unix 下需要写入 PATH 导出的 rc 文件（按顺序处理）
-#[cfg(unix)]
+/// Unix 下需要写入 PATH 导出的 rc 文件（按顺序处理；同上，Windows 仅测试引用）
+#[cfg_attr(windows, allow(dead_code))]
 const RC_FILES: [&str; 2] = [".zshrc", ".bashrc"];
 
 // ---------------------------------------------------------------------------
@@ -390,7 +390,11 @@ fn remove_path_token(path_value: &str, token: &str) -> String {
 // Unix shell rc 辅助
 // ---------------------------------------------------------------------------
 
-/// Unix：向 `~/.zshrc` / `~/.bashrc` 幂等注入 `~/.local/bin` 的 PATH 导出
+/// Unix：向 `~/.zshrc` / `~/.bashrc` 幂等注入 `~/.local/bin` 的 PATH 导出。
+///
+/// 只更新自身标记块：读取原文件 → 移除旧块 → 末尾追加新块；仅当文件不存在时
+/// 才新建。读失败（非"不存在"）直接报错退出，绝不把"读不到"当作空文件去
+/// 全量覆盖用户配置；写入前先备份，写失败自动回滚（见 `write_rc_with_backup`）。
 #[cfg(not(windows))]
 fn inject_shell_rc(app_handle: &AppHandle) -> Result<(), String> {
     let home = app_handle
@@ -403,22 +407,27 @@ fn inject_shell_rc(app_handle: &AppHandle) -> Result<(), String> {
 
     for name in RC_FILES {
         let rc_path = home.join(name);
-        let mut content = fs::read_to_string(&rc_path).unwrap_or_default();
-        if content.contains(RC_MARK_START) {
+        let original = match fs::read_to_string(&rc_path) {
+            Ok(content) => content,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(e) => {
+                return Err(format!(
+                    "READ_RC_FAILED: read {} failed: {e}",
+                    rc_path.display()
+                ))
+            }
+        };
+        let next = upsert_rc_block(&original, &block);
+        if next == original {
             continue;
         }
-        if !content.is_empty() && !content.ends_with('\n') {
-            content.push('\n');
-        }
-        content.push_str(&block);
-        fs::write(&rc_path, content)
-            .map_err(|e| format!("write {} failed: {e}", rc_path.display()))?;
+        write_rc_with_backup(&rc_path, &next)?;
         log::info!("Injected PATH export into {}", rc_path.display());
     }
     Ok(())
 }
 
-/// Unix：从 rc 文件中移除注入块
+/// Unix：从 rc 文件中移除注入块（保留用户其余配置，同样走备份 + 回滚写入）
 #[cfg(not(windows))]
 fn strip_shell_rc(app_handle: &AppHandle) -> Result<(), String> {
     let home = app_handle
@@ -427,21 +436,87 @@ fn strip_shell_rc(app_handle: &AppHandle) -> Result<(), String> {
         .map_err(|_| "failed to resolve home directory".to_string())?;
     for name in RC_FILES {
         let rc_path = home.join(name);
-        let content = fs::read_to_string(&rc_path).unwrap_or_default();
-        let cleaned = strip_rc_block(&content);
-        if cleaned != content {
-            fs::write(&rc_path, cleaned)
-                .map_err(|e| format!("write {} failed: {e}", rc_path.display()))?;
+        let original = match fs::read_to_string(&rc_path) {
+            Ok(content) => content,
+            // 文件不存在则无需清理
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => {
+                return Err(format!(
+                    "READ_RC_FAILED: read {} failed: {e}",
+                    rc_path.display()
+                ))
+            }
+        };
+        let cleaned = strip_rc_block(&original);
+        if cleaned != original {
+            write_rc_with_backup(&rc_path, &cleaned)?;
             log::info!("Removed PATH export from {}", rc_path.display());
         }
     }
     Ok(())
 }
 
+/// 将 PATH 导出块并入 rc 内容：先移除已有标记块，再在文件末尾追加新块，
+/// 只更新自身块、保留用户其余配置，且块始终落在文件末尾。
+#[cfg_attr(windows, allow(dead_code))]
+fn upsert_rc_block(content: &str, block: &str) -> String {
+    let mut out = strip_rc_block(content);
+    if !out.is_empty() && !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str(block);
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out
+}
+
+/// 原子写回 rc 文件：写入前先备份为 `<file>.dsh-backup`，再通过同目录
+/// 临时文件 + rename 原子替换；写失败时删除临时文件并回滚备份内容，
+/// 保证任何异常路径下用户原文件都不会被半写/被清空。
+#[cfg_attr(windows, allow(dead_code))]
+fn write_rc_with_backup(rc_path: &std::path::Path, new_content: &str) -> Result<(), String> {
+    use std::fs;
+
+    let backup_path = rc_path.with_extension("dsh-backup");
+    let had_original = rc_path.exists();
+    if had_original {
+        fs::copy(rc_path, &backup_path).map_err(|e| {
+            format!(
+                "BACKUP_RC_FAILED: backup {} to {} failed: {e}",
+                rc_path.display(),
+                backup_path.display()
+            )
+        })?;
+    }
+
+    let tmp_path = rc_path.with_extension("dsh-rc-tmp");
+    fs::write(&tmp_path, new_content)
+        .map_err(|e| format!("WRITE_RC_FAILED: write {} failed: {e}", tmp_path.display()))?;
+    let rename_res = match fs::rename(&tmp_path, rc_path) {
+        Ok(()) => Ok(()),
+        // Windows 下 rename 不覆盖已存在目标（仅测试环境会走到）：删旧文件后重试
+        Err(_) => {
+            let _ = fs::remove_file(rc_path);
+            fs::rename(&tmp_path, rc_path)
+        }
+    };
+    if let Err(e) = rename_res {
+        let _ = fs::remove_file(&tmp_path);
+        if had_original {
+            let _ = fs::copy(&backup_path, rc_path);
+        }
+        return Err(format!(
+            "RENAME_RC_FAILED: rename into {} failed: {e}",
+            rc_path.display()
+        ));
+    }
+    Ok(())
+}
+
 /// 移除 rc 文件中的标记块（含标记行本身）。
-/// 仅 Unix 的 strip_shell_rc 使用；RC 标记常量也是 #[cfg(unix)]，
-/// 故此处同样门控，避免 Windows 构建引用不存在的常量。
-#[cfg(not(windows))]
+/// 同时被注入（`upsert_rc_block`）与移除路径使用；Windows 仅测试引用。
+#[cfg_attr(windows, allow(dead_code))]
 fn strip_rc_block(content: &str) -> String {
     let mut lines = content.lines().peekable();
     let mut out = String::with_capacity(content.len());
@@ -461,4 +536,109 @@ fn strip_rc_block(content: &str) -> String {
         out.push('\n');
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const RC_BLOCK: &str =
+        "# >>> deepseek-harness dsh >>>\nexport PATH=\"$HOME/.local/bin:$PATH\"\n# <<< deepseek-harness dsh <<<\n";
+
+    /// 独立的临时目录，避免测试间互相干扰
+    fn temp_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "dsh-rc-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// issue #57：目标 rc 文件已存在且包含用户自定义内容 → 只追加块，原内容保留
+    #[test]
+    fn upsert_keeps_user_content_and_appends_block() {
+        let content = "# oh-my-zsh\nplugins=(git)\nalias ll='ls -alF'\n";
+        let next = upsert_rc_block(content, RC_BLOCK);
+        assert!(next.starts_with(content));
+        assert!(next.ends_with(RC_BLOCK));
+        assert_eq!(next.matches(RC_MARK_START).count(), 1);
+    }
+
+    /// issue #57：旧块位于文件中间时 → 移除并移动到末尾，周围用户内容保留
+    #[test]
+    fn upsert_moves_stale_block_to_end() {
+        let stale = format!("alias ll='ls -alF'\n{RC_BLOCK}export NVM_DIR=\"$HOME/.nvm\"\n");
+        let next = upsert_rc_block(&stale, RC_BLOCK);
+        let stripped = strip_rc_block(&next);
+        assert_eq!(stripped, "alias ll='ls -alF'\nexport NVM_DIR=\"$HOME/.nvm\"\n");
+        assert!(next.ends_with(RC_BLOCK));
+        assert_eq!(next.matches(RC_MARK_START).count(), 1);
+    }
+
+    /// 幂等：重复注入不产生第二块
+    #[test]
+    fn upsert_is_idempotent() {
+        let content = "user content\n";
+        let once = upsert_rc_block(content, RC_BLOCK);
+        assert_eq!(upsert_rc_block(&once, RC_BLOCK), once);
+    }
+
+    /// 空内容（文件不存在时的新建场景）→ 仅注入块，没有多余空行
+    #[test]
+    fn upsert_from_missing_file_creates_block_only() {
+        assert_eq!(upsert_rc_block("", RC_BLOCK), RC_BLOCK.to_string());
+    }
+
+    /// 无末尾换行的内容 → 补换行后再追加块
+    #[test]
+    fn upsert_handles_missing_trailing_newline() {
+        let next = upsert_rc_block("no trailing nl", RC_BLOCK);
+        assert_eq!(next, "no trailing nl\n".to_string() + RC_BLOCK);
+    }
+
+    /// strip 原语：移除标记块且幂等
+    #[test]
+    fn strip_rc_block_removes_block_and_is_idempotent() {
+        let content = format!("keep\n{RC_BLOCK}tail\n");
+        let cleaned = strip_rc_block(&content);
+        assert_eq!(cleaned, "keep\ntail\n");
+        assert_eq!(strip_rc_block(&cleaned), cleaned);
+    }
+
+    /// 写回：备份保留原内容、目标被替换为 new_content
+    #[test]
+    fn write_rc_with_backup_preserves_backup() {
+        let dir = temp_dir("backup");
+        let rc_path = dir.join(".zshrc");
+        std::fs::write(&rc_path, "original\n").unwrap();
+
+        write_rc_with_backup(&rc_path, "original\n# block\n").unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&rc_path).unwrap(),
+            "original\n# block\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(rc_path.with_extension("dsh-backup")).unwrap(),
+            "original\n"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 写回：文件原本不存在 → 新建成功且不产生备份
+    #[test]
+    fn write_rc_with_backup_creates_missing_file() {
+        let dir = temp_dir("create");
+        let rc_path = dir.join(".bashrc");
+        write_rc_with_backup(&rc_path, "# block\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&rc_path).unwrap(), "# block\n");
+        assert!(!rc_path.with_extension("dsh-backup").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

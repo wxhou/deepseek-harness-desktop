@@ -7,7 +7,8 @@
 //!   `pnpm.cmd` / `pnpm.ps1`，通过 `HKCU\Environment\Path` 注册并广播
 //!   `WM_SETTINGCHANGE`；
 //! - macOS/Linux：`~/.local/bin/dsh` 与 `~/.local/bin/pnpm`，必要时向
-//!   `~/.zshrc` / `~/.bashrc` 幂等追加 PATH 导出（带标记块，可干净移除）。
+//!   `~/.zshrc` / `~/.bashrc` 幂等更新 PATH 导出块（只动自身标记块、保留
+//!   用户其余配置；写入前备份临时文件 + rename，失败自动回滚）。
 //!
 //! shim 运行时优先使用本地版本兼容的 node（校验规则与
 //! [`crate::config::is_supported_node_version`] 一致），否则回退到捆绑运行时；
