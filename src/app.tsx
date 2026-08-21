@@ -1,7 +1,5 @@
 import { useEffect } from 'react'
 import { useStore } from 'valtio-define'
-import DesktopAboutDialog from './components/desktop-about-dialog'
-import DesktopUpdateDialog from './components/desktop-update-dialog'
 import DesktopUpdater from './components/desktop-updater'
 import DownloadToast from './components/download-toast'
 import HarnessUpdater from './components/harness-updater'
@@ -13,6 +11,8 @@ import './i18n'
  * 应用根组件：只负责首次启动与整体布局。
  * 业务状态与操作方法全部收敛到 valtio-define store，
  * 各子组件自行订阅 store，不再通过 props 透传回调与状态。
+ * 弹出层（关于 / 检查更新 / 应用配置）统一由 overlastic 命令式打开，
+ * 仅在需要时挂载，不常驻渲染。
  */
 export default function App() {
   useDshTheme()
@@ -28,8 +28,6 @@ export default function App() {
       {status === 'ready' && <HarnessUpdater />}
       {status === 'ready' && <DownloadToast />}
       <DesktopUpdater />
-      <DesktopUpdateDialog />
-      <DesktopAboutDialog />
     </div>
   )
 }

@@ -1,27 +1,52 @@
-import { Button, Description, Modal, ProgressBar, useOverlayState } from '@heroui/react'
+import type { PropsWithOverlays } from '@overlastic/react'
+import { useWatch } from '@hairy/react-lib'
+import { Button, Description, Modal, ProgressBar } from '@heroui/react'
+import { useDisclosure } from '@overlastic/react'
+import { useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { If } from 'react-if-lite'
 import { useStore } from 'valtio-define'
 import { desktopUpdate } from '../store/modules/desktop-update'
 
+export interface DesktopUpdateDialogProps extends PropsWithOverlays {}
+
 /**
  * 「检查更新」对话框：展示新版本信息 + 下载进度。
  * 已下载 → 「打开安装包」直接启动安装器；未下载 → 「立即更新」下载完成后自动打开。
+ *
+ * 使用 overlastic 命令式打开（`useOverlay(DesktopUpdateDialog)`）。
+ * 下载由 store 驱动：对话框内「立即更新」触发 `downloadAndOpen`；
+ * 外部触发（右下角 toast）下载完成并打开安装包后，对话框依据 downloading 回落自动关闭。
  */
-export default function DesktopUpdateDialog() {
+export default function DesktopUpdateDialog(props: DesktopUpdateDialogProps) {
+  const disclosure = useDisclosure({ props })
   const { t } = useTranslation()
-  const { updateInfo, downloading, downloadProgress, updateDialogOpen } = useStore(desktopUpdate)
+  const { updateInfo, downloading, downloadProgress } = useStore(desktopUpdate)
+  const prevDownloadingRef = useRef(false)
 
-  const state = useOverlayState({
-    isOpen: updateDialogOpen,
-    onOpenChange: (open) => {
-      if (!open)
-        desktopUpdate.closeUpdateDialog()
-    },
-  })
+  // 外部触发下载（如右下角 toast「立即更新」）完成并打开安装包后，自动关闭对话框；
+  // 仅当 downloading 由 true→false 且已下载（安装包已打开）时才关闭，下载失败保持打开。
+  useWatch([downloading, updateInfo], () => {
+    if (prevDownloadingRef.current && !downloading && updateInfo?.downloaded)
+      disclosure.cancel()
+    prevDownloadingRef.current = downloading
+  }, { immediate: true })
+
+  async function handlePrimary() {
+    const info = desktopUpdate.updateInfo
+    if (!info)
+      return
+    if (info.downloaded) {
+      await desktopUpdate.openInstaller(info.path)
+      disclosure.cancel()
+    }
+    else {
+      await desktopUpdate.downloadAndOpen()
+    }
+  }
 
   return (
-    <Modal state={state}>
+    <Modal isOpen={disclosure.visible} onOpenChange={disclosure.cancel}>
       <Modal.Backdrop isDismissable={!downloading}>
         <Modal.Container size="sm">
           <Modal.Dialog>
@@ -70,7 +95,7 @@ export default function DesktopUpdateDialog() {
                 variant="tertiary"
                 className="rounded-md"
                 isDisabled={downloading}
-                onPress={desktopUpdate.closeUpdateDialog}
+                onPress={disclosure.cancel}
               >
                 {t('update.later')}
               </Button>
@@ -78,7 +103,7 @@ export default function DesktopUpdateDialog() {
                 variant="primary"
                 className="rounded-md"
                 isDisabled={downloading || updateInfo == null}
-                onPress={() => desktopUpdate.downloadAndOpen()}
+                onPress={handlePrimary}
               >
                 {updateInfo?.downloaded
                   ? t('update.open_installer')

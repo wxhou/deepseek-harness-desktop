@@ -20,6 +20,8 @@ import { useDshPlugins } from '../hooks/use-dsh-plugins'
 import { useIframeTauri } from '../hooks/use-iframe-tauri'
 import { desktopUpdate } from '../store/modules/desktop-update'
 import { ConfigDialog } from './config-dialog'
+import DesktopAboutDialog from './desktop-about-dialog'
+import DesktopUpdateDialog from './desktop-update-dialog'
 
 /**
  * 壳层窗口顶部导航栏（44px，常驻）：
@@ -59,6 +61,8 @@ export default function Navbar({ iframeRef }: NavbarProps) {
   const { updateInfo } = useStore(desktopUpdate)
 
   const openConfigDialog = useOverlay(ConfigDialog)
+  const openAboutDialog = useOverlay(DesktopAboutDialog)
+  const openUpdateDialog = useOverlay(DesktopUpdateDialog)
   // 仅当 dsh-tauri 插件启用（已安装）时显示左侧导航控件
   const tauriEnabled = plugins.some(plugin => plugin.id === TAURI_PLUGIN_ID)
   function handleWindowAction(action: 'minimize' | 'maximize' | 'background') {
@@ -79,11 +83,26 @@ export default function Navbar({ iframeRef }: NavbarProps) {
 
   function handleHelpAction(key: string) {
     if (key === 'check-update')
-      void desktopUpdate.openUpdateDialog()
+      void handleCheckUpdate()
     else if (key === 'about')
-      void desktopUpdate.openAbout()
+      openAboutDialog()
     else if (key === 'copy-run-logs')
       void copyRunLogs()
+  }
+
+  /** 「检查更新」：先检查，有更新才弹框；检查失败提示错误而非「已是最新」 */
+  async function handleCheckUpdate() {
+    try {
+      const info = await desktopUpdate.check()
+      if (info)
+        openUpdateDialog()
+      else
+        toast(t('update.up_to_date'), {})
+    }
+    catch (err) {
+      console.warn('[Navbar] check update failed:', err)
+      toast(t('update.check_failed'), { variant: 'danger' })
+    }
   }
 
   async function copyRunLogs() {

@@ -1,27 +1,33 @@
+import type { PropsWithOverlays } from '@overlastic/react'
 import { ArrowUpRightFromSquare } from '@gravity-ui/icons'
-import { Button, Description, Modal, useOverlayState } from '@heroui/react'
+import { Button, Description, Modal } from '@heroui/react'
+import { useDisclosure } from '@overlastic/react'
 import { invoke } from '@tauri-apps/api/core'
+import { useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useStore } from 'valtio-define'
 import { desktopUpdate } from '../store/modules/desktop-update'
 
+export interface DesktopAboutDialogProps extends PropsWithOverlays {}
+
 /**
  * 「关于 Desktop」对话框：展示 Powered by、版本号、发布时间与版权信息。
+ *
+ * 使用 overlastic 命令式打开（`useOverlay(DesktopAboutDialog)`），
+ * 打开时通过 store 的 `loadAbout` 拉取信息，关闭由 `disclosure.cancel` 完成。
  */
-export default function DesktopAboutDialog() {
+export default function DesktopAboutDialog(props: DesktopAboutDialogProps) {
+  const disclosure = useDisclosure({ props })
   const { t } = useTranslation()
-  const { about, aboutDialogOpen } = useStore(desktopUpdate)
+  const { about } = useStore(desktopUpdate)
 
-  const state = useOverlayState({
-    isOpen: aboutDialogOpen,
-    onOpenChange: (open) => {
-      if (!open)
-        desktopUpdate.closeAbout()
-    },
-  })
+  useEffect(() => {
+    if (disclosure.visible)
+      void desktopUpdate.loadAbout()
+  }, [disclosure.visible])
 
   return (
-    <Modal state={state}>
+    <Modal isOpen={disclosure.visible} onOpenChange={disclosure.cancel}>
       <Modal.Backdrop>
         <Modal.Container size="xs">
           <Modal.Dialog>

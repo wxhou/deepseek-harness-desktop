@@ -37,10 +37,6 @@ export const desktopUpdate = defineStore({
     downloading: false,
     /** 下载进度 0-100 */
     downloadProgress: 0,
-    /** 更新对话框开关 */
-    updateDialogOpen: false,
-    /** 关于对话框开关 */
-    aboutDialogOpen: false,
     /** 关于对话框信息 */
     about: null as DesktopAboutInfo | null,
     /** 用户已关闭提示的版本 tag（持久化，同版本不再弹 toast） */
@@ -88,30 +84,8 @@ export const desktopUpdate = defineStore({
       }
     },
 
-    /** 打开更新对话框（「检查更新」菜单）：先检查，有更新才弹框；检查失败提示错误而非「已是最新」 */
-    async openUpdateDialog() {
-      try {
-        if (!this.updateInfo)
-          await this.check()
-        if (this.updateInfo) {
-          this.updateDialogOpen = true
-        }
-        else {
-          toast(i18next.t('update.up_to_date'), { variant: 'default' })
-        }
-      }
-      catch (err) {
-        console.warn('[DesktopUpdate] check failed:', err)
-        toast(i18next.t('update.check_failed'), { variant: 'danger' })
-      }
-    },
-
-    closeUpdateDialog() {
-      this.updateDialogOpen = false
-    },
-
-    /** 打开关于对话框：拉取信息后展示 */
-    async openAbout() {
+    /** 加载关于信息（缓存到 store，仅首次拉取；打开关于对话框前调用） */
+    async loadAbout(): Promise<DesktopAboutInfo | null> {
       if (!this.about) {
         try {
           this.about = await invoke<DesktopAboutInfo>('get_desktop_about')
@@ -120,24 +94,7 @@ export const desktopUpdate = defineStore({
           console.warn('[DesktopUpdate] failed to load about info:', err)
         }
       }
-      this.aboutDialogOpen = true
-    },
-
-    closeAbout() {
-      this.aboutDialogOpen = false
-    },
-
-    /**
-     * toast「立即更新」：打开更新对话框并开始下载，避免静默下载无反馈。
-     * 对话框内 `downloading` 状态会展示下载进度条；下载完成自动打开安装器并关闭对话框。
-     */
-    async updateNow() {
-      if (!this.updateInfo)
-        await this.check()
-      if (!this.updateInfo)
-        return
-      this.updateDialogOpen = true
-      await this.downloadAndOpen()
+      return this.about
     },
 
     /**
@@ -178,11 +135,10 @@ export const desktopUpdate = defineStore({
       }
     },
 
-    /** 打开安装包并收尾（关对话框 + 提示） */
+    /** 打开安装包并提示（对话框由调用方 / overlastic 自行关闭） */
     async openInstaller(path: string) {
       try {
         await invoke('open_desktop_installer', { path })
-        this.closeUpdateDialog()
         toast(i18next.t('update.desktop_opened'), {
           variant: 'default',
           placement: 'bottom end',

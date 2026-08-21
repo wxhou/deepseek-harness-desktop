@@ -1,9 +1,11 @@
 import { useWatch } from '@hairy/react-lib'
+import { useOverlay } from '@overlastic/react'
 import { useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useStore } from 'valtio-define'
 import { toast } from '@/utils'
 import { desktopUpdate } from '../store/modules/desktop-update'
+import DesktopUpdateDialog from './desktop-update-dialog'
 
 /** 桌面端自更新轮询间隔：Rust 侧不再缓存，改为低频轮询以免触发 GitHub 未认证限流（60 次/小时/IP） */
 const POLL_INTERVAL = 10 * 60_000
@@ -15,7 +17,8 @@ const POLL_INTERVAL = 10 * 60_000
  */
 export default function DesktopUpdater() {
   const { t } = useTranslation()
-  const { updateInfo, dismissedTag, downloading, updateDialogOpen } = useStore(desktopUpdate)
+  const { updateInfo, dismissedTag, downloading } = useStore(desktopUpdate)
+  const openUpdateDialog = useOverlay(DesktopUpdateDialog)
 
   // 低频静默检查新版本（实时查询，无本地缓存）；后台失败静默，不打扰用户
   useEffect(() => {
@@ -26,8 +29,8 @@ export default function DesktopUpdater() {
     return () => clearInterval(timer)
   }, [])
 
-  useWatch([updateInfo, dismissedTag, downloading, updateDialogOpen], () => {
-    if (!updateInfo || downloading || updateDialogOpen)
+  useWatch([updateInfo, dismissedTag, downloading], () => {
+    if (!updateInfo || downloading)
       return
     // 安装包已下载（用户已发起更新）→ 不再重复弹「立即更新」toast
     if (updateInfo.downloaded)
@@ -40,8 +43,9 @@ export default function DesktopUpdater() {
         children: t('update.now'),
         onPress: () => {
           toast.clear()
-          // 打开更新对话框并开始下载，对话框内展示下载进度
-          void desktopUpdate.updateNow()
+          // 打开更新对话框并开始下载，对话框内展示下载进度（下载完成自动关闭）
+          openUpdateDialog()
+          void desktopUpdate.downloadAndOpen()
         },
         variant: 'tertiary',
       },

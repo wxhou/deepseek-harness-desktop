@@ -1,52 +1,37 @@
+import type { PropsWithOverlays } from '@overlastic/react'
 import { Cpu, PersonPencil, Puzzle, Wrench } from '@gravity-ui/icons'
 import { cn, Modal } from '@heroui/react'
 import { useDisclosure } from '@overlastic/react'
 import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { Case, Switch } from 'react-if-lite'
 import { ConfigCore } from './config-core'
 import { ConfigDebug } from './config-debug'
 import { ConfigPlugin } from './config-plugin'
 import { ConfigProfile } from './config-profile'
 
-export function ConfigDialog() {
-  const disclosure = useDisclosure()
+export interface ConfigDialogProps extends PropsWithOverlays {}
+
+export function ConfigDialog(props: ConfigDialogProps) {
+  const disclosure = useDisclosure({ props })
+  const { t } = useTranslation()
   const navs = [
-    {
-      title: '调试',
-      label: 'Debug',
-      value: 'debug',
-      icon: Wrench,
-    },
-    {
-      title: '档案',
-      label: 'Profiles',
-      value: 'profiles',
-      icon: PersonPencil,
-    },
-    {
-      title: '插件',
-      label: 'Plugins',
-      value: 'plugins',
-      icon: Puzzle,
-    },
-    {
-      title: '核心',
-      label: 'Harness',
-      value: 'harness',
-      icon: Cpu,
-    },
+    { label: t('config.debug'), value: 'debug', icon: Wrench },
+    { label: t('config.profiles'), value: 'profiles', icon: PersonPencil },
+    { label: t('config.plugins'), value: 'plugins', icon: Puzzle },
+    { label: t('config.harness'), value: 'harness', icon: Cpu },
   ]
 
   const [activeTab, setActiveTab] = useState('debug')
   return (
-    <Modal isOpen={disclosure.visible} onOpenChange={disclosure.confirm}>
+    <Modal isOpen={disclosure.visible} onOpenChange={disclosure.cancel}>
       <Modal.Backdrop>
         <Modal.Container size="lg">
           <Modal.Dialog className="w-[800px] max-w-[calc(100vw-48px)] pr-2.5">
             <Modal.CloseTrigger />
             <Modal.Header className="mb-3">
               <Modal.Heading>
-                应用配置
+                {t('app.config')}
               </Modal.Heading>
             </Modal.Header>
             <Modal.Body className="flex gap-6 pr-0">
@@ -64,7 +49,7 @@ export function ConfigDialog() {
                         )}
                       >
                         <item.icon className="w-5 h-5 mr-2" />
-                        <span>{item.title}</span>
+                        <span>{item.label}</span>
                       </button>
                     )
                   })}
