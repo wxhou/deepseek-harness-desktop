@@ -45,11 +45,15 @@
 ## 功能
 
 - ⚡️ **零环境** — 首次启动自动装配内置 Node 运行时与 Harness 内核；本机已有兼容 Node / Pnpm 时直接复用，不修改已有的系统环境。
-- 🔄 **内核自愈** — 自动同步上游最新 Harness 版本，上游修复无需重新安装软件版本，打开即跟上。
+- 🔄 **内核自愈** — 每次启动同步上游最新 Harness 版本，上游修复无需重装即生效；支持多版本核心的下载、切换与卸载，切换后重启服务。
+- 🖥️ **应用配置中心** — 统一的配置对话框（调试 / 档案 / 插件 / 核心），界面按钮中英双语本地化，并适配暗色模式。
+- 🗂️ **档案隔离** — 在应用配置中新建 / 切换 / 删除彼此隔离的档案，插件、补丁与设置各自独立，互不干扰。
+- 🧩 **插件管理** — 插件面板只读展示已安装插件，出现异常时提供升级 / 卸载入口，错误详情实时同步。
 - 🔒 **纯本地 · 隐私默认** — 运行在 `127.0.0.1:3080`，profile / 会话 / 设置全部留在本机，默认关闭遥测。
 - 🪶 **原生轻量** — Tauri 2 外壳（非 Electron）：更小的安装包、更低的内存占用、原生窗口。Windows / macOS / Linux，中英双语界面。
-- ⌨️ **命令行集成** — 安装后自动注册 `dsh` 命令（`*/bin`），新开终端即用。
+- ⌨️ **命令行集成** — 安装后自动注册 `dsh` 命令（`*/bin`），新开终端即用；不覆盖你已有的 shell 配置。
 - 🧭 **首次启动引导** — 首次启动可选装推荐插件并实时查看安装日志；随时跳过，之后也能从侧边栏重新打开。
+- 🚀 **桌面端自更新** — 应用独立检查 GitHub 最新版并下载安装包；开发 / 生产构建的端口与数据目录彼此隔离。
 
 ## 预设插件
 
@@ -87,21 +91,26 @@
                        │ invoke 命令 + 事件
 ┌──────────────────────┴───────────────────────┐
 │ Tauri Rust 后端                              │
-│   service/download  安装器 + 解压             │
-│   service/workflow  dsh 进程生命周期          │
-│   task              dsh 健康检查              │
+│   service/download  安装器 + 解压            │
+│   service/core      Harness 核心多版本管理   │
+│   service/profile   dsh 档案管理             │
+│   service/plugin    插件卸载 / 升级          │
+│   service/cli       dsh 命令 shim + PATH     │
+│   service/update    桌面端自更新             │
+│   service/workflow  dsh 进程生命周期         │
+│   task              dsh 健康检查             │
 └──────┬───────────────────────────┬───────────┘
        │                           │
   runtime/ (Node.js v22.22.0)   dependencies/dsh/ (发行版)
        └─────────────┬─────────────┘
                      ▼
-   dsh --profile web --host 127.0.0.1 --port 3080
-                     │  DSH_HOME=<app-data>/data/dsh
+   dsh --profile <档案> --host 127.0.0.1 --port 3080
+                     │  DSH_HOME=~/.dsh
                      ▼
         http://127.0.0.1:3080/  ← 内嵌界面
 ```
 
-Harness 发行版由 [deepseek-harness-pkg](https://github.com/hairyf/deepseek-harness-pkg) 构建发布。每次启动都会对比最新发行版，本地过期时自动重新下载；GitHub 不可达时保留本地安装。
+Harness 发行版由 [deepseek-harness-pkg](https://github.com/hairyf/deepseek-harness-pkg) 构建发布。每次启动都会对比最新发行版，本地过期时自动重新下载；GitHub 不可达时保留本地安装。通过 CLI 全局安装的本地核心会被优先使用。
 
 ## 说明
 
