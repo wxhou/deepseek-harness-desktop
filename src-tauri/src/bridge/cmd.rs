@@ -431,6 +431,14 @@ pub async fn reveal_data_dir(app_handle: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// 前端日志透传：前端 `console.*` 劫持经此命令落盘到 `desktop.frontdesk.log`
+/// （与持有后端 + `dsh` target 的 `desktop.log` 分离），见 `logger/mod.rs`。
+#[tauri::command]
+pub fn log_frontend(level: String, target: String, message: String) {
+    let lvl = crate::logger::FrontendLevel::from_str(&level);
+    crate::logger::log_frontend(lvl, &target, &message);
+}
+
 /// 读取 dsh 服务日志
 #[tauri::command]
 pub async fn read_service_logs(

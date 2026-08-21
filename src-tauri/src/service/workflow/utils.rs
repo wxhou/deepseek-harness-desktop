@@ -1,8 +1,16 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
 use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
+
+const DSH_MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
+const DSH_MAX_BACKUPS: usize = 3;
+static DSH_LOG_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+fn dsh_log_lock() -> &'static Mutex<()> {
+    DSH_LOG_LOCK.get_or_init(|| Mutex::new(()))
+}
 
 /// 检查 Harness 是否真正在运行（探测指定端口，随配置端口联动）
 pub async fn is_dsh_running(port: u16) -> bool {
@@ -57,7 +65,7 @@ where
             for line in reader.lines() {
                 match line {
                     Ok(line) => {
-                        log::info!("[dsh::stdout]: {}", line);
+                        log::info!(target: "dsh", "{}", line);
                         append_log(&log_path, &line);
                     }
                     Err(e) => {
@@ -76,7 +84,7 @@ where
             for line in reader.lines() {
                 match line {
                     Ok(line) => {
-                        log::warn!("[dsh::stderr]: {}", line);
+                        log::warn!(target: "dsh", "{}", line);
                         append_log(&log_path, &line);
                     }
                     Err(e) => {
@@ -90,12 +98,33 @@ where
 }
 
 fn append_log(log_path: &PathBuf, line: &str) {
+    // 与 `logger` 的 `desktop.log` / `desktop.frontdesk.log` 保持一致：5MiB × 3 轮转
+    let _guard = dsh_log_lock().lock().unwrap_or_else(|e| e.into_inner());
     if let Ok(mut file) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(log_path)
     {
         let _ = writeln!(file, "{}", line);
+        let _ = file.flush();
+    }
+    // 超阈值则按大小轮转（与启动次轮转 `rotate_service_log` 互补，避免单次运行无限增长）
+    if let Ok(meta) = std::fs::metadata(log_path) {
+        if meta.len() > DSH_MAX_LOG_BYTES {
+            let _ = std::fs::remove_file(indexed_log_path(log_path, DSH_MAX_BACKUPS));
+            for i in (1..DSH_MAX_BACKUPS).rev() {
+                let from = indexed_log_path(log_path, i);
+                let to = indexed_log_path(log_path, i + 1);
+                if from.exists() {
+                    let _ = std::fs::remove_file(&to);
+                    let _ = std::fs::rename(&from, &to);
+                }
+            }
+            if log_path.exists() {
+                let _ = std::fs::rename(log_path, indexed_log_path(log_path, 1));
+            }
+            let _ = std::fs::OpenOptions::new().create(true).write(true).truncate(true).open(log_path);
+        }
     }
 }
 

@@ -1,3 +1,4 @@
+import '@/utils/logger'
 import { OverlaysProvider } from '@overlastic/react'
 import { QueryClientProvider } from '@tanstack/react-query'
 import React from 'react'

@@ -221,6 +221,7 @@ pub fn handler() -> impl Fn(Invoke<Wry>) -> bool + Send + Sync + 'static {
         crate::bridge::cmd::get_desktop_about,
         crate::bridge::cmd::open_external_url,
         crate::desktop::notification::show_native_notification,
+        crate::bridge::cmd::log_frontend,
     ]
 }
 
