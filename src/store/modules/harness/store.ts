@@ -16,8 +16,8 @@ import { listen } from '@tauri-apps/api/event'
 import i18next from 'i18next'
 import { defineStore } from 'valtio-define'
 import { queryClient } from '@/config/client'
-import { harnessUpdater } from '../harness-updater'
 import { pickErrorLines } from '@/utils/log-utils'
+import { harnessUpdater } from '../harness-updater'
 
 const MAX_RETRIES = 8
 const IFRAME_LOAD_TIMEOUT = 20000

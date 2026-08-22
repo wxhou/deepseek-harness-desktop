@@ -1,5 +1,5 @@
-import type { ToastVariants } from '@heroui/styles'
 import type { ToastContentValue } from '@heroui/react/toast'
+import type { ToastVariants } from '@heroui/styles'
 import { ToastQueue } from '@heroui/react'
 
 /** toast() 可选项：库内未暴露的 HeroUIToastOptions（toast-queue 收敛的 content + 超时回调），这里用公开的 ToastContentValue 组合 */
