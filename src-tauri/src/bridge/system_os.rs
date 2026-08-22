@@ -238,6 +238,7 @@ pub async fn open_external_url(app_handle: AppHandle, url: String) -> Result<(),
 #[cfg(test)]
 mod tests {
     use super::is_frontend_log_line;
+    use super::tail_bytes;
 
     #[test]
     fn frontend_line_detected() {
@@ -260,5 +261,28 @@ mod tests {
     fn frontend_level_padding_and_extra_spaces() {
         // 级别可能带前导空格（`{:>5}` 或 tracing 层多空格），frontend 目标仍应命中
         assert!(is_frontend_log_line("2024-06-01 12:00:00.123Z  INFO frontend: padded"));
+    }
+
+    #[test]
+    fn tail_bytes_keeps_ascii_within_limit() {
+        assert_eq!(tail_bytes("hello world", 5), "world");
+        // 起点已落在字符边界时原样截取
+        assert_eq!(tail_bytes("abc", 2), "bc");
+    }
+
+    #[test]
+    fn tail_bytes_advances_to_char_boundary() {
+        // 截取起点落在 3 字节中文中间 → 回退到字符边界，不 panic 且结果 ≤ max_bytes
+        assert_eq!(tail_bytes("中a", 2), "a");
+        // 4 字节 emoji 同理（非边界前缀字节会连续回退）
+        assert_eq!(tail_bytes("😀x", 3), "x");
+        // 多字节 + 超限，回退后长度仍不超过 max_bytes
+        assert_eq!(tail_bytes("中文abc", 3), "abc");
+    }
+
+    #[test]
+    fn tail_bytes_shorter_than_limit_returns_whole() {
+        assert_eq!(tail_bytes("中文", 10), "中文");
+        assert_eq!(tail_bytes("", 10), "");
     }
 }

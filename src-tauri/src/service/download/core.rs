@@ -1104,6 +1104,26 @@ mod tests {
     }
 
     #[test]
+    fn parsed_digest_window_clamps_to_char_boundary() {
+        // 构造一个 body 使 `(pos + 4096)` 恰好落在多字节字符的中间字节：
+        // 旧实现 `&body[pos..pos + 4096]` 会在非字符边界切片而 panic，修复后回退到边界再解析。
+        let name = "deepseek-harness-pkg-windows.zip";
+        let digest = "4d5416766eb4a66e81b83532abeea64de7e7e2e0bac69a4f0c0508e1d91936c0";
+        let prefix = format!("{name}<span>sha256:{digest}</span>");
+        let mut body = prefix.clone();
+        // 补齐到字节 4094 处，放一个 3 字节汉字（占用 4094..4097），使索引 4096 落在其中间字节
+        let needed = 4094usize.saturating_sub(body.len());
+        body.push_str(&"a".repeat(needed));
+        body.push('中');
+        body.push_str(&"a".repeat(16));
+        // 确保总长 > 4096，维持 (pos + 4096) 处于非边界字节（否则不会触发回退分支）
+        assert!(body.len() > 4096);
+        let got = parse_digest_from_expanded_assets(&body, name);
+        let expected = format!("sha256:{digest}");
+        assert_eq!(got.as_deref(), Some(expected.as_str()));
+    }
+
+    #[test]
     fn parse_version_from_tag_formats() {
         assert_eq!(
             parse_version_from_tag("dsh-0.1.0-rc.7-32054485373").as_deref(),

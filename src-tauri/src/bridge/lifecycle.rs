@@ -282,3 +282,21 @@ pub fn runtime_ready(app_handle: AppHandle) -> bool {
         && download::Dsh.check_installed(&app_handle)
         && download::Pnpm.check_installed(&app_handle)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::install_lock;
+
+    #[test]
+    fn install_lock_is_exclusive_while_held() {
+        let lock = install_lock();
+        // 首持获得锁
+        let guard = lock.try_lock();
+        assert!(guard.is_ok());
+        // 未释放前再次 try_lock 应失败，排除并发/重入（这正是替换 Status::Installing 守卫的目的）
+        assert!(lock.try_lock().is_err());
+        // 释放后可重新获取
+        drop(guard);
+        assert!(lock.try_lock().is_ok());
+    }
+}
