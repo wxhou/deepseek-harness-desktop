@@ -12,6 +12,7 @@ import { Button, Chip, Description, Dropdown, Label } from '@heroui/react'
 import { useOverlay } from '@overlastic/react'
 import { invoke } from '@tauri-apps/api/core'
 import { getCurrentWindow } from '@tauri-apps/api/window'
+import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { If } from 'react-if-lite'
 import { cn } from 'tailwind-variants'
@@ -23,6 +24,7 @@ import { useDshPlugins } from '@/hooks/use-dsh-plugins'
 import { useIframeTauri } from '@/hooks/use-iframe-tauri'
 import { store } from '@/store'
 import { toast } from '@/utils'
+import { useMacOSAppMenu } from './use-macos-app-menu'
 
 /**
  * 壳层窗口顶部导航栏（44px，常驻）：
@@ -39,7 +41,7 @@ import { toast } from '@/utils'
  * - 空白拖拽区：Tauri 原生 `data-tauri-drag-region`（顶层文档直接生效），
  *   Windows/Linux 上双击切换最大化，macOS 上交由系统标题栏偏好。
  * - macOS：使用原生交通灯，红键后台化、黄键最小化、绿键进入原生全屏；
- *   导航栏左侧留出交通灯区域。
+ *   普通窗口下导航栏左侧留出交通灯区域，原生全屏时整条导航栏收起。
  * - Windows/Linux：右侧窗口按钮直接调用 Tauri API；
  *   后台化 = 隐藏到托盘（服务保持运行）。
  *
@@ -60,6 +62,55 @@ function detectMacOS() {
 
 const IS_MACOS = detectMacOS()
 
+/** macOS 原生全屏时收起整条壳层导航栏。 */
+function useMacOSFullscreen() {
+  const [isFullscreen, setIsFullscreen] = useState(false)
+
+  useEffect(() => {
+    if (!IS_MACOS)
+      return
+
+    const appWindow = getCurrentWindow()
+    let mounted = true
+    let unlisten: (() => void) | undefined
+
+    async function syncFullscreen() {
+      try {
+        const fullscreen = await appWindow.isFullscreen()
+        if (mounted)
+          setIsFullscreen(fullscreen)
+      }
+      catch (error) {
+        console.error('[Navbar] failed to sync fullscreen state:', error)
+      }
+    }
+
+    async function setupListener() {
+      try {
+        await syncFullscreen()
+        const stopListening = await appWindow.onResized(() => {
+          void syncFullscreen()
+        })
+        if (mounted)
+          unlisten = stopListening
+        else
+          stopListening()
+      }
+      catch (error) {
+        console.error('[Navbar] failed to listen for fullscreen state:', error)
+      }
+    }
+
+    void setupListener()
+    return () => {
+      mounted = false
+      unlisten?.()
+    }
+  }, [])
+
+  return isFullscreen
+}
+
 export interface NavbarProps {
   /** 就绪态 iframe；传入时启用左侧导航控制 */
   iframeRef?: RefObject<HTMLIFrameElement | null>
@@ -67,6 +118,7 @@ export interface NavbarProps {
 
 export function Navbar({ iframeRef }: NavbarProps) {
   const { t } = useTranslation()
+  const isFullscreen = useMacOSFullscreen()
   const { plugins } = useDshPlugins()
   const { sidebarCollapsed, canGoBack, canGoForward, sendNav } = useIframeTauri(iframeRef)
   const { updateInfo } = useStore(store.desktopUpdater)
@@ -107,6 +159,14 @@ export function Navbar({ iframeRef }: NavbarProps) {
       void copyRunLogs()
   }
 
+  function handleOpenConfig() {
+    void openConfigDialog().catch(() => {})
+  }
+
+  function handleOpenAbout() {
+    void openAboutDialog().catch(() => {})
+  }
+
   /** 「检查更新」：先检查，有更新才弹框；检查失败提示错误而非「已是最新」 */
   async function handleCheckUpdate() {
     try {
@@ -134,13 +194,22 @@ export function Navbar({ iframeRef }: NavbarProps) {
     }
   }
 
+  useMacOSAppMenu({
+    enabled: IS_MACOS,
+    openConfig: handleOpenConfig,
+    openAbout: handleOpenAbout,
+    copyRunLogs: () => { void copyRunLogs() },
+    checkUpdate: () => { void handleCheckUpdate() },
+  })
+
   return (
     <div
       className={cn(
         'relative flex h-11 w-full flex-none select-none items-center gap-0.5 border-b border-line bg-panel',
         {
-          'pl-20 pr-1.5': IS_MACOS,
-          'px-1.5': !IS_MACOS,
+          'hidden': IS_MACOS && isFullscreen,
+          'pl-20 pr-1.5': IS_MACOS && !isFullscreen,
+          'px-1.5': !IS_MACOS || isFullscreen,
         },
       )}
     >
@@ -183,65 +252,66 @@ export function Navbar({ iframeRef }: NavbarProps) {
           <ArrowRight />
         </Button>
       </If>
-      <div className="ml-1">
-        <Button
-          className="rounded-lg h-6 text-xs px-1.5"
-          size="sm"
-          variant="ghost"
-          onPress={() => void openConfigDialog().catch(() => {})}
-        >
-          {t('app.config')}
-        </Button>
-        <Dropdown>
+      <If cond={!IS_MACOS || !isFullscreen}>
+        <div className="ml-1">
           <Button
             className="rounded-lg h-6 text-xs px-1.5"
             size="sm"
             variant="ghost"
-            aria-label={t('app.expand_sidebar')}
+            onPress={handleOpenConfig}
           >
-            {t('app.help')}
+            {t('app.config')}
           </Button>
-          <Dropdown.Popover className="rounded-md w-5!">
-            <Dropdown.Menu>
-              <Dropdown.Item
-                className="rounded-md"
-                id="copy-run-logs"
-                textValue={t('menu.run_logs')}
-                onAction={() => handleHelpAction('copy-run-logs')}
-              >
-                <Label>{t('menu.run_logs')}</Label>
-              </Dropdown.Item>
-              <Dropdown.Item
-                className="rounded-md"
-                id="check-update"
-                textValue={t('menu.check_update')}
-                onAction={() => handleHelpAction('check-update')}
-              >
-                <span className="flex w-full items-center justify-between gap-3">
-                  <Label>{t('menu.check_update')}</Label>
-                  <If cond={updateInfo != null}>
-                    <Description>{t('menu.new_version')}</Description>
-                  </If>
-                </span>
-              </Dropdown.Item>
-              <Dropdown.Item
-                className="rounded-md"
-                id="about"
-                textValue={t('menu.about')}
-                onAction={() => handleHelpAction('about')}
-              >
-                <Label>{t('menu.about')}</Label>
-              </Dropdown.Item>
-            </Dropdown.Menu>
-          </Dropdown.Popover>
-        </Dropdown>
-        <If cond={import.meta.env.DEV}>
-          <Chip size="sm" variant="primary" color="warning" className="text-xs text-background ml-1">
-            {t('app.dev_env')}
-          </Chip>
-        </If>
-
-      </div>
+          <Dropdown>
+            <Button
+              className="rounded-lg h-6 text-xs px-1.5"
+              size="sm"
+              variant="ghost"
+              aria-label={t('app.expand_sidebar')}
+            >
+              {t('app.help')}
+            </Button>
+            <Dropdown.Popover className="rounded-md w-5!">
+              <Dropdown.Menu>
+                <Dropdown.Item
+                  className="rounded-md"
+                  id="copy-run-logs"
+                  textValue={t('menu.run_logs')}
+                  onAction={() => handleHelpAction('copy-run-logs')}
+                >
+                  <Label>{t('menu.run_logs')}</Label>
+                </Dropdown.Item>
+                <Dropdown.Item
+                  className="rounded-md"
+                  id="check-update"
+                  textValue={t('menu.check_update')}
+                  onAction={() => handleHelpAction('check-update')}
+                >
+                  <span className="flex w-full items-center justify-between gap-3">
+                    <Label>{t('menu.check_update')}</Label>
+                    <If cond={updateInfo != null}>
+                      <Description>{t('menu.new_version')}</Description>
+                    </If>
+                  </span>
+                </Dropdown.Item>
+                <Dropdown.Item
+                  className="rounded-md"
+                  id="about"
+                  textValue={t('menu.about')}
+                  onAction={() => handleHelpAction('about')}
+                >
+                  <Label>{t('menu.about')}</Label>
+                </Dropdown.Item>
+              </Dropdown.Menu>
+            </Dropdown.Popover>
+          </Dropdown>
+        </div>
+      </If>
+      <If cond={import.meta.env.DEV}>
+        <Chip size="sm" variant="primary" color="warning" className="text-xs text-background ml-1">
+          {t('app.dev_env')}
+        </Chip>
+      </If>
 
       {/* 拖拽区：Tauri 原生拖拽（仅此元素带 data-tauri-drag-region，按钮不受影响） */}
       <div

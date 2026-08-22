@@ -2,18 +2,30 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(windows)]
 use std::sync::Arc;
+#[cfg(target_os = "macos")]
+use std::sync::{Mutex, OnceLock};
 
 use tauri::{
     ipc::Invoke,
     menu::{Menu, MenuEvent, MenuItem},
     tray::{MouseButton, TrayIconBuilder, TrayIconEvent},
-    Runtime, WebviewUrl, WebviewWindowBuilder, Wry,
+    Emitter, Runtime, WebviewUrl, WebviewWindowBuilder, Wry,
 };
 
-use crate::utils::show_main_window;
-use crate::desktop::window::{on_download, on_new_window};
+#[cfg(target_os = "macos")]
+use tauri::{
+    menu::{PredefinedMenuItem, Submenu},
+    Manager,
+};
+
+#[cfg(target_os = "macos")]
+static MACOS_FULLSCREEN_MENU_ITEM: OnceLock<Mutex<Option<PredefinedMenuItem<Wry>>>> =
+    OnceLock::new();
+
 #[cfg(windows)]
 use crate::desktop::window::on_page_load;
+use crate::desktop::window::{on_download, on_new_window};
+use crate::utils::show_main_window;
 
 /// setup app
 pub fn setup(app_handle: tauri::AppHandle) {
@@ -103,6 +115,128 @@ pub fn tray<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<()> {
         .build(app)?;
 
     Ok(())
+}
+
+/// 安装 macOS 全局菜单栏操作。
+///
+/// 菜单由原生层在窗口启动前后始终持有，避免 WebView 重载或进入独立全屏 Space
+/// 时丢失；点击后只发送动作 id，由前端复用现有对话框和更新流程。
+#[cfg(target_os = "macos")]
+pub fn install_macos_menu(app: &tauri::AppHandle<Wry>) -> tauri::Result<()> {
+    let setting = crate::config::get_store_dat_setting(app);
+    crate::config::i18n::set_language(match setting.language.as_str() {
+        "en" | "en-US" => crate::config::i18n::Lang::En,
+        _ => crate::config::i18n::Lang::Zh,
+    });
+
+    let config = MenuItem::with_id(
+        app,
+        "desktop-config",
+        crate::config::i18n::t("menu.settings"),
+        true,
+        Some("CmdOrCtrl+,"),
+    )?;
+    let application_separator = PredefinedMenuItem::separator(app)?;
+    let is_fullscreen = app
+        .get_webview_window("main")
+        .and_then(|window| window.is_fullscreen().ok())
+        .unwrap_or(false);
+    let fullscreen_label = crate::config::i18n::t(if is_fullscreen {
+        "menu.exit_fullscreen"
+    } else {
+        "menu.enter_fullscreen"
+    });
+    let fullscreen = PredefinedMenuItem::fullscreen(app, Some(&fullscreen_label))?;
+    let application_menu = Submenu::with_id_and_items(
+        app,
+        "desktop-application-menu",
+        crate::config::i18n::t("menu.application"),
+        true,
+        &[&config, &application_separator, &fullscreen],
+    )?;
+
+    let hide = PredefinedMenuItem::hide(app, None)?;
+    let hide_others = PredefinedMenuItem::hide_others(app, None)?;
+    let show_all = PredefinedMenuItem::show_all(app, None)?;
+    let quit_separator = PredefinedMenuItem::separator(app)?;
+    let quit = PredefinedMenuItem::quit(app, None)?;
+    // macOS 会把首个菜单标题强制显示为应用名称；这里只承载必要的系统动作，
+    // 真正可见的“应用”功能菜单放在其后，避免再次被系统改名。
+    let system_application_menu = Submenu::with_id_and_items(
+        app,
+        "desktop-system-application-menu",
+        app.package_info().name.clone(),
+        true,
+        &[&hide, &hide_others, &show_all, &quit_separator, &quit],
+    )?;
+
+    let run_logs = MenuItem::with_id(
+        app,
+        "desktop-copy-run-logs",
+        crate::config::i18n::t("menu.run_logs"),
+        true,
+        None::<&str>,
+    )?;
+    let check_update = MenuItem::with_id(
+        app,
+        "desktop-check-update",
+        crate::config::i18n::t("menu.check_update"),
+        true,
+        None::<&str>,
+    )?;
+    let help_separator = PredefinedMenuItem::separator(app)?;
+    let about = MenuItem::with_id(
+        app,
+        "desktop-about",
+        crate::config::i18n::t("menu.about"),
+        true,
+        None::<&str>,
+    )?;
+    let help_menu = Submenu::with_id_and_items(
+        app,
+        "desktop-help-menu",
+        crate::config::i18n::t("menu.help"),
+        true,
+        &[&run_logs, &check_update, &help_separator, &about],
+    )?;
+
+    let menu = Menu::with_items(
+        app,
+        &[&system_application_menu, &application_menu, &help_menu],
+    )?;
+    let _ = app.set_menu(menu)?;
+    *MACOS_FULLSCREEN_MENU_ITEM
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = Some(fullscreen);
+    Ok(())
+}
+
+/// 原生全屏动画会连续触发 Resize；只在状态真正变化时刷新菜单文案。
+#[cfg(target_os = "macos")]
+fn sync_macos_fullscreen_menu(window: &tauri::Window<Wry>) {
+    let Ok(is_fullscreen) = window.is_fullscreen() else {
+        return;
+    };
+    let label = crate::config::i18n::t(if is_fullscreen {
+        "menu.exit_fullscreen"
+    } else {
+        "menu.enter_fullscreen"
+    });
+    let item = MACOS_FULLSCREEN_MENU_ITEM
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone();
+    let Some(item) = item else {
+        return;
+    };
+    if item.text().ok().as_deref() == Some(label.as_str()) {
+        return;
+    }
+    if let Err(error) = item.set_text(label) {
+        log::warn!("[menu] failed to update macOS fullscreen label: {error}");
+    }
 }
 
 /// 构建主窗口。
@@ -267,9 +401,22 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
         .setup(|app| {
             let app_handle = app.handle().clone();
             build_main_window(&app_handle)?;
+            #[cfg(target_os = "macos")]
+            install_macos_menu(&app_handle)?;
             tray(&app_handle)?;
             setup(app_handle.clone());
             Ok(())
+        })
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "desktop-config"
+            | "desktop-about"
+            | "desktop-copy-run-logs"
+            | "desktop-check-update" => {
+                if let Err(error) = app.emit("macos-menu-action", event.id().as_ref()) {
+                    log::warn!("[menu] failed to emit macOS menu action: {error}");
+                }
+            }
+            _ => {}
         })
         // 点击关闭按钮时隐藏到托盘而不是退出程序
         .on_window_event(|window, event| match event {
@@ -278,8 +425,13 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
                 let _ = window.hide();
             }
             // 移动/缩放主窗口时记录几何，重启后据此恢复（见 config::window_state）
-            tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) => {
+            tauri::WindowEvent::Moved(_) => {
                 crate::config::save_geometry(window);
+            }
+            tauri::WindowEvent::Resized(_) => {
+                crate::config::save_geometry(window);
+                #[cfg(target_os = "macos")]
+                sync_macos_fullscreen_menu(window);
             }
             _ => {}
         });
