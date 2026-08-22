@@ -30,7 +30,7 @@
 </p>
 
 
-> More preview images: [Preview Images](https://github.com/hairyf/deepseek-harness-desktop/tree/main/docs/images/preview.png)
+> [More preview images](./docs/PREVIEW.md)
 
 ## Features
 

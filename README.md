@@ -29,7 +29,7 @@
   <img src="./docs/images/hero-zh.png" width="100%" alt="DSH Desktop 中文宣传横幅" />
 </p>
 
-> 更多浏览图片 [Preview Images](https://github.com/hairyf/deepseek-harness-desktop/tree/main/docs/images/preview.png)
+> [更多浏览图片](/docs/PREVIEW.md)
 
 ## 功能
 
