@@ -69,6 +69,8 @@ pub const STORE_DAT_FILE: &str = ".store.dat";
 /// store 会让两边端口一路漂移并相互污染状态）。
 pub const STORE_DAT_DEV_FILE: &str = ".store.dev.dat";
 pub const STORE_SETTING_KEY: &str = "setting";
+/// Store 中记录主窗口几何（位置/大小/最大化）的键
+pub const STORE_WINDOW_STATE_KEY: &str = "window_state";
 
 /// 健康检查超时
 pub const HEALTH_CHECK_TIMEOUT: Duration = Duration::from_secs(5);
