@@ -106,9 +106,6 @@ The prebuilt Harness bundle is published by [deepseek-harness-pkg](https://githu
 > [!WARNING]
 > **Developer preview** — upstream `dsh` is evolving fast with breaking changes; this project tracks it closely.
 
-> [!IMPORTANT]
-> **macOS Gatekeeper** — the app is not notarized; allow it once via System Settings → Privacy & Security → Open Anyway.
-
 > [!NOTE]
 > **Security** — `dsh` can execute code locally. For learning / research / testing only; run it in a trusted, isolated environment.
 
