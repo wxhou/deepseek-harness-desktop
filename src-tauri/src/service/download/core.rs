@@ -643,7 +643,12 @@ async fn fetch_latest_dsh_tag_from_atom() -> Result<String, String> {
 /// 纯函数，便于对真实页面片段做离线单元测试；解析失败返回 `None`。
 fn parse_digest_from_expanded_assets(body: &str, expected_name: &str) -> Option<String> {
     let pos = body.find(expected_name)?;
-    let window = &body[pos..(pos + 4096).min(body.len())];
+    // 4096 字节窗口的终点回退到 UTF-8 字符边界，避免切片落在多字节字符中间 panic
+    let mut end = (pos + 4096).min(body.len());
+    while end > pos && !body.is_char_boundary(end) {
+        end -= 1;
+    }
+    let window = &body[pos..end];
     const START: &str = "sha256:";
     let hash_start = window.find(START)?;
     let hash = &window[hash_start + START.len()..];

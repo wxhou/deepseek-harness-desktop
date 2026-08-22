@@ -118,7 +118,7 @@ export function Navbar({ iframeRef }: NavbarProps) {
   }
 
   return (
-    <div className="relative flex h-11 w-full flex-none select-none items-center gap-0.5 border-b border-line px-1.5 bg-[#f9fafb] dark:bg-[#1b1b1c]">
+    <div className="relative flex h-11 w-full flex-none select-none items-center gap-0.5 border-b border-line px-1.5 bg-panel">
       <If cond={iframeRef != null && tauriEnabled}>
         <Button
           className="rounded-lg size-7"

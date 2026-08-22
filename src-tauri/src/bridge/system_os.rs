@@ -93,6 +93,20 @@ pub fn log_frontend(level: String, target: String, message: String) {
     logger::log_frontend(lvl, &target, &message);
 }
 
+/// 按字节上限取 `s` 的尾部，并在裁剪起点回退到 UTF-8 字符边界。
+///
+/// 日志必然包含中文/ANSI 等多字节字符，直接用
+/// `&s[s.len() - max_bytes..]` 在起点落在字符中间时会 panic
+/// （`byte index ... is not a char boundary`），此实现保证安全。
+fn tail_bytes(s: &str, max_bytes: usize) -> &str {
+    let start = s.len().saturating_sub(max_bytes);
+    let mut i = start;
+    while i < s.len() && !s.is_char_boundary(i) {
+        i += 1;
+    }
+    &s[i..]
+}
+
 /// 读取 dsh 服务日志
 #[tauri::command]
 pub async fn read_service_logs(
@@ -109,7 +123,7 @@ pub async fn read_service_logs(
     if content.len() <= max_bytes {
         Ok(content)
     } else {
-        Ok(content[content.len() - max_bytes..].to_string())
+        Ok(tail_bytes(&content, max_bytes).to_string())
     }
 }
 

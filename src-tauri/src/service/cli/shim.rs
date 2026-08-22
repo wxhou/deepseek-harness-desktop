@@ -595,6 +595,7 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
     #[test]
     fn cmd_shim_contains_baked_paths() {
         let content = build_cmd_shim(&sample_app_dir(), &sample_dsh_home());
@@ -652,6 +653,7 @@ mod tests {
         assert!(content.contains("DSH_PREFER_BUNDLED_PNPM"));
     }
 
+    #[cfg(windows)]
     #[test]
     fn ps1_shim_escapes_quotes() {
         let dir = PathBuf::from(r"C:\Users\o'brien\AppData\Roaming\io.github.hairyf.deepseek-harness-desktop");
