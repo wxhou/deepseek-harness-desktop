@@ -123,24 +123,38 @@ pub fn build_main_window(app: &tauri::AppHandle<Wry>) -> tauri::Result<tauri::We
             .title("Deepseek Harness Desktop")
             .inner_size(1280.0, 840.0)
             .min_inner_size(860.0, 620.0)
-            .resizable(true)
-            // 无系统标题栏：窗口 chrome 由壳层 ShellNavBar 常驻提供
-            // （44px 顶部导航：左侧 iframe 导航控制 + 右侧窗口控制）
-            .decorations(false)
-            // 恢复 iframe 内 HTML5 拖拽（拖入图片/拖动元素）：
-            // Tauri 默认注册 wry drag_drop_handler → WebView2 SetAllowExternalDrop(false)
-            // 并注入 IDropTarget 接管拖放，iframe 内拖拽被禁用。
-            // 注意不能用 .drag_and_drop(false)：它只设置 tao 窗口层的拖放开关
-            // （tauri issue #13761），不影响 webview 层，拖拽依旧失效；
-            // disable_drag_drop_handler 才能关掉 wry 的接管（等价于旧配置 dragDropEnabled: false）。
-            .disable_drag_drop_handler()
-            // 接管内嵌 iframe 的 window.open() / target=_blank 新窗口请求：
-            // WebView2 里这类请求走 NewWindowRequested，wry 在没有 handler 时
-            // 直接 SetHandled(true) 吞掉（点了没反应）——dshmarket 等预设插件的
-            // “源码”按钮在桌面端因此无法跳转（浏览器里正常）。
-            // 这里把 http(s) 链接交给系统浏览器打开，其余协议一律拒绝。
-            .on_new_window(move |url, features| on_new_window(app_handle.clone(), url, features))
-            .on_download(|webview, event| on_download(webview, event));
+            .resizable(true);
+
+    // macOS 保留原生交通灯：绿色按钮由 AppKit 进入独立 Space 的原生全屏，
+    // 同时用 Overlay 让 44px 壳层导航栏继续与窗口 chrome 融合。其他平台
+    // 仍由 ShellNavBar 的右侧按钮提供窗口控制。
+    #[cfg(target_os = "macos")]
+    let webview_builder = webview_builder
+        .decorations(true)
+        .title_bar_style(tauri::TitleBarStyle::Overlay)
+        .hidden_title(true)
+        // Wry 保留了 AppKit 原生按钮的纵向 frame 偏移；24px 在 44px
+        // 壳层导航栏内的实测视觉圆心为 22px，而非 API 直觉上的 24px。
+        .traffic_light_position(tauri::LogicalPosition::new(14.0, 24.0));
+
+    #[cfg(not(target_os = "macos"))]
+    let webview_builder = webview_builder.decorations(false);
+
+    let webview_builder = webview_builder
+        // 恢复 iframe 内 HTML5 拖拽（拖入图片/拖动元素）：
+        // Tauri 默认注册 wry drag_drop_handler → WebView2 SetAllowExternalDrop(false)
+        // 并注入 IDropTarget 接管拖放，iframe 内拖拽被禁用。
+        // 注意不能用 .drag_and_drop(false)：它只设置 tao 窗口层的拖放开关
+        // （tauri issue #13761），不影响 webview 层，拖拽依旧失效；
+        // disable_drag_drop_handler 才能关掉 wry 的接管（等价于旧配置 dragDropEnabled: false）。
+        .disable_drag_drop_handler()
+        // 接管内嵌 iframe 的 window.open() / target=_blank 新窗口请求：
+        // WebView2 里这类请求走 NewWindowRequested，wry 在没有 handler 时
+        // 直接 SetHandled(true) 吞掉（点了没反应）——dshmarket 等预设插件的
+        // “源码”按钮在桌面端因此无法跳转（浏览器里正常）。
+        // 这里把 http(s) 链接交给系统浏览器打开，其余协议一律拒绝。
+        .on_new_window(move |url, features| on_new_window(app_handle.clone(), url, features))
+        .on_download(|webview, event| on_download(webview, event));
 
     #[cfg(windows)]
     let webview_builder = webview_builder.on_page_load(move |webview_window, payload| {

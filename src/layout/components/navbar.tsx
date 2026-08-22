@@ -14,6 +14,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { useTranslation } from 'react-i18next'
 import { If } from 'react-if-lite'
+import { cn } from 'tailwind-variants'
 import { useStore } from 'valtio-define'
 import { ConfigDialog } from '@/components/config-dialog'
 import { DesktopAboutDialog } from '@/components/desktop-about-dialog'
@@ -36,8 +37,11 @@ import { toast } from '@/utils'
  *   左侧控件只在「dsh-tauri 插件已启用（已安装）」且存在 iframe 时渲染：
  *   原生桥缺席时控件没有可靠接收方，避免出现点了没反应的死按钮。
  * - 空白拖拽区：Tauri 原生 `data-tauri-drag-region`（顶层文档直接生效），
- *   双击切换最大化。
- * - 窗口按钮：直接调用 Tauri 窗口 API；后台化 = 隐藏到托盘（服务保持运行）。
+ *   Windows/Linux 上双击切换最大化，macOS 上交由系统标题栏偏好。
+ * - macOS：使用原生交通灯，红键后台化、黄键最小化、绿键进入原生全屏；
+ *   导航栏左侧留出交通灯区域。
+ * - Windows/Linux：右侧窗口按钮直接调用 Tauri API；
+ *   后台化 = 隐藏到托盘（服务保持运行）。
  *
  * 未传入 iframeRef（安装/错误/预装引导页，无 iframe 可操控）时
  * 只渲染窗口控制，不渲染左侧导航控制。
@@ -48,6 +52,13 @@ import { toast } from '@/utils'
  *  原生导航桥（`useDshPlugins` 实时同步其安装状态，插件增删即时生效）
  */
 const TAURI_PLUGIN_ID = 'dsh-tauri'
+
+/** WKWebView 的 macOS UA 稳定包含 Macintosh，用于切换平台原生窗口 chrome。 */
+function detectMacOS() {
+  return navigator.userAgent.includes('Macintosh')
+}
+
+const IS_MACOS = detectMacOS()
 
 export interface NavbarProps {
   /** 就绪态 iframe；传入时启用左侧导航控制 */
@@ -79,6 +90,12 @@ export function Navbar({ iframeRef }: NavbarProps) {
         void appWindow.hide()
         break
     }
+  }
+
+  function handleDragRegionDoubleClick() {
+    // macOS 的双击标题栏行为由系统偏好决定，不用网页强制覆盖。
+    if (!IS_MACOS)
+      void getCurrentWindow().toggleMaximize()
   }
 
   function handleHelpAction(key: string) {
@@ -118,7 +135,15 @@ export function Navbar({ iframeRef }: NavbarProps) {
   }
 
   return (
-    <div className="relative flex h-11 w-full flex-none select-none items-center gap-0.5 border-b border-line px-1.5 bg-panel">
+    <div
+      className={cn(
+        'relative flex h-11 w-full flex-none select-none items-center gap-0.5 border-b border-line bg-panel',
+        {
+          'pl-20 pr-1.5': IS_MACOS,
+          'px-1.5': !IS_MACOS,
+        },
+      )}
+    >
       <If cond={iframeRef != null && tauriEnabled}>
         <Button
           className="rounded-lg size-7"
@@ -222,41 +247,43 @@ export function Navbar({ iframeRef }: NavbarProps) {
       <div
         className="min-w-0 flex-1 self-stretch"
         data-tauri-drag-region
-        onDoubleClick={() => { void getCurrentWindow().toggleMaximize() }}
+        onDoubleClick={handleDragRegionDoubleClick}
       />
 
-      <Button
-        className="rounded-lg size-7"
-        isIconOnly
-        size="sm"
-        variant="ghost"
-        aria-label={t('nav.minimize')}
-        onPress={() => { handleWindowAction('minimize') }}
-      >
-        <Minus />
-      </Button>
+      <If cond={!IS_MACOS}>
+        <Button
+          className="rounded-lg size-7"
+          isIconOnly
+          size="sm"
+          variant="ghost"
+          aria-label={t('nav.minimize')}
+          onPress={() => { handleWindowAction('minimize') }}
+        >
+          <Minus />
+        </Button>
 
-      <Button
-        className="rounded-lg size-7"
-        isIconOnly
-        size="sm"
-        variant="ghost"
-        aria-label={t('nav.maximize')}
-        onPress={() => { handleWindowAction('maximize') }}
-      >
-        <Square style={{ width: 14, height: 14 }} />
-      </Button>
+        <Button
+          className="rounded-lg size-7"
+          isIconOnly
+          size="sm"
+          variant="ghost"
+          aria-label={t('nav.maximize')}
+          onPress={() => { handleWindowAction('maximize') }}
+        >
+          <Square style={{ width: 14, height: 14 }} />
+        </Button>
 
-      <Button
-        className="rounded-lg size-7 transition-colors enabled:hover:bg-danger/16 enabled:hover:text-danger"
-        isIconOnly
-        size="sm"
-        variant="ghost"
-        aria-label={t('nav.background')}
-        onPress={() => { handleWindowAction('background') }}
-      >
-        <Xmark />
-      </Button>
+        <Button
+          className="rounded-lg size-7 transition-colors enabled:hover:bg-danger/16 enabled:hover:text-danger"
+          isIconOnly
+          size="sm"
+          variant="ghost"
+          aria-label={t('nav.background')}
+          onPress={() => { handleWindowAction('background') }}
+        >
+          <Xmark />
+        </Button>
+      </If>
     </div>
   )
 }
