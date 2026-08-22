@@ -29,6 +29,17 @@ interface PluginErrorMessage {
   action?: string
 }
 
+/**
+ * iframe 剪贴板图片回退请求（desktop/paste::PASTE_SHIM_JS 发来）。
+ * Linux/WebKitGTK 下 dsh iframe 的 paste 事件拿不到图片，宿主侧据此调用
+ * `read_clipboard_image` 读系统剪贴板，再把 PNG data URL 回传给 iframe 重新贴图。
+ */
+interface ClipboardImageRequest {
+  source?: 'dsh-clipboard-image-bridge'
+  type?: 'dsh://clipboard-image:read'
+  id?: string
+}
+
 export function useIframeShim(iframeRef: RefObject<HTMLIFrameElement | null>) {
   const isMounted = useMountedState()
 
@@ -91,8 +102,44 @@ export function useIframeShim(iframeRef: RefObject<HTMLIFrameElement | null>) {
       .catch(error => console.error('[plugin-error] report_plugin_error failed:', error))
   }
 
+  // 接收 iframe 的「剪贴板图片回退」请求：读取系统剪贴板图片并把 PNG data URL 回传，
+  // 使 Linux/WebKitGTK 下 dsh iframe 的贴图（paste 事件拿不到图片）能走原生剪贴板通路。
+  function handleClipboardImage(event: MessageEvent<ClipboardImageRequest>) {
+    const data = event.data
+    if (!data || typeof data !== 'object' || data.source !== 'dsh-clipboard-image-bridge') {
+      return
+    }
+    // 只接受 DSH 直接 iframe 发来的消息；不兼容多层嵌套 iframe。
+    if (event.source !== iframeRef.current?.contentWindow) {
+      return
+    }
+    const iframeOrigin = getIframeOrigin(iframeRef)
+    if (!iframeOrigin || event.origin !== iframeOrigin) {
+      return
+    }
+    if (data.type !== 'dsh://clipboard-image:read' || !data.id) {
+      return
+    }
+    // 在闭包外把收窄后的值固定到局部常量，避免 TS 在闭包内丢失控制流收窄
+    const reqId = data.id
+    const origin = iframeOrigin
+    function reply(dataUrl: string | null) {
+      iframeRef.current?.contentWindow?.postMessage(
+        { source: 'dsh-desktop-clipboard', id: reqId, data_url: dataUrl },
+        origin,
+      )
+    }
+    void invoke<{ data_url?: string } | null>('read_clipboard_image')
+      .then(result => reply(result?.data_url ?? null))
+      .catch((error) => {
+        console.error('[clipboard-image] read_clipboard_image failed:', error)
+        reply(null)
+      })
+  }
+
   useEvent('message', handleMessage)
   useEvent('message', handlePluginError)
+  useEvent('message', handleClipboardImage)
 
   // 系统通知点击 → 通知 iframe 聚焦对应会话
   useEffect(() => {

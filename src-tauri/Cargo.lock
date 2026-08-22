@@ -816,7 +816,9 @@ dependencies = [
 name = "deepseek-harness-desktop"
 version = "0.7.2"
 dependencies = [
+ "arboard",
  "async-trait",
+ "base64 0.22.1",
  "flate2",
  "futures-util",
  "image",
