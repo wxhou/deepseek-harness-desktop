@@ -7,5 +7,6 @@ export default antfu({
   react: true,
   ignores: [
     'AGENTS.md',
+    'docs',
   ],
 })
