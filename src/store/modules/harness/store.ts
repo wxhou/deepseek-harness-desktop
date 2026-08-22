@@ -310,6 +310,14 @@ export const harness = defineStore({
       this.serviceHealthy = false
       this.iframeLoaded = false
       this.iframeError = false
+      // 重新启动/进入启动流程时先退出上一轮的错误与修复态（重启可能由插件修复、
+      // 配置切换触发），避免旧的「启动失败 / Preview」等信息在启动期间闪现。
+      // 注意：保留 attempts 计数，连续失败仍能命中「频繁失败」提示。
+      this.errorMsg = ''
+      this.errorLogs = []
+      this.pluginConflictHint = ''
+      this.recovery = { required: false, info: null, attempts: this.recovery.attempts, busy: false }
+      this.status = 'ready'
       let unlistenInstall: UnlistenFn | null = null
 
       try {
