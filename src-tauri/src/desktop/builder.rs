@@ -10,7 +10,7 @@ use tauri::{
     Runtime, WebviewUrl, WebviewWindowBuilder, Wry,
 };
 
-use crate::core::utils::show_main_window;
+use crate::utils::show_main_window;
 use crate::desktop::window::{on_download, on_new_window};
 #[cfg(windows)]
 use crate::desktop::window::on_page_load;
@@ -186,55 +186,55 @@ pub fn build_main_window(app: &tauri::AppHandle<Wry>) -> tauri::Result<tauri::We
 // configure invoke handler
 pub fn handler() -> impl Fn(Invoke<Wry>) -> bool + Send + Sync + 'static {
     tauri::generate_handler![
-        crate::bridge::cmd::install_dependencies,
-        crate::bridge::cmd::check_dsh_update,
-        crate::bridge::cmd::launch_harness,
-        crate::bridge::cmd::shutdown_harness,
-        crate::bridge::cmd::restart_harness,
-        crate::bridge::cmd::get_dsh_status,
-        crate::bridge::cmd::get_preinstall_plugins,
-        crate::bridge::cmd::get_preinstall_pending,
-        crate::bridge::cmd::install_preinstall_plugins,
-        crate::bridge::cmd::cancel_preinstall_plugins,
-        crate::bridge::cmd::skip_preinstall_plugins,
-        crate::bridge::cmd::open_preinstall_repo,
-        crate::bridge::cmd::get_dsh_plugins,
-        crate::bridge::cmd::update_dsh_plugin,
-        crate::bridge::cmd::remove_dsh_plugin,
-        crate::bridge::cmd::report_plugin_error,
-        crate::bridge::cmd::get_profiles,
-        crate::bridge::cmd::create_profile,
-        crate::bridge::cmd::set_active_profile,
-        crate::bridge::cmd::remove_profile,
-        crate::bridge::cmd::get_cores,
-        crate::bridge::cmd::set_active_core,
-        crate::bridge::cmd::download_core,
-        crate::bridge::cmd::remove_core,
-        crate::bridge::cmd::update_local_core,
-        crate::bridge::cmd::proxy_health_check,
-        crate::bridge::cmd::get_runtime_info,
-        crate::bridge::cmd::runtime_ready,
-        crate::bridge::cmd::get_app_config,
-        crate::bridge::cmd::update_app_config,
-        crate::bridge::cmd::get_cli_link_status,
-        crate::bridge::cmd::open_in_browser,
-        crate::bridge::cmd::copy_service_url,
-        crate::bridge::cmd::reveal_data_dir,
-        crate::bridge::cmd::reveal_in_folder,
-        crate::bridge::cmd::open_dir,
-        crate::bridge::cmd::read_service_logs,
-        crate::bridge::cmd::read_run_logs,
-        crate::bridge::cmd::clear_service_logs,
-        crate::bridge::cmd::set_language,
-        crate::bridge::cmd::toggle_sidebar,
-        crate::bridge::cmd::get_dsh_theme,
-        crate::bridge::cmd::check_desktop_update,
-        crate::bridge::cmd::download_desktop_update,
-        crate::bridge::cmd::open_desktop_installer,
-        crate::bridge::cmd::get_desktop_about,
-        crate::bridge::cmd::open_external_url,
+        crate::bridge::install_dependencies,
+        crate::bridge::check_dsh_update,
+        crate::bridge::launch_harness,
+        crate::bridge::shutdown_harness,
+        crate::bridge::restart_harness,
+        crate::bridge::get_dsh_status,
+        crate::bridge::get_preinstall_plugins,
+        crate::bridge::get_preinstall_pending,
+        crate::bridge::install_preinstall_plugins,
+        crate::bridge::cancel_preinstall_plugins,
+        crate::bridge::skip_preinstall_plugins,
+        crate::bridge::open_preinstall_repo,
+        crate::bridge::get_dsh_plugins,
+        crate::bridge::update_dsh_plugin,
+        crate::bridge::remove_dsh_plugin,
+        crate::bridge::report_plugin_error,
+        crate::bridge::get_profiles,
+        crate::bridge::create_profile,
+        crate::bridge::set_active_profile,
+        crate::bridge::remove_profile,
+        crate::bridge::get_cores,
+        crate::bridge::set_active_core,
+        crate::bridge::download_core,
+        crate::bridge::remove_core,
+        crate::bridge::update_local_core,
+        crate::bridge::proxy_health_check,
+        crate::bridge::get_runtime_info,
+        crate::bridge::runtime_ready,
+        crate::bridge::get_app_config,
+        crate::bridge::update_app_config,
+        crate::bridge::get_cli_link_status,
+        crate::bridge::open_in_browser,
+        crate::bridge::copy_service_url,
+        crate::bridge::reveal_data_dir,
+        crate::bridge::reveal_in_folder,
+        crate::bridge::open_dir,
+        crate::bridge::read_service_logs,
+        crate::bridge::read_run_logs,
+        crate::bridge::clear_service_logs,
+        crate::bridge::set_language,
+        crate::bridge::toggle_sidebar,
+        crate::bridge::get_dsh_theme,
+        crate::bridge::check_desktop_update,
+        crate::bridge::download_desktop_update,
+        crate::bridge::open_desktop_installer,
+        crate::bridge::get_desktop_about,
+        crate::bridge::open_external_url,
         crate::desktop::notification::show_native_notification,
-        crate::bridge::cmd::log_frontend,
+        crate::bridge::log_frontend,
     ]
 }
 
@@ -265,7 +265,7 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
     // 因此开发环境跳过该插件。
     #[cfg(not(debug_assertions))]
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-        crate::core::utils::show_main_window(app);
+        crate::utils::show_main_window(app);
     }));
 
     builder

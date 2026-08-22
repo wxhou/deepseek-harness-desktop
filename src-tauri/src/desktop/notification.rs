@@ -1,7 +1,7 @@
 #[cfg(windows)]
 use tauri::Manager;
 
-use crate::{core::utils::app_icon_temp_path, desktop::payload::NativeNotificationPayload};
+use crate::{utils::app_icon_temp_path, desktop::payload::NativeNotificationPayload};
 
 /// 如果 DSH 插件仍有兜底走浏览器 Notification，则保持“已授权”假象，
 /// 并让每次 `new Notification(...)` 转成发给宿主窗口的 postMessage。
