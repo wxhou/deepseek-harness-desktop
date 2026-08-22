@@ -12,12 +12,21 @@ fn dsh_log_lock() -> &'static Mutex<()> {
     DSH_LOG_LOCK.get_or_init(|| Mutex::new(()))
 }
 
+/// 构造仅用于回环地址探测的 HTTP 客户端。
+///
+/// 生命周期探测访问的是本机 dsh，不能继承 `HTTP_PROXY` / `ALL_PROXY`：部分代理
+/// 不尊重回环地址直连，或应用进程没有 `NO_PROXY`，会把健康检查转发到外部代理，
+/// 造成端口已经监听但持续误报未就绪。
+pub(super) fn loopback_http_client(timeout: Duration) -> Result<reqwest::Client, reqwest::Error> {
+    reqwest::Client::builder()
+        .no_proxy()
+        .timeout(timeout)
+        .build()
+}
+
 /// 检查 Harness 是否真正在运行（探测指定端口，随配置端口联动）
 pub async fn is_dsh_running(port: u16) -> bool {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(2))
-        .build()
-        .ok(); // 将 Result 转为 Option
+    let client = loopback_http_client(Duration::from_secs(2)).ok(); // 将 Result 转为 Option
 
     // 如果 client 创建失败，直接返回 false
     let client = match client {

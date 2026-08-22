@@ -878,10 +878,9 @@ pub async fn proxy_health_check(port: u16) -> Result<String, String> {
     if !has_owned_process() {
         return Err("HARNESS_NOT_OWNED: no Harness process is owned by this app".to_string());
     }
-    let client = reqwest::Client::builder()
-        .timeout(config::HEALTH_CHECK_TIMEOUT)
-        .build()
-        .map_err(|e| e.to_string())?;
+    let client = utils::loopback_http_client(config::HEALTH_CHECK_TIMEOUT)
+        .map_err(|e| format!("HARNESS_HEALTH_CLIENT_FAILED: {e}"))?;
+    let mut failures = Vec::with_capacity(2);
 
     for endpoint in [
         format!("http://127.0.0.1:{port}/"),
@@ -897,13 +896,20 @@ pub async fn proxy_health_check(port: u16) -> Result<String, String> {
                         body.chars().take(80).collect::<String>()
                     ));
                 }
+                let failure = format!("{endpoint} returned {status}");
+                log::debug!("Health check failed: {failure}");
+                failures.push(failure);
             }
             Err(err) => {
                 log::debug!("Health check {endpoint}: {err}");
+                failures.push(format!("{endpoint}: {err}"));
             }
         }
     }
-    Err("HARNESS_NOT_READY: Harness service is not ready".to_string())
+    Err(format!(
+        "HARNESS_NOT_READY: Harness service is not ready ({})",
+        failures.join("; ")
+    ))
 }
 
 #[cfg(test)]
