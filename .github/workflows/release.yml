@@ -174,6 +174,30 @@ jobs:
         if: steps.check.outputs.should_run == 'true'
         run: pnpm install --no-frozen-lockfile
 
+      # macOS 正式产物必须完成 Developer ID 签名与 Apple 公证；缺少凭据时直接失败，
+      # 避免误发仍需用户手动绕过 Gatekeeper 的 DMG。
+      - name: Validate macOS signing secrets
+        if: steps.check.outputs.should_run == 'true' && matrix.platform == 'macos-latest'
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          missing=()
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            if [ -z "${!name}" ]; then
+              missing+=("$name")
+            fi
+          done
+
+          if [ "${#missing[@]}" -ne 0 ]; then
+            printf '::error::Missing required macOS signing secrets: %s\n' "${missing[*]}"
+            exit 1
+          fi
+
       # 正式发布：release 已由 changelog 任务创建，这里只上传产物。
       # 注意：不要传 releaseBody —— tauri-action 会用它覆盖已有 release 的正文。
       - name: Build and Release (For Tags)
@@ -184,6 +208,11 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           TAURI_BUNDLE_TARGETS: ${{ matrix.platform == 'ubuntu-22.04' && 'appimage,deb' || 'all' }}
+          APPLE_CERTIFICATE: ${{ matrix.platform == 'macos-latest' && secrets.APPLE_CERTIFICATE || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ matrix.platform == 'macos-latest' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+          APPLE_ID: ${{ matrix.platform == 'macos-latest' && secrets.APPLE_ID || '' }}
+          APPLE_PASSWORD: ${{ matrix.platform == 'macos-latest' && secrets.APPLE_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ matrix.platform == 'macos-latest' && secrets.APPLE_TEAM_ID || '' }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'DeepSeek Harness Desktop ${{ github.ref_name }}'
@@ -199,6 +228,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_BUNDLE_TARGETS: ${{ matrix.platform == 'ubuntu-22.04' && 'appimage,deb' || 'all' }}
+          APPLE_CERTIFICATE: ${{ matrix.platform == 'macos-latest' && secrets.APPLE_CERTIFICATE || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ matrix.platform == 'macos-latest' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+          APPLE_ID: ${{ matrix.platform == 'macos-latest' && secrets.APPLE_ID || '' }}
+          APPLE_PASSWORD: ${{ matrix.platform == 'macos-latest' && secrets.APPLE_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ matrix.platform == 'macos-latest' && secrets.APPLE_TEAM_ID || '' }}
         with:
           tagName: ${{ format('test-{0}-{1}', github.ref_name, github.run_number) }}
           releaseName: 'DeepSeek Harness Desktop 手动测试版 (构建 #${{ github.run_number }})'
@@ -208,6 +242,20 @@ jobs:
             打包平台: `${{ github.event.inputs.platform_filter }}`
           prerelease: true
           args: ${{ matrix.args }}
+
+      - name: Verify macOS signature and notarization
+        if: steps.check.outputs.should_run == 'true' && matrix.platform == 'macos-latest'
+        shell: bash
+        run: |
+          app_path="$(find src-tauri/target -type d -path '*/release/bundle/macos/*.app' -print -quit)"
+          if [ -z "$app_path" ]; then
+            echo '::error::Built macOS app bundle was not found'
+            exit 1
+          fi
+
+          codesign --verify --deep --strict --verbose=2 "$app_path"
+          xcrun stapler validate "$app_path"
+          spctl --assess --type execute --verbose=4 "$app_path"
 
       - name: Upload Artifacts (For Manual Trigger)
         if: steps.check.outputs.should_run == 'true' && github.event_name == 'workflow_dispatch'

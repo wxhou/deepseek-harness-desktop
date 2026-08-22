@@ -8,3 +8,7 @@ trustPolicyIgnoreAfter: 525600
 
 patchedDependencies:
   bumpp: patches/bumpp.patch
+
+allowBuilds:
+  '@tailwindcss/oxide': true
+  esbuild: true
