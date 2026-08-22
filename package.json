@@ -11,6 +11,7 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "release": "bumpp",
+    "test": "vitest",
     "lint": "eslint",
     "knip": "knip",
     "lint:fix": "eslint . --fix",
