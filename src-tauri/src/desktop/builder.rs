@@ -162,6 +162,10 @@ pub fn build_main_window(app: &tauri::AppHandle<Wry>) -> tauri::Result<tauri::We
 
     let webview_window = webview_builder.build()?;
 
+    // 恢复上次的窗口大小/位置/最大化状态（无历史时保持 builder 默认的 1280×840，
+    // 由 Tauri 自动居中；见 config::window_state）。
+    crate::config::restore_main_window(app, &webview_window);
+
     #[cfg(windows)]
     {
         if !_notification_handlers_registered.swap(true, Ordering::SeqCst) {
@@ -251,11 +255,16 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
             Ok(())
         })
         // 点击关闭按钮时隐藏到托盘而不是退出程序
-        .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+        .on_window_event(|window, event| match event {
+            tauri::WindowEvent::CloseRequested { api, .. } => {
                 api.prevent_close();
                 let _ = window.hide();
             }
+            // 移动/缩放主窗口时记录几何，重启后据此恢复（见 config::window_state）
+            tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) => {
+                crate::config::save_geometry(window);
+            }
+            _ => {}
         });
 
     // 单例模式：多次双击图标（或重复启动）时不会新开窗口，而是把
