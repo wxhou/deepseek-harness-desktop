@@ -61,6 +61,16 @@ fn list_installed(app_handle: &AppHandle) -> HashSet<String> {
     set
 }
 
+/// 插件是否仍被 profile 清单（`dependencies` / `dsh.profile.bundles`）引用。
+///
+/// 供卸载后校验使用（见 [`super::install::remove`]）：`dsh plugin remove` 以子进程
+/// 退出码为准，可能出现「命令成功但插件仍在」的边界（如 bundle 层残留、pnpm 静默
+/// 失败），校验不过时由调用方回落到离线卸载，确保插件真正从 profile 移除
+/// （参考 dsh-market 的「卸载后核验」约定）。
+pub(crate) fn is_installed(app_handle: &AppHandle, id: &str) -> bool {
+    list_installed(app_handle).contains(id)
+}
+
 /// 预装插件列表项（含已安装检测结果），序列化给前端
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

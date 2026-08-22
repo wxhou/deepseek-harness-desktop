@@ -5,6 +5,7 @@
 //! 以 `crate::bridge::<cmd>` 形式注册。
 
 pub mod app_config;
+pub mod clipboard;
 pub mod core;
 pub mod lifecycle;
 pub mod plugin;
@@ -13,6 +14,7 @@ pub mod system_os;
 pub mod updater;
 
 pub use app_config::*;
+pub use clipboard::*;
 pub use core::*;
 pub use lifecycle::*;
 pub use plugin::*;

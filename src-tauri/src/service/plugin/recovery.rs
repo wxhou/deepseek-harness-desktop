@@ -51,7 +51,7 @@ fn is_package_name(s: &str) -> bool {
 }
 
 /// 是否是可行动的第三方插件引用（排除核心包与 @deepseek-ai 官方包）。
-fn is_actionable_plugin_ref(s: &str) -> bool {
+pub(crate) fn is_actionable_plugin_ref(s: &str) -> bool {
     is_package_name(s) && !is_core_package(s.trim())
 }
 

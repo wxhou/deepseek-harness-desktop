@@ -24,9 +24,11 @@ use serde_yaml::{Mapping, Value};
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 
 use super::errors;
-use super::installed::profile_dir;
+use super::installed::{is_installed, profile_dir};
 use super::preset::load_presets;
 use super::process::{run_plugin_process, PreinstallLogPayload, PREINSTALL_LOG_EVENT};
+use super::recovery::is_actionable_plugin_ref;
+use super::uninstall_recovery;
 
 /// 允许构建重试的上限。每次重试解决 pnpm 报出的一个允许键（git depPath 或
 /// 传递构建包名），多个 git 插件 / 多个原生依赖各占一次，上限封顶防死循环。
@@ -250,7 +252,27 @@ pub async fn update(app_handle: &AppHandle, id: &str) -> Result<(), String> {
 /// 卸载单个插件：`dsh plugin --profile <当前档案> remove <id>`
 pub async fn remove(app_handle: &AppHandle, id: &str) -> Result<(), String> {
     run_single_plugin_command(app_handle, id, "remove", &["remove".to_string(), id.to_string()])
-        .await
+        .await?;
+    // `dsh plugin remove` 以子进程退出码为准，可能出现「命令成功但插件仍在」的
+    // 边界（如 bundle 层残留、pnpm 静默失败）：核验 profile 清单，若插件仍被引用
+    // 则回落到离线卸载（直接改清单 + 删目录 + 清 lockfile），确保插件真正移除
+    // （参考 dsh-market 的「卸载后核验」约定：确认插件离开 profile 才算成功）。
+    if is_installed(app_handle, id) {
+        // 第三方可卸载插件才允许离线兜底；核心/官方等受保护包即使残留也不强删
+        // （`uninstall_recovery` 对它们会拒绝），仅记录告警，避免把已成功的卸载
+        // 误报为失败。
+        if is_actionable_plugin_ref(id) {
+            log::warn!(
+                "dsh plugin remove reported success but {id} is still referenced by profile manifest; forcing offline uninstall"
+            );
+            uninstall_recovery(app_handle, id)?;
+        } else {
+            log::warn!(
+                "dsh plugin remove reported success but protected package {id} is still referenced by profile manifest; skipping offline uninstall"
+            );
+        }
+    }
+    Ok(())
 }
 
 /// 执行单个插件的升级/卸载：准备环境 → 停止服务 → 运行 `dsh plugin` →

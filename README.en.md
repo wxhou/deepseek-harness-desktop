@@ -35,15 +35,14 @@
 ## Features
 
 - ⚡️ **Zero setup** — First launch bootstraps the bundled Node runtime and Harness core automatically; a compatible local Node / Pnpm setup is reused as-is when present.
-- 🔄 **Self-healing core** — Every launch syncs with the latest upstream Harness release, so upstream fixes reach you without reinstalling; download, switch, and uninstall multiple core versions (auto-restart after switching).
-- 🖥️ **Config center** — One dialog for Debug / Profiles / Plugins / Core, with a fully localized (zh/en) UI and dark-mode support.
+- 🔄 **Core update** — Every launch syncs with the latest upstream Harness release, so upstream updates reach you without reinstalling; download, switch, and uninstall multiple core versions (auto-restart after switching).
+- 🖥️ **Config** — One dialog for Debug / Profiles / Plugins / Core, with a fully localized (zh/en) UI and dark-mode support.
 - 🗂️ **Profile isolation** — Create, switch, and remove isolated profiles in the config center; plugins, patches, and settings stay independent per profile.
 - 🧩 **Plugin management** — The plugin panel lists installed plugins read-only and offers upgrade / uninstall when one misbehaves, with live error sync.
-- 🔒 **Local & private by default** — Runs on `127.0.0.1:3080`. Profiles, sessions and settings stay on your machine; telemetry is off by default.
 - 🪶 **Native & lightweight** — A Tauri 2 shell (not Electron): smaller installers, lower memory, native windows. Windows / macOS / Linux, bilingual UI.
 - ⌨️ **CLI ready** — Registers `dsh` commands (`*/bin`) after install, ready in a new terminal; never overwrites your existing shell config.
-- 🧭 **First-run wizard** — On first launch, pick the recommended plugins (e.g. the dsh-market plugin store) and watch the install stream in real time; skip anytime and reopen later from the sidebar.
-- 🚀 **Desktop self-update** — Checks GitHub releases independently and downloads the installer; dev/prod builds are isolated by port and data dir.
+- 🧭 **Launch wizard** — On first launch, pick the recommended plugins (e.g. the dsh-market plugin store) and watch the install stream in real time; skip anytime and reopen later from the sidebar.
+- 🚀 **Self-update** — Checks GitHub releases independently and downloads the installer; dev/prod builds are isolated by port and data dir.
 
 ## Presets
 

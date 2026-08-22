@@ -1,6 +1,8 @@
 pub mod builder;
+pub mod compat;
 pub mod nav;
 pub mod notification;
+pub mod paste;
 pub mod payload;
 pub mod style;
 pub mod window;
