@@ -1,3 +1,4 @@
+/* eslint-disable react/no-use-context */
 import type { Scope } from './define-scope'
 import { useContext } from 'react'
 
