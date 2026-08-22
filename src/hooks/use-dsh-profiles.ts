@@ -52,7 +52,8 @@ export function useDshProfiles(): UseDshProfilesResult {
     })
       .then((fn) => {
         // 竞态防护：若组件已卸载而 listen 才 resolve，立即注销防泄漏
-        if (disposed) fn()
+        if (disposed)
+          fn()
         else unlisten = fn
       })
       .catch(() => {})

@@ -60,7 +60,8 @@ export function DownloadCoreDialog(props: DownloadCoreDialogProps) {
     })
       .then((fn) => {
         // 竞态防护：组件已卸载而 listen 才 resolve → 立即注销防泄漏
-        if (cancelled) fn()
+        if (cancelled)
+          fn()
         else unlisten = fn
       })
       .catch(() => {})
