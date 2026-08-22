@@ -129,7 +129,10 @@ function pickErrorLines(lines: string[]): string[] {
 
 /** 失败时把服务日志的真实错误行与冲突提示挂到错误对象上 */
 async function attachStartupDiagnostics(err: unknown): Promise<StartupError> {
-  const startupError = err as StartupError
+  // Tauri `invoke` 对 `Result<_, String>` 命令的 rejection 是裸字符串，
+  // 必须先归一化为 Error 对象，否则在其上赋属性（ESM 严格模式）会抛
+  // `TypeError: Cannot create property ... on string`，反而遮蔽真实错误。
+  const startupError: StartupError = err instanceof Error ? err : new Error(String(err))
   if (!startupError.logs) {
     const lines = await readServiceLogTail()
     startupError.logLines = lines
@@ -139,7 +142,7 @@ async function attachStartupDiagnostics(err: unknown): Promise<StartupError> {
       startupError.pluginConflictHint = i18next.t('errors.plugin_route_conflict')
     }
   }
-  return startupError
+  return startupError as StartupError
 }
 
 /**

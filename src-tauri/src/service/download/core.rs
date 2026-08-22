@@ -643,7 +643,12 @@ async fn fetch_latest_dsh_tag_from_atom() -> Result<String, String> {
 /// 纯函数，便于对真实页面片段做离线单元测试；解析失败返回 `None`。
 fn parse_digest_from_expanded_assets(body: &str, expected_name: &str) -> Option<String> {
     let pos = body.find(expected_name)?;
-    let window = &body[pos..(pos + 4096).min(body.len())];
+    // 4096 字节窗口的终点回退到 UTF-8 字符边界，避免切片落在多字节字符中间 panic
+    let mut end = (pos + 4096).min(body.len());
+    while end > pos && !body.is_char_boundary(end) {
+        end -= 1;
+    }
+    let window = &body[pos..end];
     const START: &str = "sha256:";
     let hash_start = window.find(START)?;
     let hash = &window[hash_start + START.len()..];
@@ -1096,6 +1101,26 @@ mod tests {
             parse_digest_from_expanded_assets("<p>no digest here</p>", "deepseek-harness-pkg-windows.zip"),
             None
         );
+    }
+
+    #[test]
+    fn parsed_digest_window_clamps_to_char_boundary() {
+        // 构造一个 body 使 `(pos + 4096)` 恰好落在多字节字符的中间字节：
+        // 旧实现 `&body[pos..pos + 4096]` 会在非字符边界切片而 panic，修复后回退到边界再解析。
+        let name = "deepseek-harness-pkg-windows.zip";
+        let digest = "4d5416766eb4a66e81b83532abeea64de7e7e2e0bac69a4f0c0508e1d91936c0";
+        let prefix = format!("{name}<span>sha256:{digest}</span>");
+        let mut body = prefix.clone();
+        // 补齐到字节 4094 处，放一个 3 字节汉字（占用 4094..4097），使索引 4096 落在其中间字节
+        let needed = 4094usize.saturating_sub(body.len());
+        body.push_str(&"a".repeat(needed));
+        body.push('中');
+        body.push_str(&"a".repeat(16));
+        // 确保总长 > 4096，维持 (pos + 4096) 处于非边界字节（否则不会触发回退分支）
+        assert!(body.len() > 4096);
+        let got = parse_digest_from_expanded_assets(&body, name);
+        let expected = format!("sha256:{digest}");
+        assert_eq!(got.as_deref(), Some(expected.as_str()));
     }
 
     #[test]

@@ -3,11 +3,30 @@
 //! 覆盖三块：依赖（Node.js / 打包 Harness / pnpm）的安装与「记录滞后」自愈、
 //! Harness 服务进程的启停与状态查询，以及运行时三件套的就绪判断。
 
+use std::sync::OnceLock;
+
 use crate::config;
 use crate::service::cli;
 use crate::service::download::{self, Installable};
 use crate::service::workflow;
 use tauri::AppHandle;
+
+/// 并发安装互斥：状态位守卫进程的“是否正在安装”判断
+/// （status::Status::Installing 会被失败路径/其它流程改写，不能作为互斥依据），
+/// 改用独立的进程内互斥锁覆盖完整安装生命周期，避免两路并发 install 的
+/// TOCTOU 与安装失败后状态卡死导致后续请求被静默跳过。
+static INSTALL_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+
+fn install_lock() -> &'static tokio::sync::Mutex<()> {
+    INSTALL_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+/// 安装失败后把状态从 Installing 复位，避免后续调用被“正在安装”卡死。
+/// 仅在失败路径调用；成功路径保持原有状态语义（由前端随后 launch 续接）。
+fn reset_install_status(app_handle: &AppHandle) {
+    workflow::status::set_status(workflow::status::Status::Stopped);
+    workflow::status::emit_status(app_handle);
+}
 
 /// 按当前设置同步命令行集成（shim + PATH 注册）。
 ///
@@ -34,10 +53,13 @@ fn sync_cli_link(app_handle: &AppHandle) {
 /// 启动逻辑由前端显式调用 `launch_harness` 完成，避免重复拉起进程。
 #[tauri::command]
 pub async fn install_dependencies(app_handle: AppHandle) -> Result<bool, String> {
-    if workflow::status::get_status() == workflow::status::Status::Installing {
+    // 并发/重入防护：使用独立互斥锁而非依赖 Status::Installing——
+    // 失败路径会复位状态，若用状态判断则一次失败后所有后续调用都会被
+    // “Installation process already running” 静默跳过直到重启应用。
+    let Ok(_install_guard) = install_lock().try_lock() else {
         log::info!("Installation process already running, skipping");
         return Ok(false);
-    }
+    };
 
     // 以实际安装状态为准：本地安装与 GitHub 最新 release 的 commit hash
     // 不一致时，说明上游 pkg 有更新/修复，需要自动重新下载。
@@ -154,7 +176,16 @@ pub async fn install_dependencies(app_handle: AppHandle) -> Result<bool, String>
     workflow::status::emit_status(&app_handle);
     // 返回 dsh 是否真正落盘更新：仅重装 Node/pnpm 或全部任务被跳过（例如
     // 版本相同仅记录滞后）时为 false，前端据此决定是否重启页面/保留更新提示
-    let updated = workflow::install(&app_handle, dsh_latest.ok()).await?;
+    let updated = match workflow::install(&app_handle, dsh_latest.ok()).await {
+        Ok(updated) => updated,
+        Err(e) => {
+            // 安装失败把状态复位，避免后续 install_dependencies 命中
+            // “正在安装”被静默跳过（否则必须重启应用才能重试）
+            log::error!("Installation failed, resetting status: {e}");
+            reset_install_status(&app_handle);
+            return Err(e);
+        }
+    };
     log::debug!("Installation completed, marked as installed");
     let mut setting = config::get_store_dat_setting(&app_handle);
     setting.installed = true;
@@ -250,4 +281,22 @@ pub fn runtime_ready(app_handle: AppHandle) -> bool {
     download::Nodejs.check_installed(&app_handle)
         && download::Dsh.check_installed(&app_handle)
         && download::Pnpm.check_installed(&app_handle)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::install_lock;
+
+    #[test]
+    fn install_lock_is_exclusive_while_held() {
+        let lock = install_lock();
+        // 首持获得锁
+        let guard = lock.try_lock();
+        assert!(guard.is_ok());
+        // 未释放前再次 try_lock 应失败，排除并发/重入（这正是替换 Status::Installing 守卫的目的）
+        assert!(lock.try_lock().is_err());
+        // 释放后可重新获取
+        drop(guard);
+        assert!(lock.try_lock().is_ok());
+    }
 }
