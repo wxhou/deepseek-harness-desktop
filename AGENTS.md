@@ -36,7 +36,7 @@ cargo check && cargo test   # Rust check & unit tests (run in src-tauri)
 
 ## Basics
 
-- No `useCallback` / `useMemo` — Vite 当前未启用 `react-compiler` 插件，依赖「组件保持轻量、每次渲染重建 inline 函数可接受」的约定，而非编译器自动记忆化
+- No `useCallback` / `useMemo` — `react-compiler` 已通过 Vite 接入（`babel-plugin-react-compiler`，target 19）用于自动记忆化；但禁用手动记忆化钩子仍是「组件保持轻量」的项目约定（每次渲染重建 inline 函数可接受），而非依赖编译器记忆化
 - Component functions use `function` declaration; inline events/callbacks use arrow functions
 
 ## Function Declaration Specification
