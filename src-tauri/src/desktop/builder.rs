@@ -152,10 +152,11 @@ pub fn build_main_window(app: &tauri::AppHandle<Wry>) -> tauri::Result<tauri::We
     });
 
     // 非 Windows（macOS/Linux）没有 WebView2 的 FrameCreated/ContentLoading 流程，
-    // 直接用 Tauri 的 initialization_script_for_all_frames 把通知桥、导航桥与样式桥注入
-    // 所有 frame（脚本均带 window.__dsh_*_bridge__ 幂等守卫，重复注入安全）。
+    // 直接用 Tauri 的 initialization_script_for_all_frames 把兼容桥、通知桥、导航桥
+    // 与样式桥注入所有 frame（脚本均带 window.__dsh_*_bridge__ 幂等守卫，重复注入安全）。
     #[cfg(not(windows))]
     let webview_builder = webview_builder
+        .initialization_script_for_all_frames(crate::desktop::compat::ABORT_SIGNAL_ANY_SHIM_JS)
         .initialization_script_for_all_frames(crate::desktop::notification::NOTIFICATION_SHIM_JS)
         .initialization_script_for_all_frames(crate::desktop::nav::NAV_SHIM_JS)
         .initialization_script_for_all_frames(crate::desktop::style::IFRAME_STYLES_JS);

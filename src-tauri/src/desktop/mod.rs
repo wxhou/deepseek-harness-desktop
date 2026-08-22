@@ -1,4 +1,5 @@
 pub mod builder;
+pub mod compat;
 pub mod nav;
 pub mod notification;
 pub mod payload;
