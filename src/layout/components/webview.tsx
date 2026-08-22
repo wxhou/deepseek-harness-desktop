@@ -2,7 +2,9 @@
 import { CircleExclamation } from '@gravity-ui/icons'
 import { useRef } from 'react'
 import { useTranslation } from 'react-i18next'
+import { If } from 'react-if-lite'
 import { useStore } from 'valtio-define'
+import { PluginRecovery } from '@/components/plugin-recovery'
 import { useIframeShim } from '@/hooks/use-iframe-shim'
 import { store } from '@/store'
 import { Loadable } from './loadable'
@@ -25,6 +27,7 @@ export function Webview() {
     iframeKey,
     iframeSrc,
     serviceUrl,
+    recovery,
   } = useStore(store.harness)
 
   const iframeRef = useRef<HTMLIFrameElement>(null)
@@ -36,7 +39,10 @@ export function Webview() {
       <main className="relative flex min-h-0 flex-1 flex-col bg-canvas">
         <Navbar />
         <div className="min-h-0 flex-1">
-          <Setup />
+          {/* 能定位到问题插件时展示全屏恢复页（卸除此插件并继续检测）；否则普通错误页 */}
+          <If cond={recovery.required} else={<Setup />}>
+            <PluginRecovery fullScreen />
+          </If>
         </div>
       </main>
     )

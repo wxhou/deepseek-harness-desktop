@@ -202,6 +202,8 @@ pub fn handler() -> impl Fn(Invoke<Wry>) -> bool + Send + Sync + 'static {
         crate::bridge::update_dsh_plugin,
         crate::bridge::remove_dsh_plugin,
         crate::bridge::report_plugin_error,
+        crate::bridge::detect_plugin_recovery,
+        crate::bridge::recover_plugin,
         crate::bridge::get_profiles,
         crate::bridge::create_profile,
         crate::bridge::set_active_profile,
