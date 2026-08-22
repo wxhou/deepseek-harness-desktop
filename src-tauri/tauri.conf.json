@@ -34,7 +34,7 @@
       "nsis": {
         "template": "templates/installer.nsi",
         "languages": ["English", "SimpChinese"],
-        "displayLanguageSelector": true,
+        "displayLanguageSelector": false,
         "installerIcon": "icons/icon.ico",
         "uninstallerIcon": "icons/icon.ico"
       },
