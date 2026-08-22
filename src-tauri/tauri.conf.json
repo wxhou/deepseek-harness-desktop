@@ -27,8 +27,21 @@
       "icons/icon.png"
     ],
     "resources": ["resources/**/*"],
+    "licenseFile": "licenses/INSTALLER-LICENSE.txt",
     "category": "DeveloperTool",
     "copyright": "Copyright © 2026 Deepseek Harness Desktop contributors",
+    "windows": {
+      "nsis": {
+        "template": "templates/installer.nsi",
+        "languages": ["English", "SimpChinese"],
+        "displayLanguageSelector": true,
+        "installerIcon": "icons/icon.ico",
+        "uninstallerIcon": "icons/icon.ico"
+      },
+      "wix": {
+        "language": ["en-US", "zh-CN"]
+      }
+    },
     "shortDescription": "Desktop application for DeepSeek Harness",
     "longDescription": "A native desktop application for running DeepSeek Harness (dsh) locally with one-click install and zero configuration."
   }
