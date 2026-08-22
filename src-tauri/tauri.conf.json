@@ -30,6 +30,10 @@
     "licenseFile": "licenses/INSTALLER-LICENSE.txt",
     "category": "DeveloperTool",
     "copyright": "Copyright © 2026 Deepseek Harness Desktop contributors",
+    "macOS": {
+      "minimumSystemVersion": "10.15",
+      "hardenedRuntime": true
+    },
     "windows": {
       "nsis": {
         "template": "templates/installer.nsi",

@@ -33,6 +33,8 @@ cargo check
 cargo test
 ```
 
+For Developer ID signing, notarization, and the required GitHub Actions secrets, see [macOS signing and notarization](./MACOS_SIGNING.md).
+
 ## Tips
 
 - Debug mode serves on port **3081**, release builds on **3080** — the two never clash, so you can run an installed copy and a dev build side by side.
