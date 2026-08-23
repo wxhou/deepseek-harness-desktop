@@ -36,7 +36,7 @@ cargo check && cargo test   # Rust check & unit tests (run in src-tauri)
 
 ## Basics
 
-- No `useCallback` / `useMemo` — `react-compiler` 已通过 Vite 接入（`babel-plugin-react-compiler`，target 19）用于自动记忆化；但禁用手动记忆化钩子仍是「组件保持轻量」的项目约定（每次渲染重建 inline 函数可接受），而非依赖编译器记忆化
+- No `useCallback` / `useMemo` — `react-compiler` 已通过 Vite 接入（`babel-plugin-react-compiler`，target 19）用于自动记忆化；
 - Component functions use `function` declaration; inline events/callbacks use arrow functions
 
 ## Function Declaration Specification
@@ -77,10 +77,6 @@ function MyPage() {
 ```
 
 ### Create files in services directory
-
-> 注：本仓库当前**没有** `src/services/` 目录，也没有 `@/apis` API 层（数据访问
-> 统一走 Tauri `invoke('command')`）。以下为该模板的用意说明；如未来引入 REST
-> API 层再按此惯例建目录。
 
 **Use case:** Backend type error handling, parameter processing, composite requests, polling, data caching, etc.
 
@@ -126,12 +122,6 @@ Use `If`, `Then`, `Else` components by `react-if-lite` package instead of ternar
 ```
 
 ## State Management Specification
-
-### Single module page shared data: defineScope + useScope（已弃用）
-
-> `defineScope`/`useScope`（src/hooks/define-scope.ts、use-scope.ts）已在仓库中删除，
-> 全项目改用 `defineStore + useStore`（见下）。新代码一律使用 store 模块，勿再引入
-> scope 模式。
 
 ### Multiple module pages shared data: defineStore
 
