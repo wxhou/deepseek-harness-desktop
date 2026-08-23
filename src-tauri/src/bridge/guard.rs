@@ -28,9 +28,9 @@ pub fn allowed_roots(app_handle: &AppHandle) -> Vec<PathBuf> {
     roots
 }
 
-/// 实际用于前缀匹配的根：仅保留 canonicalize 后仍指向目录的根
-/// （下载目录/数据目录在全新安装时可能尚未创建）。
-fn allowed_root(app_handle: &AppHandle) -> Vec<std::path::PathBuf> {
+/// 实际用于前缀匹配的根：仅保留当前已存在（`is_dir`）的根（下载目录/数据目录
+/// 在全新安装时可能尚未创建）；最终比较仍以 canonicalize 后的结果为准。
+fn existing_roots(app_handle: &AppHandle) -> Vec<PathBuf> {
     allowed_roots(app_handle)
         .into_iter()
         .filter(|root| root.is_dir())
@@ -45,7 +45,7 @@ pub fn is_allowed_path(app_handle: &AppHandle, path: &Path) -> bool {
     let Ok(real) = path.canonicalize() else {
         return false;
     };
-    allowed_root(app_handle)
+    existing_roots(app_handle)
         .iter()
         .filter_map(|root| root.canonicalize().ok())
         .any(|root| real.starts_with(&root))

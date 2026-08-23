@@ -19,7 +19,6 @@ use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_opener::OpenerExt;
 
 use crate::config;
-use crate::service::download::verify_sha256;
 
 /// 仓库主页（同时用于构造 atom / expanded_assets / 下载地址）
 const REPO_URL: &str = "https://github.com/hairyf/deepseek-harness-desktop";
@@ -29,8 +28,12 @@ const COPYRIGHT: &str = "Copyright © 2026 Deepseek Harness Desktop contributors
 const POWERED_BY: &str = "DeepSeek Harness";
 /// AppData 下安装包存放目录名
 const UPDATES_DIR: &str = "updates";
-/// 安装包下载总时长上限（秒）：超过即视为失败，防止 ghfast.top 等慢源拖死界面
-const DOWNLOAD_TIMEOUT_SECS: u64 = 120;
+/// 安装包下载总时长上限（秒）。
+///
+/// `reqwest` 的 `.timeout()` 是含响应体读取在内的**总**时长。安装包常达数百 MB，
+/// 慢镜像下 120s 会掐断合法下载，故放宽到 30 分钟；真正断死的连接会由流读取
+/// 报错提前退出，不会真的等到超时。
+const DOWNLOAD_TIMEOUT_SECS: u64 = 1800;
 
 /// 最新可用发布信息（仅在有更新且匹配到当前平台安装包时才有意义）
 #[derive(Debug, Clone)]
@@ -212,10 +215,13 @@ fn parse_digest_from_expanded_assets(body: &str, expected_name: &str) -> Option<
     Some(format!("sha256:{}", &hash[..64]))
 }
 
-/// 一次性拉取 expanded_assets 页面，同时提取资产名列表与该 release 的摘要哈希映射。
+/// 一次性拉取 expanded_assets 页面，同时提取资产名列表与该页面的原始 HTML。
 ///
-/// 返回值：(资产名列表, 任一资产名的摘要，若存在)。
-async fn fetch_expanded_assets(tag: &str) -> Result<(Vec<String>, Option<String>), String> {
+/// 返回页面正文供调用方按**选中的资产名**精确解析其摘要——多平台 release 的
+/// expanded_assets 会列出所有平台的安装包，各带一个 `sha256:`，不能取「页面里
+/// 第一个能解析出摘要的资产」，否则会把别的资产的摘要套到当前平台安装包上，
+/// 导致完整性校验必然失败（见 `fetch_latest_release`）。
+async fn fetch_expanded_assets(tag: &str) -> Result<(Vec<String>, String), String> {
     let body = http_client()?
         .get(format!("{REPO_URL}/releases/expanded_assets/{tag}"))
         .send()
@@ -227,16 +233,7 @@ async fn fetch_expanded_assets(tag: &str) -> Result<(Vec<String>, Option<String>
         .await
         .map_err(|e| format!("UPDATE_ASSETS: {e}"))?;
     let names = extract_asset_names(&body, tag);
-    let digest = digest_for(&body, &names);
-    Ok((names, digest))
-}
-
-/// 从 expanded_assets 页面中，为「任一资产名」解析 SHA-256 摘要。
-/// 传入资产名列表，返回其中任一资产的摘要（release 通常只有目标平台一个安装包）。
-fn digest_for(body: &str, names: &[String]) -> Option<String> {
-    names
-        .iter()
-        .find_map(|name| parse_digest_from_expanded_assets(body, name))
+    Ok((names, body))
 }
 
 /// 查询最新 Release（无缓存，每次实时检查，走 HTML/atom 而非 api.github.com）。
@@ -250,11 +247,16 @@ async fn fetch_latest_release() -> Result<Option<LatestRelease>, String> {
         return Ok(None);
     }
 
-    // 一次拉取 expanded_assets 页面，同时得到资产名与摘要（避免两次请求）
-    let (names, digest) = fetch_expanded_assets(&tag).await?;
+    // 一次拉取 expanded_assets 页面，得到资产名列表与原始 HTML（避免两次请求）
+    let (names, body) = fetch_expanded_assets(&tag).await?;
     let Some(asset_name) = pick_asset(&names) else {
         return Ok(None);
     };
+
+    // 摘要必须按**当前平台选中的资产**解析：多平台 release 的页面里每个安装包
+    // 各有各的 `sha256:`，取错资产（如页面里第一个）会拿别的包的摘要来校验，
+    // 导致 `INTEGRITY_CHECK_FAILED` 误伤合法下载。
+    let digest = parse_digest_from_expanded_assets(&body, &asset_name);
 
     // 摘要缺失不阻断：官方直连仍可按旧行为下载（兼容早期未填摘要的发布），
     // 但镜像兜底需要可信摘要（见 `download`）防止投毒。
@@ -404,6 +406,41 @@ fn download_sources(release: &LatestRelease) -> Vec<String> {
     urls
 }
 
+/// 流式校验安装包文件的 SHA-256。
+///
+/// 安装包可达数百 MB，先 `std::fs::read` 整块读进内存再校验会翻倍占用内存；
+/// 这里按块流式喂给 `Sha256`，完成时仅保留 32 字节摘要。摘要格式接受
+/// `sha256:<64hex>` 或裸 `<64hex>`（统一转小写比较）。
+fn verify_installer_sha256(path: &std::path::Path, expected: &str) -> Result<(), String> {
+    use std::io::Read;
+    use sha2::Digest;
+    let expected = expected
+        .strip_prefix("sha256:")
+        .unwrap_or(expected)
+        .trim()
+        .to_ascii_lowercase();
+    if expected.len() != 64 || !expected.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("INTEGRITY_METADATA_INVALID: expected SHA-256 is invalid".to_string());
+    }
+    let mut file = std::fs::File::open(path).map_err(|e| format!("UPDATE_FILE: {e}"))?;
+    let mut hasher = sha2::Sha256::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = file.read(&mut buf).map_err(|e| format!("UPDATE_FILE: {e}"))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    let actual = format!("{:x}", hasher.finalize());
+    if actual != expected {
+        return Err(format!(
+            "INTEGRITY_CHECK_FAILED: SHA-256 mismatch, expected {expected}, got {actual}"
+        ));
+    }
+    Ok(())
+}
+
 /// 下载桌面端安装包；已下载则直接返回。
 ///
 /// 下载期间通过 `desktop-update-progress` 事件推送进度；完成后返回
@@ -479,10 +516,9 @@ pub async fn download(app_handle: &AppHandle) -> Result<DesktopUpdateInfo, Strin
     }
 
     // 完整性校验：摘要存在（镜像路径必有）则强制校验，校验失败即拒绝，
-    // 不保留为可安装文件，也不能被 open_installer 打开。
+    // 不保留为可安装文件，也不能被 open_installer 打开。流式校验避免整块读入内存。
     if let Some(digest) = &release.digest {
-        let bytes = std::fs::read(&tmp).map_err(|e| format!("UPDATE_FILE: {e}"))?;
-        if let Err(e) = verify_sha256(&bytes, digest) {
+        if let Err(e) = verify_installer_sha256(&tmp, digest) {
             let _ = std::fs::remove_file(&tmp);
             return Err(format!("UPDATE_DOWNLOAD: {e}"));
         }
@@ -722,5 +758,52 @@ mod tests {
         assert_eq!(sources.len(), 2);
         assert!(sources[1].contains("ghfast.top"), "镜像应为 ghfast.top 前缀: {}", sources[1]);
         assert!(sources[1].ends_with("/releases/download/v0.7.4/x.dmg"), "镜像保留完整资产路径: {}", sources[1]);
+    }
+
+    /// 回归：多平台 release 页面里每个资产各带一个 `sha256:`，摘要必须按**所选
+    /// 资产**解析，绝不能拿页面里第一个资产的摘要 —— 否则校验会把别的安装包的
+    /// 摘要套到当前平台包上（INTEGRITY_CHECK_FAILED）。
+    #[test]
+    fn digest_is_resolved_per_picked_asset_not_first_in_page() {
+        let a = "a".repeat(64);
+        let b = "b".repeat(64);
+        // 模拟真实 expanded_assets：每个资产行 = 下载链接 + 紧跟其后的 sha256，
+        // 页面顺序为 rpm（第一个）→ setup.exe（第二个），两者摘要不同。
+        let body = format!(
+            r#"<a href="/x/y/releases/download/v0.7.5/app.rpm">app.rpm</a><span>sha256:{a}</span>
+               <a href="/x/y/releases/download/v0.7.5/setup.exe">setup.exe</a><span>sha256:{b}</span>"#
+        );
+        // 旧实现「取页面里第一个能解析的资产」会拿到 rpm 的摘要（a），
+        // 而实际选中的是 setup.exe —— 修复后必须返回 setup.exe 自己的摘要（b）。
+        let rpm_digest = parse_digest_from_expanded_assets(&body, "app.rpm");
+        let picked_digest = parse_digest_from_expanded_assets(&body, "setup.exe");
+        let expected_rpm = format!("sha256:{a}");
+        let expected_picked = format!("sha256:{b}");
+        assert_eq!(rpm_digest.as_deref(), Some(expected_rpm.as_str()));
+        assert_eq!(picked_digest.as_deref(), Some(expected_picked.as_str()));
+        // 两个摘要必须不同才是「多资产 + 各自摘要」的有效回归用例
+        assert_ne!(rpm_digest, picked_digest);
+    }
+
+    /// 流式校验：正确的文件通过、错误的摘要拒绝，且不把整个文件读进内存。
+    #[test]
+    fn verify_installer_sha256_streams_and_rejects_mismatch() {
+        use sha2::Digest;
+        let dir = std::env::temp_dir().join(format!("dsh-update-hash-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("installer.part");
+        let content = b"deepseek-harness-desktop installer payload";
+        std::fs::write(&file, content).unwrap();
+        let real = format!("sha256:{}", format!("{:x}", sha2::Sha256::digest(content)));
+        // 正确摘要通过
+        assert!(verify_installer_sha256(&file, &real).is_ok());
+        // 裸 64hex（无 sha256: 前缀）也接受
+        assert!(verify_installer_sha256(&file, real.trim_start_matches("sha256:")).is_ok());
+        // 错误摘要拒绝
+        let wrong = format!("sha256:{}", "0".repeat(64));
+        assert!(verify_installer_sha256(&file, &wrong).is_err());
+        // 非法摘要格式拒绝
+        assert!(verify_installer_sha256(&file, "sha256:zz").is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

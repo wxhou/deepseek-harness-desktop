@@ -178,9 +178,10 @@ pub fn create(app_handle: &AppHandle, name: &str) -> Result<Profile, String> {
 /// 切换当前使用中的档案（持久化到桌面端 store）。
 pub fn set_active(app_handle: &AppHandle, id: &str) -> Result<Profile, String> {
     // 路径安全：拒绝 `..`、绝对路径、分隔符（防御式——id 理论上来自
-    // normalize 产物，但 CLI/配置可能把任意字符串塞进设置）
-    fs_guard::validate_id(id)?;
-    let dir = profile_dir_of(app_handle, id);
+    // normalize 产物，但 CLI/配置可能把任意字符串塞进设置），并用
+    // fs_guard::join_safe 组装档案根目录下的目标路径。
+    let profiles_root = config::get_dsh_data_path(app_handle).join("profiles");
+    let dir = fs_guard::join_safe(&profiles_root, id)?;
     if id != DEFAULT_PROFILE && !dir.is_dir() {
         return Err(format!("PROFILE_NOT_FOUND: profile {id} does not exist"));
     }
