@@ -1,5 +1,5 @@
-import { ArrowRotateRight, ArrowUpRightFromSquare, ChevronRight, CircleInfo, Copy, Folder, Power, TrashBin } from '@gravity-ui/icons'
-import { Button, Chip, Description, Input, Link, ListBox, Select, Spinner, Surface, Switch, Tooltip } from '@heroui/react'
+import { ArrowRotateRight, ArrowUpRightFromSquare, ChevronRight, Copy, Folder, Power, TrashBin } from '@gravity-ui/icons'
+import { Button, Chip, Description, Input, Link, ListBox, Select, Spinner, Surface, Switch } from '@heroui/react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { invoke } from '@tauri-apps/api/core'
 import { useState } from 'react'
@@ -37,7 +37,7 @@ export interface AppConfig {
 
 export function ConfigDebug() {
   const { t, i18n } = useTranslation()
-  const { serviceRunning, busyAction, preinstall } = useStore(store.harness)
+  const { serviceRunning, busyAction } = useStore(store.harness)
   const { updateInfo } = useStore(store.harnessUpdater)
 
   const [port, setPort] = useState<number>(3080)
@@ -281,34 +281,6 @@ export function ConfigDebug() {
             </Button>
           </div>
         </div>
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2 flex-1">
-            <span className="text-xs font-medium text-ink">{t('preinstall.settings_title')}</span>
-          </div>
-          <Tooltip delay={0}>
-            <Button
-              isIconOnly
-              size="sm"
-              className="rounded-md text-xs size-6 text-muted"
-              variant="ghost"
-            >
-              <CircleInfo />
-            </Button>
-            <Tooltip.Content>
-              <p>{t('preinstall.settings_hint')}</p>
-            </Tooltip.Content>
-          </Tooltip>
-          <Button
-            size="sm"
-            variant="primary"
-            className="rounded-md"
-            onPress={store.harness.openPreinstall}
-            isDisabled={busyAction !== null || preinstall.installing}
-          >
-            {t('preinstall.open_preset')}
-          </Button>
-        </div>
-
         <div className="flex items-center justify-between">
           <span className="text-xs font-medium text-ink">{t('ui.language')}</span>
           <Select

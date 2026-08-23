@@ -1,11 +1,12 @@
 import { CircleExclamation } from '@gravity-ui/icons'
-import { Button, Chip, Label, Spinner, Tooltip } from '@heroui/react'
+import { Button, Chip, Label, Spinner, Tooltip, Typography } from '@heroui/react'
 import { useOverlay } from '@overlastic/react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { invoke } from '@tauri-apps/api/core'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { If } from 'react-if-lite'
+import { useStore } from 'valtio-define'
 import { store } from '@/store'
 import { toast } from '@/utils'
 import { useDshPlugins } from '../hooks/use-dsh-plugins'
@@ -31,6 +32,7 @@ export function ConfigPlugin() {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
   const { plugins, loading, error } = useDshPlugins()
+  const { preinstall } = useStore(store.harness)
 
   const [dialogHolder, openDialog] = useOverlay(Modal, { type: 'holder' })
 
@@ -119,7 +121,29 @@ export function ConfigPlugin() {
 
   return (
     <div>
-      <PanelHeader className="sticky top-0 bg-canvas z-10 pb-3" title={t('plugins.title')} description={t('plugins.panel_tooltip')} />
+      <PanelHeader
+        className="sticky top-0 bg-canvas z-10 pb-3"
+        title={(
+          <div className="flex justify-between">
+            <Typography type="h4">{t('plugins.title')}</Typography>
+            <Tooltip delay={0}>
+              <Button
+                size="sm"
+                variant="primary"
+                className="rounded-md"
+                onPress={store.harness.openPreinstall}
+                isDisabled={preinstall.installing}
+              >
+                {t('preinstall.open_preset')}
+              </Button>
+              <Tooltip.Content>
+                <p>{t('preinstall.settings_hint')}</p>
+              </Tooltip.Content>
+            </Tooltip>
+          </div>
+        )}
+        description={t('plugins.panel_tooltip')}
+      />
 
       {/* 加载 / 失败 / 空态 */}
       <PanelState loading={loading} error={error}>
