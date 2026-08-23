@@ -32,26 +32,35 @@ pub struct PreinstallLogPayload {
 ///
 /// `cancel`（跨平台）用它结束安装进程树；安装结束/失败后必须复位，
 /// 防止把「下一个安装」或无关进程误杀。
+///
+/// 仅在 Unix 被 `cancel` 使用（Windows 取消安装走 taskkill 按命令行匹配），
+/// 故 Windows 下按项目约定允许 dead_code。
+#[cfg_attr(windows, allow(dead_code))]
 static ACTIVE_PLUGIN_PID: OnceLock<Mutex<Option<u32>>> = OnceLock::new();
 
+#[cfg_attr(windows, allow(dead_code))]
 fn active_pid_lock() -> &'static Mutex<Option<u32>> {
     ACTIVE_PLUGIN_PID.get_or_init(|| Mutex::new(None))
 }
 
 /// 当前进行中安装的根进程 PID（取消安装用）。
+#[cfg_attr(windows, allow(dead_code))]
 pub(crate) fn active_plugin_pid() -> Option<u32> {
     *active_pid_lock().lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// 记录/清除当前安装进程 PID（guard-drop 模式，作用域结束自动复位）。
+#[cfg_attr(windows, allow(dead_code))]
 struct PidGuard;
 
+#[cfg_attr(windows, allow(dead_code))]
 impl PidGuard {
     fn set(pid: u32) {
         *active_pid_lock().lock().unwrap_or_else(|e| e.into_inner()) = Some(pid);
     }
 }
 
+#[cfg_attr(windows, allow(dead_code))]
 impl Drop for PidGuard {
     fn drop(&mut self) {
         *active_pid_lock().lock().unwrap_or_else(|e| e.into_inner()) = None;
@@ -132,6 +141,10 @@ pub(crate) async fn run_plugin_process(
 
         let pid = child.id();
         PidGuard::set(pid);
+        // 绑定守卫实例：本 cfg 块作用域结束时自动把共享 PID 槽复位为 None，
+        // 避免把「这一次安装」的 PID 泄漏给之后的取消/下一次安装（误杀无关进程）。
+        // 若 spawn_blocking 因错误提前 `?` 返回，守卫同样会 Drop 复位。
+        let _pid_guard = PidGuard;
         log::info!("dsh plugin install started, pid {pid}");
 
         if let Some(stdout) = child.stdout.take() {

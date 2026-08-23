@@ -55,7 +55,8 @@ pub async fn cancel(app_handle: &AppHandle) {
 
     #[cfg(windows)]
     {
-        let Some(window) = app_handle.get_webview_window("main") else {
+        // window 仅作「存在 main 窗口」的借位判定；实际 emit 在函数末尾统一做。
+        let Some(_window) = app_handle.get_webview_window("main") else {
             return;
         };
 

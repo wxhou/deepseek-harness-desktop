@@ -120,11 +120,22 @@ mod imp {
             serde_yaml::Value::Sequence(seq) => seq,
             _ => unreachable!("parse_patch_list only returns a sequence"),
         };
-        // 已挂载则跳过（幂等）。
-        if seq.iter().any(block_is_ours) {
-            return Ok(());
+        // 迁移 + 幂等：已有本插件块时只需把旧的「裸包名」写法改写为相对路径写法；
+        // 完全没有才追加新块。避免把旧写法当作「已挂载」直接跳过，导致修复对
+        // 存量安装用户不生效（它们是注释-实现矛盾的历史受害者）。
+        let mut has_ours = false;
+        for el in seq.iter_mut() {
+            if block_is_ours(el) {
+                has_ours = true;
+                if block_uses_bare_name(el) {
+                    // 整块替换为规范写法（仅 id + name，其余字段不涉及本插件）。
+                    *el = plugin_insert_entry();
+                }
+            }
         }
-        seq.push(plugin_insert_entry());
+        if !has_ours {
+            seq.push(plugin_insert_entry());
+        }
 
         let out = serde_yaml::to_string(&doc)
             .map_err(|e| format!("PATCH_RENDER_FAILED: {e}"))?;
@@ -215,6 +226,17 @@ mod imp {
     fn block_is_ours(el: &serde_yaml::Value) -> bool {
         serde_yaml::to_string(el)
             .map(|s| s.contains(PATCH_MARKER))
+            .unwrap_or(false)
+    }
+
+    /// 挂载块是否仍使用「裸包名」旧写法（`name: dsh-win-terminal-inspector`）。
+    ///
+    /// 与相对路径写法（`name: ./node_modules/dsh-win-terminal-inspector`）区分：
+    /// 裸包名无法被 dsh loader 按 harness baseUrl 可靠解析，是历史注释-实现矛盾处。
+    fn block_uses_bare_name(el: &serde_yaml::Value) -> bool {
+        serde_yaml::to_string(el)
+            .map(|s| s.contains("name: dsh-win-terminal-inspector")
+                && !s.contains("name: ./node_modules/dsh-win-terminal-inspector"))
             .unwrap_or(false)
     }
 
@@ -569,6 +591,35 @@ mod imp {
                 !out.contains("name: dsh-win-terminal-inspector\n"),
                 "patch must not use bare package name, got:\n{out}"
             );
+            std::fs::remove_dir_all(&dir).ok();
+        }
+
+        #[test]
+        fn ensure_patch_upgrades_existing_bare_name_entry() {
+            let dir = temp_dir("m");
+            std::fs::create_dir_all(&dir).unwrap();
+            let patch = dir.join("cordis.patch.yml");
+            // 旧写法（历史注释-实现矛盾处）：裸包名无法被 loader 按 baseUrl 解析
+            std::fs::write(
+                &patch,
+                "- insert:\n    - id: win-terminal-inspector\n      name: dsh-win-terminal-inspector\n",
+            )
+            .unwrap();
+            ensure_patch(&dir).unwrap();
+            let out = std::fs::read_to_string(&patch).unwrap();
+            // 存量旧条目必须被改写为相对 profile 路径，而不是当作「已挂载」跳过
+            assert!(
+                out.contains("name: ./node_modules/dsh-win-terminal-inspector"),
+                "bare-name entry must be migrated to profile-relative path, got:\n{out}"
+            );
+            assert!(
+                !out.contains("name: dsh-win-terminal-inspector\n"),
+                "bare-name form must be gone after migration, got:\n{out}"
+            );
+            // 幂等：再次运行不改写、不产生重复块
+            ensure_patch(&dir).unwrap();
+            let out2 = std::fs::read_to_string(&patch).unwrap();
+            assert_eq!(out, out2);
             std::fs::remove_dir_all(&dir).ok();
         }
 

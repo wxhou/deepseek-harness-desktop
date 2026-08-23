@@ -55,12 +55,34 @@ fn set_owned_process_with_handle(pid: u32, handle: usize) {
 }
 
 /// 原子取出持有的进程（PID+句柄一起）。Whoever takes it is responsible for
-/// closing the Windows handle.
+/// closing the Windows handle. 无条件取出（停止/退出路径）。
 fn take_owned_process() -> Option<OwnedProcess> {
     owned_process_lock()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .take()
+}
+
+/// 仅当当前持有进程的 PID 与 `pid` 匹配时才取出（成对 PID+句柄）。
+///
+/// 保留 base 代码 `compare_exchange(pid, 0)` 的防护语义：退出监视线程只能清掉
+/// 属于自己那一条登记，绝不误取/误清「刚启动的新进程」的登记——否则会把它
+/// 当作已退出而错误回落 Status，并把新进程的句柄误关（WARN-6 合并引入的回退）。
+fn take_owned_process_if(pid: u32) -> Option<OwnedProcess> {
+    let mut guard = owned_process_lock().lock().unwrap_or_else(|e| e.into_inner());
+    take_owned_process_if_matching(&mut guard, pid)
+}
+
+/// 纯函数部分：便于单测，不触碰全局状态。
+fn take_owned_process_if_matching(
+    owned: &mut Option<OwnedProcess>,
+    pid: u32,
+) -> Option<OwnedProcess> {
+    if owned.as_ref().map(|p| p.pid) == Some(pid) {
+        owned.take()
+    } else {
+        None
+    }
 }
 
 struct LaunchGuard;
@@ -188,16 +210,17 @@ pub fn has_owned_process() -> bool {
 
 /// 处理「持有的 dsh 进程退出」这一事实（由退出监视线程与健康检查 tick 共用）：
 ///
-/// - 清空持有的 PID/句柄（`take` 保证只会被清一次，PID/句柄作为整体成对
-///   取出，PID 复用窗口最小化）；
+/// - 仅当退出的 PID 仍是当前登记的那个进程时才清空持有（`take_owned_process_if`
+///   按 pid 匹配），PID/句柄作为整体成对取出——杜绝「读 PID」与「清句柄」
+///   之间的跨原子竞态（WARN-6），也杜绝旧监视线程误清新启动进程的登记；
 /// - 若当前状态仍是 Running，回落到 Stopped——否则进程已经没了、状态却永远
 ///   显示「运行中」，前端按钮/横幅会长期处于错误语义（WARN-5）。
 ///
 /// 返回被取出的进程记录（含 Windows 句柄），取到者负责 `CloseHandle`——保证
 /// 「取走进程」与「关闭句柄」同属一个调用者，杜绝重复 close。幂等：多次调用
 /// （tick 与监视线程并发）只会生效一次，后续调用返回 None。
-fn on_owned_process_exit() -> Option<OwnedProcess> {
-    let owned = take_owned_process()?;
+fn on_owned_process_exit(pid: u32) -> Option<OwnedProcess> {
+    let owned = take_owned_process_if(pid)?;
 
     log::warn!(
         "Owned Harness process {} exited; resetting status to Stopped",
@@ -645,10 +668,11 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
                     }
                     // 进程确已退出：清空持有 PID 并把 Status 从 Running 回落为
                     // Stopped（原有实现只清 PID、状态永远停留在 Running）。
+                    // 仅当该 PID 仍是当前登记才取出——旧监视线程不会误清新进程。
                     // take 返回值里的句柄由本线程负责关闭（不会与
                     // terminate_owned_process 重复 close——进程已 exit，
                     // 通常是本线程取走）。
-                    let owned = on_owned_process_exit();
+                    let owned = on_owned_process_exit(pid);
                     if let Some(owned) = owned {
                         let h = owned.handle as windows_sys::Win32::Foundation::HANDLE;
                         CloseHandle(h);
@@ -694,8 +718,9 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
                         log::warn!("Owned Harness process {pid} exited (no exit code)");
                     }
                     // 进程确已退出：清空持有 PID 并把 Status 从 Running 回落为 Stopped
-                    // （Unix 无进程句柄可关闭，忽略返回的进程记录）
-                    let _ = on_owned_process_exit();
+                    // （Unix 无进程句柄可关闭，忽略返回的进程记录）。
+                    // 仅当该 PID 仍是当前登记才取出——旧监视线程不会误清新进程。
+                    let _ = on_owned_process_exit(pid);
                 });
                 (stdout, stderr, pid)
             })
@@ -1009,5 +1034,36 @@ mod tests {
         assert!(!version_supports_no_open("0.1"));
         assert!(!version_supports_no_open("v0.1.0"));
         assert!(!version_supports_no_open("not-a-version"));
+    }
+
+    /// 构造一个测试用 `OwnedProcess`（跨平台处理 Windows 句柄字段）。
+    #[cfg(windows)]
+    fn test_owned(pid: u32) -> OwnedProcess {
+        OwnedProcess { pid, handle: 0 }
+    }
+    #[cfg(not(windows))]
+    fn test_owned(pid: u32) -> OwnedProcess {
+        OwnedProcess { pid }
+    }
+
+    /// 退出监视线程只能清掉「与自己 PID 匹配」的登记，不许误清刚启动的新进程，
+    /// 也不许重复取出（幂等）。回归 WARN-6 合并引入的回退。
+    #[test]
+    fn owned_process_take_if_only_matches_pid() {
+        // 匹配的 PID 才可取出，且取走后槽清空
+        let mut slot = Some(test_owned(42));
+        let taken = take_owned_process_if_matching(&mut slot, 42);
+        assert_eq!(taken.map(|p| p.pid), Some(42));
+        assert!(slot.is_none());
+
+        // PID 不匹配（旧进程 41 退出）时禁止取出/清空新进程（新进程 42）
+        let mut slot = Some(test_owned(42));
+        let taken = take_owned_process_if_matching(&mut slot, 41);
+        assert!(taken.is_none());
+        assert_eq!(slot.as_ref().map(|p| p.pid), Some(42));
+
+        // 幂等：已清空后再次取出返回 None
+        let mut slot: Option<OwnedProcess> = None;
+        assert!(take_owned_process_if_matching(&mut slot, 42).is_none());
     }
 }
