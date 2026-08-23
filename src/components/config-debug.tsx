@@ -7,7 +7,7 @@ import { useTranslation } from 'react-i18next'
 import { If } from 'react-if-lite'
 import { useStore } from 'valtio-define'
 import { store } from '@/store'
-import { toast } from '@/utils'
+import { toast } from '@/utils/toast'
 import { Info } from './info'
 
 export interface RuntimeInfo {
@@ -230,7 +230,7 @@ export function ConfigDebug() {
 
           </Info>
           <Info term={t('ui.node_version')}>{info?.node_version ? `v${info.node_version}` : '-'}</Info>
-          <Info term="Platform">
+          <Info term={t('ui.platform')}>
             {info ? `${info.platform} / ${info.arch}` : '-'}
           </Info>
           <div className="flex items-center justify-between gap-2 text-xs">

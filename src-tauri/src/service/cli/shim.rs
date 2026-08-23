@@ -586,6 +586,28 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
+    // ------------------------------------------------------------------
+    // escape_path_* 纯函数基线（与 shim 内嵌路径的场景一致）
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn escape_path_cmd_doubles_percent() {
+        assert_eq!(escape_path_cmd(Path::new(r"C:\Users\%test%\x")), r"C:\Users\%%test%%\x");
+        assert_eq!(escape_path_cmd(Path::new("/tmp/a b")), "/tmp/a b");
+    }
+
+    #[test]
+    fn escape_path_ps1_doubles_single_quotes() {
+        assert_eq!(escape_path_ps1(Path::new(r"C:\Users\o'brien")), r"C:\Users\o''brien");
+        assert_eq!(escape_path_ps1(Path::new("/plain/path")), "/plain/path");
+    }
+
+    #[test]
+    fn escape_path_sh_escapes_single_quotes() {
+        assert_eq!(escape_path_sh(Path::new("/home/o'brien/.dsh")), r"/home/o'\''brien/.dsh");
+        assert_eq!(escape_path_sh(Path::new("/plain/.dsh")), "/plain/.dsh");
+    }
+
     fn sample_app_dir() -> PathBuf {
         if cfg!(windows) {
             PathBuf::from(r"C:\Users\test\AppData\Roaming\io.github.hairyf.deepseek-harness-desktop")

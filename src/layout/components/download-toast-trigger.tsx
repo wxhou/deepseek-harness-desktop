@@ -5,7 +5,7 @@ import { useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useStore } from 'valtio-define'
 import { store } from '@/store'
-import { toast } from '@/utils'
+import { toast } from '@/utils/toast'
 
 export function DownloadToast() {
   const { t } = useTranslation()

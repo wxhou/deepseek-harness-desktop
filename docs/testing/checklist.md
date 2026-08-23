@@ -23,7 +23,7 @@
 - [ ] `service/cli`（Rust）：`shim` 生成、`path` 注册、`core` 探测单测（含 `%`→`%%`、`'`→`'\''` 转义）。
 - [ ] `service/update` / `service/workflow`（Rust）：自更新、进程生命周期、`status`、`utils` 单测。
 - [ ] `task/scheduler`（Rust）：健康检查轮询逻辑单测。
-- [ ] 前端 `utils`：`iframe-origin`、`logger`、`toast` 单测。
+- [ ] 前端 `utils`：`iframe`、`logger`、`toast` 单测。
 - [ ] 前端 `config/client`：`invoke` 封装与命令参数单测。
 - 标签：`unit-test`、`backend-test`/`frontend-test`
 - 估算：每组件 0.5–1 点

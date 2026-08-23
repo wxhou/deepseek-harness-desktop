@@ -1,7 +1,7 @@
 import type { RefObject } from 'react'
 import { useState } from 'react'
 import { useEvent } from 'react-use'
-import { getIframeOrigin } from '@/utils/iframe-origin'
+import { getIframeOrigin } from '@/utils/iframe'
 
 /**
  * 壳层导航桥（宿主侧）：ShellNavBar 左侧三个控件的消息通道。
