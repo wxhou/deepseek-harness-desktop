@@ -424,7 +424,7 @@ mod tests {
 
     #[test]
     fn mirror_url_prepends_ghfast_prefix() {
-        let asset = "https://github.com/hairyf/deepseek-harness-pkg/releases/download/v1.0.0/deepseek-harness-pkg-windows.zip";
+        let asset = "https://github.com/dsh-tauri-desk/deepseek-harness-pkg/releases/download/v1.0.0/deepseek-harness-pkg-windows.zip";
         assert_eq!(
             mirror_download_url(asset),
             format!("{DSH_MIRROR_PREFIX}{asset}")

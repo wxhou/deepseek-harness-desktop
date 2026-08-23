@@ -72,9 +72,22 @@ pub async fn open_preinstall_repo(app_handle: AppHandle, id: String) -> Result<(
 
 /// 当前 profile 已安装插件列表（含解析后的元信息），`use-dsh-plugins` 首次加载用；
 /// 之后 Rust 侧监控插件文件，变化时通过 `dsh-plugins-updated` 事件实时推送。
+/// 这里会并入 `updates` 模块的已知更新判定缓存（未判定时 `update_available=false`）。
 #[tauri::command]
 pub fn get_dsh_plugins(app_handle: AppHandle) -> Vec<plugin::DshPlugin> {
-    plugin::watch::list(&app_handle)
+    let mut plugins = plugin::watch::list(&app_handle);
+    plugin::update::apply_cache(&app_handle, &mut plugins);
+    plugins
+}
+
+/// 重新探测已安装插件的更新可用性（网络 + 30min 缓存），返回带最新判定结果的列表。
+///
+/// 与 `get_dsh_plugins` 不同，此处会发起 registry / GitHub 请求（并行、失败静默按
+/// 「无更新」处理）。前端在插件面板挂载后调用一次以补齐 `updateAvailable`，使升级
+/// 按钮只在确有更新（或异常修复）时出现，而不是常驻。
+#[tauri::command]
+pub async fn refresh_plugin_updates(app_handle: AppHandle) -> Result<Vec<plugin::DshPlugin>, String> {
+    plugin::update::refresh(&app_handle).await
 }
 
 /// 升级单个已安装插件：`dsh plugin --profile <当前档案> update <id>`，

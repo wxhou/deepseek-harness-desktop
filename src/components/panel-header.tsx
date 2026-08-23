@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import { Typography } from '@heroui/react'
 import { cn } from 'tailwind-variants'
 
@@ -7,7 +8,7 @@ import { cn } from 'tailwind-variants'
  * className 用于叠加 sticky / 背景等定位类（如 config-plugin 的 sticky 头部）。
  */
 export interface PanelHeaderProps {
-  title: string
+  title: string | ReactNode
   description: string
   className?: string
 }
@@ -15,7 +16,7 @@ export interface PanelHeaderProps {
 export function PanelHeader({ title, description, className }: PanelHeaderProps) {
   return (
     <div className={cn('space-y-2', className)}>
-      <Typography type="h4">{title}</Typography>
+      {typeof title === 'string' ? <Typography type="h4">{title}</Typography> : title}
       <Typography color="muted" type="body-sm">{description}</Typography>
     </div>
   )

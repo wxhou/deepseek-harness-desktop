@@ -1,11 +1,12 @@
 import { CircleExclamation } from '@gravity-ui/icons'
-import { Button, Chip, Label, Spinner, Tooltip } from '@heroui/react'
+import { Button, Chip, Label, Spinner, Tooltip, Typography } from '@heroui/react'
 import { useOverlay } from '@overlastic/react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { invoke } from '@tauri-apps/api/core'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { If } from 'react-if-lite'
+import { useStore } from 'valtio-define'
 import { store } from '@/store'
 import { toast } from '@/utils'
 import { useDshPlugins } from '../hooks/use-dsh-plugins'
@@ -31,6 +32,7 @@ export function ConfigPlugin() {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
   const { plugins, loading, error } = useDshPlugins()
+  const { preinstall } = useStore(store.harness)
 
   const [dialogHolder, openDialog] = useOverlay(Modal, { type: 'holder' })
 
@@ -119,7 +121,29 @@ export function ConfigPlugin() {
 
   return (
     <div>
-      <PanelHeader className="sticky top-0 bg-canvas z-10 pb-3" title={t('plugins.title')} description={t('plugins.panel_tooltip')} />
+      <PanelHeader
+        className="sticky top-0 bg-canvas z-10 pb-3"
+        title={(
+          <div className="flex justify-between">
+            <Typography type="h4">{t('plugins.title')}</Typography>
+            <Tooltip delay={0}>
+              <Button
+                size="sm"
+                variant="primary"
+                className="rounded-md"
+                onPress={store.harness.openPreinstall}
+                isDisabled={preinstall.installing}
+              >
+                {t('preinstall.open_preset')}
+              </Button>
+              <Tooltip.Content>
+                <p>{t('preinstall.settings_hint')}</p>
+              </Tooltip.Content>
+            </Tooltip>
+          </div>
+        )}
+        description={t('plugins.panel_tooltip')}
+      />
 
       {/* 加载 / 失败 / 空态 */}
       <PanelState loading={loading} error={error}>
@@ -177,8 +201,9 @@ export function ConfigPlugin() {
                 )}
                 right={(
                   <>
-                    {/* 更新入口仅在插件异常时显示（需求 2：异常插件的修复入口） */}
-                    <If cond={plugin.error != null}>
+                    {/* 升级入口仅在确有更新（updateAvailable）或插件异常（error，修复入口）时显示；
+                        与文档 P1「对 dshmarket 点击升级」一致，且不会常驻——up-to-date 插件不显示升级按钮 */}
+                    <If cond={plugin.updateAvailable || plugin.error != null}>
                       <Chip
                         className={`rounded-md${busy ? ' cursor-not-allowed opacity-50' : ' cursor-pointer'}`}
                         variant="primary"
@@ -189,6 +214,9 @@ export function ConfigPlugin() {
                         <span className="flex items-center gap-1">
                           <If cond={busy?.id === plugin.id && busy.action === 'update'} then={<Spinner size="sm" color="current" />} />
                           {t('plugins.upgrade')}
+                          <If cond={plugin.latestVersion != null && plugin.error == null}>
+                            <span className="font-mono text-[10px] opacity-80">{plugin.latestVersion}</span>
+                          </If>
                         </span>
                       </Chip>
                     </If>

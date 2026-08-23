@@ -64,6 +64,8 @@
 
 **系统要求：** Windows 10+（64 位）· macOS 10.15+ · Linux（AppImage / `.deb`，基于 Ubuntu 22.04 构建，兼容 22.04 及更新版本）· 首次运行需要网络
 
+> **Linux Wayland 注意（PikaOS / GNOME Wayland / Ubuntu 22.04+）：** AppImage 捆绑的 WebKitGTK 4.1 在 Wayland 下可能报 `Could not create default EGL display: EGL_BAD_PARAMETER` + `g_task_set_static_name`（宿主 `gvfs`/`glib` 版本与 AppImage 内 bundled 不一致）。已在 `v0.7.6` 自动 workaround（`XDG_SESSION_TYPE=wayland` 时 `WEBKIT_DISABLE_COMPOSITING_MODE=1`）。若仍黑屏/崩溃：**推荐 `.deb`**（使用宿主 `libwebkit2gtk-4.1.so.0`，已验证 PikaOS 4 Wayland），或手动 `WEBKIT_DISABLE_COMPOSITING_MODE=1 WEBKIT_DISABLE_DMABUF_RENDERER=1 GDK_BACKEND=x11 ./AppImage`。图标若不显示：`cp` 应用内 `hicolor` 图标到 `~/.local/share/icons` 并 `update-desktop-database`。
+
 ## 开发
 
 想参与开发？参见 [docs/DEVELOPMENT.zh.md](./docs/DEVELOPMENT.zh.md)。
@@ -98,15 +100,12 @@
         http://127.0.0.1:3080/  ← 内嵌界面
 ```
 
-Harness 发行版由 [deepseek-harness-pkg](https://github.com/hairyf/deepseek-harness-pkg) 构建发布。每次启动都会对比最新发行版，本地过期时自动重新下载；GitHub 不可达时保留本地安装。通过 CLI 全局安装的本地核心会被优先使用。
+Harness 发行版由 [deepseek-harness-pkg](https://github.com/dsh-tauri-desk/deepseek-harness-pkg) 构建发布。每次启动都会对比最新发行版，本地过期时自动重新下载；GitHub 不可达时保留本地安装。通过 CLI 全局安装的本地核心会被优先使用。
 
 ## 说明
 
 > [!WARNING]
 > **开发预览** — 上游 `dsh` 仍在快速迭代，存在破坏性变更；本项目同步跟随。
-
-> [!IMPORTANT]
-> **macOS Gatekeeper** — 应用未公证，首次启动需在系统设置 → 隐私与安全性 → 仍要打开 放行一次。
 
 > [!NOTE]
 > **安全声明** — `dsh` 具备本地代码执行能力。仅供学习 / 研究 / 测试，请在可信、隔离的环境中使用。
@@ -114,7 +113,7 @@ Harness 发行版由 [deepseek-harness-pkg](https://github.com/hairyf/deepseek-h
 ## 相关项目
 
 - [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) — 上游 `dsh` agent 平台
-- [deepseek-harness-pkg](https://github.com/hairyf/deepseek-harness-pkg) — 预打包 Harness 发行版（本应用下载源）
+- [deepseek-harness-pkg](https://github.com/dsh-tauri-desk/deepseek-harness-pkg) — 预打包 Harness 发行版（本应用下载源）
 - [n8n-desktop](https://github.com/tangtao646/n8n-desktop) — 参考实现
 
 ## License

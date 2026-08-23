@@ -81,7 +81,7 @@ async function checkHealthViaProxy(): Promise<HealthCheckResult> {
       || result.includes('201')
       || lower.includes('ok')
     ) {
-      console.warn('[Harness] health check passed:', result)
+      console.warn('[Harness] health check passed:', result.split(' - <!doctype html>')[0])
       return { healthy: true, notOwned: false }
     }
     console.warn('[Harness] health check returned:', result)
@@ -122,7 +122,10 @@ async function readServiceLogTail(): Promise<string[]> {
 
 /** 失败时把服务日志的真实错误行与冲突提示挂到错误对象上 */
 async function attachStartupDiagnostics(err: unknown): Promise<StartupError> {
-  const startupError = err as StartupError
+  // Tauri `invoke` 对 `Result<_, String>` 命令的 rejection 是裸字符串，
+  // 必须先归一化为 Error 对象，否则在其上赋属性（ESM 严格模式）会抛
+  // `TypeError: Cannot create property ... on string`，反而遮蔽真实错误。
+  const startupError: StartupError = err instanceof Error ? err : new Error(String(err))
   if (!startupError.logs) {
     const lines = await readServiceLogTail()
     startupError.logLines = lines
@@ -132,7 +135,7 @@ async function attachStartupDiagnostics(err: unknown): Promise<StartupError> {
       startupError.pluginConflictHint = i18next.t('errors.plugin_route_conflict')
     }
   }
-  return startupError
+  return startupError as StartupError
 }
 
 /**
@@ -275,6 +278,13 @@ export const harness = defineStore({
             i18next.t('errors.service_start_timeout', { port: new URL(this.serviceUrl).port || '3080' }),
           )
         }
+        // 服务已就绪后再取一次真实地址：`launch_harness` 可能因后端已在并发拉起
+        // （auto_start）而提前返回，此刻端口若尚未落库，上面读到的 service_url 会是
+        // 旧端口；健康检查通过意味着服务已在最终端口就绪，此时读取必然准确。
+        // 避免 iframe 挂载到一个无人监听的地址（表现为首次加载失败、刷新后恢复）。
+        const readyInfo = await invoke<{ service_url: string }>('get_runtime_info')
+        this.serviceUrl = readyInfo.service_url
+        this.iframeSrc = generateTimestampedUrl(readyInfo.service_url)
         this.serviceHealthy = true
         // 服务（重）启动成功：清空插件异常修复态（若曾进入），并重置已「暂不处理」的插件
         this.recovery = { required: false, info: null, attempts: 0, busy: false }

@@ -48,6 +48,13 @@ pub struct DshPlugin {
     pub recommended: bool,
     /// 预设清单中的「修复」标记（黄色 chip）
     pub fix: bool,
+    /// 是否有可用更新（由 `service::plugin::update` 探测；尚未判定时为 false，
+    /// 前端在挂载后经 `refresh_plugin_updates` 补齐——因此有更新时才显示升级按钮，
+    /// 不会「常驻」）
+    pub update_available: bool,
+    /// 判定得到的「最新版本」（registry latest / git HEAD SHA）；未判定或不可判定时缺省
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latest_version: Option<String>,
     /// 异常信息（安装/升级/卸载失败或页面运行期上报）；`None` = 正常
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<PluginError>,
@@ -167,6 +174,8 @@ fn parse_plugins(profile: &Path, presets: &[PreinstallPluginInfo]) -> Vec<DshPlu
                 bundled: bundled.contains(id.as_str()),
                 recommended: preset.map(|p| p.recommended).unwrap_or(false),
                 fix: preset.map(|p| p.fix).unwrap_or(false),
+                update_available: false,
+                latest_version: None,
                 error: None,
             })
         })

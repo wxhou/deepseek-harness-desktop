@@ -479,9 +479,17 @@ const GENERATED_MARKER: &str = "DeepSeek Harness Desktop - ";
 ///
 /// 此时绝不覆盖，保留用户文件，避免"安装后清空了之前手动安装的工具"。
 fn is_foreign_file(path: &Path) -> bool {
+    !is_generated_shim(path)
+}
+
+/// 判断路径是否为本应用生成的 shim（内容含生成标记）。
+///
+/// 用于在本地 dsh 探测中区分"本应用 shim"与"用户自行放置的同名文件"：
+/// 前者应被排除（它转发到捆绑 dsh，不构成用户本地核心），后者应被识别。
+pub fn is_generated_shim(path: &Path) -> bool {
     match std::fs::read_to_string(path) {
-        Ok(content) => !content.contains(GENERATED_MARKER),
-        Err(_) => true,
+        Ok(content) => content.contains(GENERATED_MARKER),
+        Err(_) => false,
     }
 }
 
@@ -617,6 +625,7 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
     #[test]
     #[cfg(windows)]
     fn cmd_shim_contains_baked_paths() {
@@ -675,6 +684,7 @@ mod tests {
         assert!(content.contains("DSH_PREFER_BUNDLED_PNPM"));
     }
 
+    #[cfg(windows)]
     #[test]
     #[cfg(windows)]
     fn ps1_shim_escapes_quotes() {

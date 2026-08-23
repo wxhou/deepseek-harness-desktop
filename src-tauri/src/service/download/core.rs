@@ -135,6 +135,16 @@ async fn download_with_retry<'a, R: Runtime>(
     ))
 }
 
+/// 下载进度百分比（0.0–100.0）；总长未知（0）时返回 -1 表示「不确定进度」，
+/// 避免除零产生 +inf/NaN 污染前端进度条。
+fn download_progress_percent(received_total: u64, total_size: u64) -> f64 {
+    if total_size > 0 {
+        (received_total as f64 / total_size as f64) * 100.0
+    } else {
+        -1.0
+    }
+}
+
 /// 单次下载尝试：发起 GET 请求并把响应体流式读入 `buffer`。
 ///
 /// 已有部分数据时自动带 `Range: bytes=<已有>-` 续传；服务端返回 200（不支持
@@ -204,7 +214,9 @@ async fn download_attempt<'a, R: Runtime>(
         buffer.extend_from_slice(&chunk);
         downloaded += chunk.len() as u64;
         let received_total = resume_from + downloaded;
-        let progress_pct = (received_total as f64 / total_size as f64) * 100.0;
+        // 未知总长（服务器未给 Content-Length/分块传输）时进度取 -1，
+        // 避免 `received / 0 = +inf` 或 NaN 进度传给前端
+        let progress_pct = download_progress_percent(received_total, total_size);
         tracker.update(
             progress_pct,
             format!(
@@ -531,9 +543,9 @@ pub async fn ensure_extract<'a, R: Runtime>(
 }
 
 /// GitHub API 地址（未认证限流 60 次/小时/IP，仅供每次启动检查一次）
-const DSH_PKG_GITHUB_API: &str = "https://api.github.com/repos/hairyf/deepseek-harness-pkg";
+const DSH_PKG_GITHUB_API: &str = "https://api.github.com/repos/dsh-tauri-desk/deepseek-harness-pkg";
 /// pkg 仓库 HTML 来源；`releases.atom` 走 github.com 而非 api.github.com，不受未认证限流约束。
-const DSH_PKG_REPO: &str = "https://github.com/hairyf/deepseek-harness-pkg";
+const DSH_PKG_REPO: &str = "https://github.com/dsh-tauri-desk/deepseek-harness-pkg";
 
 /// 最新 Harness 发行版信息（版本 tag + 对应 commit hash）
 #[derive(Debug, Clone, serde::Serialize)]
@@ -643,7 +655,12 @@ async fn fetch_latest_dsh_tag_from_atom() -> Result<String, String> {
 /// 纯函数，便于对真实页面片段做离线单元测试；解析失败返回 `None`。
 fn parse_digest_from_expanded_assets(body: &str, expected_name: &str) -> Option<String> {
     let pos = body.find(expected_name)?;
-    let window = &body[pos..(pos + 4096).min(body.len())];
+    // 4096 字节窗口的终点回退到 UTF-8 字符边界，避免切片落在多字节字符中间 panic
+    let mut end = (pos + 4096).min(body.len());
+    while end > pos && !body.is_char_boundary(end) {
+        end -= 1;
+    }
+    let window = &body[pos..end];
     const START: &str = "sha256:";
     let hash_start = window.find(START)?;
     let hash = &window[hash_start + START.len()..];
@@ -996,6 +1013,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn progress_percent_never_emits_nan_or_inf() {
+        // 总长已知：常规百分比
+        assert_eq!(download_progress_percent(50, 100), 50.0);
+        assert_eq!(download_progress_percent(0, 100), 0.0);
+        // 总长未知（0）：返回 -1 而非 inf/NaN（除零保护）
+        assert_eq!(download_progress_percent(50, 0), -1.0);
+        // 尚未开始且总长未知也不产生 NaN
+        assert_eq!(download_progress_percent(0, 0), -1.0);
+        // 数值绝对不出现非有限值
+        for pct in [download_progress_percent(50, 0), download_progress_percent(0, 0)] {
+            assert!(pct.is_finite(), "progress must be finite, got {pct}");
+        }
+    }
+
+    #[test]
     fn sha256_verification_accepts_only_matching_digest() {
         let expected = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
         assert!(verify_sha256(b"abc", expected).is_ok());
@@ -1014,7 +1046,7 @@ mod tests {
         assert!(validate_download_url("https://cdn.npmmirror.com/binaries/node/v22/file.zip").is_ok());
         assert!(validate_download_url("https://registry.npmmirror.com/pnpm/-/pnpm.tgz").is_ok());
         assert!(validate_download_url(
-            "https://ghfast.top/https://github.com/hairyf/deepseek-harness-pkg/releases/latest/download/deepseek-harness-pkg-windows.zip"
+            "https://ghfast.top/https://github.com/dsh-tauri-desk/deepseek-harness-pkg/releases/latest/download/deepseek-harness-pkg-windows.zip"
         )
         .is_ok());
     }
@@ -1096,6 +1128,26 @@ mod tests {
             parse_digest_from_expanded_assets("<p>no digest here</p>", "deepseek-harness-pkg-windows.zip"),
             None
         );
+    }
+
+    #[test]
+    fn parsed_digest_window_clamps_to_char_boundary() {
+        // 构造一个 body 使 `(pos + 4096)` 恰好落在多字节字符的中间字节：
+        // 旧实现 `&body[pos..pos + 4096]` 会在非字符边界切片而 panic，修复后回退到边界再解析。
+        let name = "deepseek-harness-pkg-windows.zip";
+        let digest = "4d5416766eb4a66e81b83532abeea64de7e7e2e0bac69a4f0c0508e1d91936c0";
+        let prefix = format!("{name}<span>sha256:{digest}</span>");
+        let mut body = prefix.clone();
+        // 补齐到字节 4094 处，放一个 3 字节汉字（占用 4094..4097），使索引 4096 落在其中间字节
+        let needed = 4094usize.saturating_sub(body.len());
+        body.push_str(&"a".repeat(needed));
+        body.push('中');
+        body.push_str(&"a".repeat(16));
+        // 确保总长 > 4096，维持 (pos + 4096) 处于非边界字节（否则不会触发回退分支）
+        assert!(body.len() > 4096);
+        let got = parse_digest_from_expanded_assets(&body, name);
+        let expected = format!("sha256:{digest}");
+        assert_eq!(got.as_deref(), Some(expected.as_str()));
     }
 
     #[test]

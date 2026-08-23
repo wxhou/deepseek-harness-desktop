@@ -7,6 +7,19 @@ mod service;
 mod task;
 
 pub fn run() {
+    // Wayland EGL workaround: AppImage bundles WebKitGTK may fail with
+    // "Could not create default EGL display: EGL_BAD_PARAMETER" on Wayland
+    // compositors (PikaOS/GNOME Wayland, Ubuntu 22.04+). Host WebKit (deb)
+    // works, but AppImage needs compositing disabled. Auto-set when on Wayland
+    // if user hasn't already set it — fixes hairyf#??? (PikaOS report).
+    if std::env::var("XDG_SESSION_TYPE").unwrap_or_default() == "wayland" {
+        if std::env::var("WEBKIT_DISABLE_COMPOSITING_MODE").is_err()
+            && std::env::var("WEBKIT_DISABLE_DMABUF_RENDERER").is_err()
+        {
+            std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
+            eprintln!("[wayland] set WEBKIT_DISABLE_COMPOSITING_MODE=1 for WebKitGTK EGL");
+        }
+    }
     // 初始化日志系统
     logger::init();
 
@@ -21,6 +34,11 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             tauri::RunEvent::Reopen { .. } => {
                 crate::utils::show_main_window(&app_handle);
+            }
+            // 正常退出请求发生在窗口销毁之前；此时主动保存一次主窗口几何，
+            // 避免 Windows 最后一个移动/缩放事件尚未写入就退出而丢失尺寸。
+            tauri::RunEvent::ExitRequested { .. } => {
+                config::save_main_window_geometry(app_handle);
             }
             // 退出时回收 Harness 进程：不回收的话，node 进程会在应用退出后
             // 残留并把原生模块 DLL（如 sharp 的 libvips-42.dll）锁在内存，

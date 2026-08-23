@@ -63,7 +63,9 @@ Download the installer for your platform from [Releases](https://github.com/hair
 
 The first run downloads the Node runtime and Harness core (~a few hundred MB) and takes you straight into the harness at `http://127.0.0.1:3080`. Everything after that runs locally — no network required.
 
-**Requirements:** Windows 10+ (64-bit) · macOS 10.15+ · Linux (AppImage) · network on first launch
+**Requirements:** Windows 10+ (64-bit) · macOS 10.15+ · Linux (AppImage / `.deb`, Ubuntu 22.04+) · network on first launch
+
+> **Linux Wayland note (PikaOS / GNOME Wayland):** AppImage bundles WebKitGTK 4.1 and may fail with `Could not create default EGL display: EGL_BAD_PARAMETER` on Wayland. Fixed in `v0.7.6` (`XDG_SESSION_TYPE=wayland` → `WEBKIT_DISABLE_COMPOSITING_MODE=1`). If still black/ crash: use `.deb` (host `libwebkit2gtk-4.1`, verified on PikaOS 4 Wayland) or run `WEBKIT_DISABLE_COMPOSITING_MODE=1 WEBKIT_DISABLE_DMABUF_RENDERER=1 GDK_BACKEND=x11 ./AppImage`.
 
 ## Dev
 
@@ -99,15 +101,12 @@ Want to get involved in the development? See [docs/DEVELOPMENT.md](./docs/DEVELO
         http://127.0.0.1:3080/  ← embedded UI
 ```
 
-The prebuilt Harness bundle is published by [deepseek-harness-pkg](https://github.com/hairyf/deepseek-harness-pkg). Every launch diffs the installed bundle against the latest release and re-downloads when outdated — keeping the local install when GitHub is unreachable. A local core installed globally via your package manager (CLI) is preferred when present.
+The prebuilt Harness bundle is published by [deepseek-harness-pkg](https://github.com/dsh-tauri-desk/deepseek-harness-pkg). Every launch diffs the installed bundle against the latest release and re-downloads when outdated — keeping the local install when GitHub is unreachable. A local core installed globally via your package manager (CLI) is preferred when present.
 
 ## Notes
 
 > [!WARNING]
 > **Developer preview** — upstream `dsh` is evolving fast with breaking changes; this project tracks it closely.
-
-> [!IMPORTANT]
-> **macOS Gatekeeper** — the app is not notarized; allow it once via System Settings → Privacy & Security → Open Anyway.
 
 > [!NOTE]
 > **Security** — `dsh` can execute code locally. For learning / research / testing only; run it in a trusted, isolated environment.
@@ -115,7 +114,7 @@ The prebuilt Harness bundle is published by [deepseek-harness-pkg](https://githu
 ## Related
 
 - [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) — the upstream `dsh` agent platform
-- [deepseek-harness-pkg](https://github.com/hairyf/deepseek-harness-pkg) — prebuilt Harness bundles consumed by this app
+- [deepseek-harness-pkg](https://github.com/dsh-tauri-desk/deepseek-harness-pkg) — prebuilt Harness bundles consumed by this app
 - [n8n-desktop](https://github.com/tangtao646/n8n-desktop) — reference implementation
 
 ## License
