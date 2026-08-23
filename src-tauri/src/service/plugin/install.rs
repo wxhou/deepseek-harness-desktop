@@ -19,7 +19,7 @@ use crate::service::profile::active_profile;
 use crate::service::workflow;
 use std::collections::HashMap;
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use serde_yaml::{Mapping, Value};
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 
@@ -121,35 +121,18 @@ pub async fn install(app_handle: &AppHandle, ids: &[String]) -> Result<(), Strin
     // `dsh plugin add` 在 profile 目录里驱动 pnpm。pnpm v11 会拦下 git 托管
     // 插件的 prepare 构建与传递原生依赖（见模块头注），其允许键不可预知，因此
     // 失败时解析输出里印出的 `allowBuilds` 键写回 profile 的 pnpm-workspace.yaml
-    // 后重试，直至成功或再无键可加。
-    let mut retries = 0usize;
-    let mut last_output = String::new();
-    let exit_code = loop {
-        let (code, captured) =
-            run_plugin_process(&node, &args, &cwd, &envs, &window).await?;
-        if code == 0 {
-            break 0;
-        }
-        last_output = captured;
-
-        let new_keys = parse_allowlist_keys(&last_output);
-        if new_keys.is_empty() || retries >= MAX_ALLOW_LIST_RETRIES {
-            log::error!(
-                "dsh plugin install failed with exit code {code}; no more allowBuilds entries to add"
-            );
-            break code;
-        }
-
-        retries += 1;
-        add_allow_build_keys(app_handle, &new_keys)?;
-        log::info!("pnpm allowBuilds updated with {new_keys:?}, retrying ({retries})");
-        let _ = window.emit(
-            PREINSTALL_LOG_EVENT,
-            PreinstallLogPayload {
-                line: "[pnpm] 已放行插件构建（allowBuilds），重试安装…".to_string(),
-            },
-        );
-    };
+    // 后重试，直至成功或再无键可加（升级路径同样依赖该重试，见
+    // [`run_plugin_with_allow_build_retry`]）。
+    let (exit_code, last_output) = run_plugin_with_allow_build_retry(
+        app_handle,
+        &node,
+        &args,
+        &cwd,
+        &envs,
+        &window,
+        "install",
+    )
+    .await?;
 
     if exit_code != 0 {
         log::error!("dsh plugin install failed with exit code {exit_code}");
@@ -243,6 +226,59 @@ fn build_plugin_envs(app_handle: &AppHandle, prefer_bundled_pnpm: bool) -> HashM
     envs
 }
 
+/// 运行 `dsh plugin` 子命令并应用 `allowBuilds` 重试：
+/// pnpm 会拦截 git 托管插件的 `prepare` 构建（`ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`）
+/// 与传递依赖的原生构建（`ERR_PNPM_IGNORED_BUILDS`）。其允许键（git depPath 含克隆
+/// 提交 SHA）会随新版本变化，升级时旧条目无法匹配新依赖，必须从失败输出重新解析
+/// 该键写回 profile 的 `pnpm-workspace.yaml` 后重试。
+///
+/// 安装与升级共用此逻辑——此前仅升级路径缺失该重试（issue #82）：git 托管插件
+/// （如 dsh-better-sidebar）一升级就必然以退出码 1 失败，且包停在「prepare 未构建 →
+/// `lib/index.js` 缺失」的坏态，下一次启动便因 `${DSH_HOME}/profiles/<档案>/node_modules/<pkg>/lib/index.js`
+/// 无法解析而 `ERR_MODULE_NOT_FOUND` 失败。
+///
+/// 返回 `(退出码, 最后一次捕获的输出)`。输出仍逐行经 `preinstall-log` 实时推送。
+async fn run_plugin_with_allow_build_retry(
+    app_handle: &AppHandle,
+    node: &Path,
+    args: &[OsString],
+    cwd: &Path,
+    envs: &HashMap<String, String>,
+    window: &WebviewWindow,
+    action: &str,
+) -> Result<(i32, String), String> {
+    let mut retries = 0usize;
+    let mut last_output = String::new();
+    let exit_code = loop {
+        let (code, captured) = run_plugin_process(node, args, cwd, envs, window).await?;
+        if code == 0 {
+            break 0;
+        }
+        last_output = captured;
+
+        let new_keys = parse_allowlist_keys(&last_output);
+        if new_keys.is_empty() || retries >= MAX_ALLOW_LIST_RETRIES {
+            log::error!(
+                "dsh plugin {action} failed with exit code {code}; no more allowBuilds entries to add"
+            );
+            break code;
+        }
+
+        retries += 1;
+        add_allow_build_keys(app_handle, &new_keys)?;
+        log::info!(
+            "pnpm allowBuilds updated with {new_keys:?}, retrying {action} ({retries})"
+        );
+        let _ = window.emit(
+            PREINSTALL_LOG_EVENT,
+            PreinstallLogPayload {
+                line: format!("[pnpm] 已放行插件构建（allowBuilds），重试{action}…"),
+            },
+        );
+    };
+    Ok((exit_code, last_output))
+}
+
 /// 升级单个插件：`dsh plugin --profile <当前档案> update <id>`
 pub async fn update(app_handle: &AppHandle, id: &str) -> Result<(), String> {
     run_single_plugin_command(app_handle, id, "update", &["update".to_string(), id.to_string()])
@@ -329,8 +365,16 @@ async fn run_single_plugin_command(
 
     let cwd = config::get_dsh_install_path(app_handle);
     log::info!("Running dsh plugin {action} for {id}");
-    let (exit_code, output) =
-        run_plugin_process(&node, &args, &cwd, &envs, &window).await?;
+    let (exit_code, output) = run_plugin_with_allow_build_retry(
+        app_handle,
+        &node,
+        &args,
+        &cwd,
+        &envs,
+        &window,
+        action,
+    )
+    .await?;
 
     if exit_code != 0 {
         log::error!("dsh plugin {action} failed for {id} with exit code {exit_code}");
