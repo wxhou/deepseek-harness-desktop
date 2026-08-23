@@ -13,6 +13,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_opener::OpenerExt;
 
 use crate::config;
+use crate::service::workflow;
 
 use super::meta::{fetch_latest_release, LatestRelease};
 use super::version::current_version;
@@ -322,6 +323,19 @@ pub async fn open_installer(app_handle: &AppHandle, path: String) -> Result<(), 
         return Err("UPDATE_PATH_REJECTED: installer path is outside updates directory".to_string());
     }
     log::info!("Opening desktop installer: {}", p.display());
+    // 更新前先停下本应用持有的 Harness 服务：安装器在安装时会强杀桌面端进程
+    // （CheckIfAppIsRunning → taskkill），跳过正常退出路径的 stop_on_exit，导致
+    // Harness 子进程变成孤儿继续占用配置端口。若此刻不提前停掉，更新后新实例
+    // 启动会撞上 EADDRINUSE（旧 Harness 仍占着端口），表现为「更新后进不去」。
+    // 提前停止 → 端口释放并清掉 .harness.pid 标记，更新后启动即可绑定原端口。
+    // 仅在确有持有进程时才停（stop 在无持有进程时也会短暂等待端口释放，白耗
+    // 约 0.8s）；停止失败只告警不阻断——它是避免端口冲突的辅助手段，打开失败
+    // 另有 UPDATE_OPEN 的错误提示。
+    if workflow::has_owned_process() {
+        if let Err(e) = workflow::stop(app_handle.clone()).await {
+            log::warn!("Failed to stop Harness before opening installer: {}", e);
+        }
+    }
     // 兜底补充可执行权限：兼容老版本下载的 AppImage（0644）被打包用户留存，
     // 直接打开仍会失败；此处幂等修复后再交给系统处理器。
     #[cfg(unix)]
