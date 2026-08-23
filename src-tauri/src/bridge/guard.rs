@@ -53,7 +53,6 @@ pub fn is_allowed_path(app_handle: &AppHandle, path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::path::PathBuf;
 
     /// 前缀匹配必须尊重组件边界：`/data/app2/x` 不是 `/data/app` 的子路径

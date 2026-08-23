@@ -134,9 +134,9 @@ mod tests {
         // canonicalize 解析到链接真实目标，若跳出 root 则应被拒绝。
         let outside = dir.join("outside-target");
         fs::create_dir_all(&outside).unwrap();
-        let link = root.join("escape-link");
         #[cfg(unix)]
         {
+            let link = root.join("escape-link");
             std::os::unix::fs::symlink(&outside, &link).unwrap();
             assert!(safe_remove_target(&root, "escape-link").is_err());
         }
