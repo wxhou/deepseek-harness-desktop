@@ -58,6 +58,13 @@ pub fn t(key: &str) -> String {
         "menu.about" => ("关于 Desktop", "About Desktop"),
         "menu.run_logs" => ("运行日志", "Run Logs"),
         "menu.check_update" => ("检查更新", "Check for Updates"),
+        "menu.edit" => ("编辑", "Edit"),
+        "menu.undo" => ("撤销", "Undo"),
+        "menu.redo" => ("重做", "Redo"),
+        "menu.cut" => ("剪切", "Cut"),
+        "menu.copy" => ("复制", "Copy"),
+        "menu.paste" => ("粘贴", "Paste"),
+        "menu.select_all" => ("全选", "Select All"),
         _ => (key, key),
     };
     match lang() {
