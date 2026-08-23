@@ -177,8 +177,9 @@ export function ConfigPlugin() {
                 )}
                 right={(
                   <>
-                    {/* 更新入口仅在插件异常时显示（需求 2：异常插件的修复入口） */}
-                    <If cond={plugin.error != null}>
+                    {/* 升级入口仅在确有更新（updateAvailable）或插件异常（error，修复入口）时显示；
+                        与文档 P1「对 dshmarket 点击升级」一致，且不会常驻——up-to-date 插件不显示升级按钮 */}
+                    <If cond={plugin.updateAvailable || plugin.error != null}>
                       <Chip
                         className={`rounded-md${busy ? ' cursor-not-allowed opacity-50' : ' cursor-pointer'}`}
                         variant="primary"
@@ -189,6 +190,9 @@ export function ConfigPlugin() {
                         <span className="flex items-center gap-1">
                           <If cond={busy?.id === plugin.id && busy.action === 'update'} then={<Spinner size="sm" color="current" />} />
                           {t('plugins.upgrade')}
+                          <If cond={plugin.latestVersion != null && plugin.error == null}>
+                            <span className="font-mono text-[10px] opacity-80">{plugin.latestVersion}</span>
+                          </If>
                         </span>
                       </Chip>
                     </If>

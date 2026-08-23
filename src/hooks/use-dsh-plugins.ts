@@ -31,6 +31,10 @@ export interface DshPlugin {
   recommended: boolean
   /** 预设清单中的「修复」标记 */
   fix: boolean
+  /** 是否有可用更新（由 `service::plugin::updates` 探测；未判定时为 false） */
+  updateAvailable: boolean
+  /** 判定得到的「最新版本」（registry latest / git HEAD SHA）；未判定时缺省 */
+  latestVersion?: string
   /** 异常信息（安装/升级/卸载失败或页面运行期上报）；undefined = 正常 */
   error?: PluginErrorInfo | null
 }
@@ -62,6 +66,20 @@ export function useDshPlugins(): UseDshPluginsResult {
     queryFn: () => invoke<DshPlugin[]>('get_dsh_plugins'),
   })
 
+  // 重新探测更新可用性并写回缓存（Rust 侧 30min 缓存；失败静默按「无更新」处理，
+  // 插件管理器仍可用）。返回的列表会经 `dsh-plugins-updated` 事件写入同一缓存，
+  // 前端据此在仅有更新（或异常修复）时才显示升级按钮，而不是常驻。
+  function refreshUpdates() {
+    void invoke<DshPlugin[]>('refresh_plugin_updates')
+      .then(list => queryClient.setQueryData(['plugins'], list))
+      .catch(err => console.error('[useDshPlugins] refresh_plugin_updates failed:', err))
+  }
+
+  // 首次加载后补齐更新可用性
+  useEffect(() => {
+    refreshUpdates()
+  }, [queryClient])
+
   // 订阅后端实时推送：事件载荷即完整列表，直接写入缓存避免多余的往返拉取
   useEffect(() => {
     let unlisten: UnlistenFn | null = null
@@ -71,6 +89,8 @@ export function useDshPlugins(): UseDshPluginsResult {
       if (disposed)
         return
       queryClient.setQueryData(['plugins'], event.payload)
+      // 文件变化（安装/升级/卸载）会改写版本与 spec → 缓存键变化，需重新探测更新
+      refreshUpdates()
     })
       .then((fn) => {
         if (disposed)

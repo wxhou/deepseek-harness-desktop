@@ -816,8 +816,7 @@ fn normalize_git_spec(spec: &str) -> String {
 /// 从 pnpm 失败输出里识别 git 传输层错误（区别于 allowBuilds 构建门禁），命中时
 /// 返回一句可读的成因/指引。pnpm 在这些场景下已经退到 git+ssh，再去补 allowBuilds
 /// 白名单是无效且误导的。
-fn git_transport_hint(output: &str) -> Option<&'static str> {
-    const SIGNALS: &[(&str, &str)] = &[
+fn git_transport_hint(output: &str) -> Option<&'static str> {    const SIGNALS: &[(&str, &str)] = &[
         (
             "host key verification failed",
             "git fell back to SSH and could not verify GitHub's host key (no known_hosts entry; the process ran non-interactively). Make sure GitHub is reachable over HTTPS.",
@@ -840,6 +839,33 @@ fn git_transport_hint(output: &str) -> Option<&'static str> {
         .iter()
         .find(|(sig, _)| lower.contains(sig))
         .map(|(_, hint)| *hint)
+}
+
+/// 决定 Harness 服务进程启动时是否应注入 `DSH_PREFER_BUNDLED_PNPM=1`
+/// （轻量缓解，issue #69 系列：让 dsh-market 子进程的 pnpm 走与桌面端插件安装
+/// 同一套受控策略，而非落到系统 pnpm 引发 store 不兼容 / 无 TTY / allowBuilds 门禁）。
+///
+/// 与 [`ensure_pnpm`] 的版本感知保持一致，但**启动阶段绝不触发下载**：捆绑版尚未
+/// 安装时返回 false（交由用户 pnpm，shim 默认用户优先）。仅当捆绑版已安装且满足
+/// 下列任一条件才强制捆绑版：
+/// - 档案 store 主版本已知且 == 捆绑版主版本，且用户 pnpm 主版本 != store
+///   （否则用户版会 `ERR_PNPM_UNEXPECTED_STORE`）；
+/// - store 未知（全新档案）且用户 pnpm 缺失或过旧（< `MIN_TRUSTED_PNPM_MAJOR`）。
+pub(crate) fn harness_prefer_bundled_pnpm(app_handle: &AppHandle) -> bool {
+    let store_major = profile_store_major(app_handle);
+    let user_major = user_pnpm_major_version(app_handle);
+    let bundled_major = bundled_pnpm_major(app_handle);
+    // 捆绑版未安装 → 无法强制，交还用户 pnpm（shim 默认用户优先）
+    if !config::get_pnpm_binary_path(app_handle).exists() {
+        return false;
+    }
+    match store_major {
+        Some(store) => bundled_major == Some(store) && user_major != Some(store),
+        None => match user_major {
+            Some(major) if major >= MIN_TRUSTED_PNPM_MAJOR => false,
+            _ => true,
+        },
+    }
 }
 
 #[cfg(test)]
