@@ -35,6 +35,11 @@ pub fn run() {
             tauri::RunEvent::Reopen { .. } => {
                 crate::utils::show_main_window(&app_handle);
             }
+            // 正常退出请求发生在窗口销毁之前；此时主动保存一次主窗口几何，
+            // 避免 Windows 最后一个移动/缩放事件尚未写入就退出而丢失尺寸。
+            tauri::RunEvent::ExitRequested { .. } => {
+                config::save_main_window_geometry(app_handle);
+            }
             // 退出时回收 Harness 进程：不回收的话，node 进程会在应用退出后
             // 残留并把原生模块 DLL（如 sharp 的 libvips-42.dll）锁在内存，
             // 下次启动重新解压时会失败（Windows os error 32）

@@ -10,7 +10,8 @@
 
 use serde::{Deserialize, Serialize};
 use tauri::{
-    AppHandle, Manager, PhysicalPosition, PhysicalSize, Position, Runtime, Size, WebviewWindow, Window,
+    AppHandle, Manager, PhysicalPosition, PhysicalSize, Position, Runtime, Size, WebviewWindow,
+    Window,
 };
 use tauri_plugin_store::StoreExt;
 
@@ -32,9 +33,12 @@ pub struct WindowState {
     /// 非最大化时的物理位置（outer_position，屏幕左上角为原点）
     pub x: Option<i32>,
     pub y: Option<i32>,
-    /// 物理尺寸（outer_size）
+    /// 物理尺寸（inner_size，与 Tauri set_size 的语义一致）
     pub width: u32,
     pub height: u32,
+    /// 尺寸是否为内容区尺寸；旧记录缺少此字段时按外框尺寸迁移
+    #[serde(default)]
+    pub size_is_inner: bool,
 }
 
 impl Default for WindowState {
@@ -45,6 +49,7 @@ impl Default for WindowState {
             y: None,
             width: DEFAULT_WINDOW_WIDTH as u32,
             height: DEFAULT_WINDOW_HEIGHT as u32,
+            size_is_inner: true,
         }
     }
 }
@@ -93,15 +98,46 @@ pub fn save_geometry<R: Runtime>(window: &Window<R>) {
     }
 
     let pos = window.outer_position().ok();
-    let size = window.outer_size().ok();
+    let size = window.inner_size().ok();
     let state = WindowState {
         maximized: window.is_maximized().unwrap_or(false),
         x: pos.map(|p| p.x),
         y: pos.map(|p| p.y),
         width: size.map(|s| s.width).unwrap_or(DEFAULT_WINDOW_WIDTH as u32),
-        height: size.map(|s| s.height).unwrap_or(DEFAULT_WINDOW_HEIGHT as u32),
+        height: size
+            .map(|s| s.height)
+            .unwrap_or(DEFAULT_WINDOW_HEIGHT as u32),
+        size_is_inner: true,
     };
     save_window_state(window.app_handle(), &state);
+}
+
+/// 正常退出前主动采样主窗口，兜底最后一次移动/缩放事件尚未落盘的情况。
+pub fn save_main_window_geometry<R: Runtime>(app_handle: &AppHandle<R>) {
+    if let Some(webview_window) = app_handle.get_webview_window("main") {
+        let window = webview_window.as_ref().window();
+        save_geometry(&window);
+    }
+}
+
+/// 把旧版保存的外框尺寸换算成 set_size 所需的内容区尺寸。
+fn migrate_legacy_outer_size(
+    saved: &WindowState,
+    current_outer: PhysicalSize<u32>,
+    current_inner: PhysicalSize<u32>,
+) -> WindowState {
+    if saved.size_is_inner {
+        return saved.clone();
+    }
+
+    let frame_width = current_outer.width.saturating_sub(current_inner.width);
+    let frame_height = current_outer.height.saturating_sub(current_inner.height);
+    WindowState {
+        width: saved.width.saturating_sub(frame_width),
+        height: saved.height.saturating_sub(frame_height),
+        size_is_inner: true,
+        ..saved.clone()
+    }
 }
 
 /// 把保存的几何解析成「实际可用的矩形」，并夹紧到当前可见屏幕。
@@ -142,12 +178,14 @@ fn resolve_geometry<R: Runtime>(
     let (x, y) = match (saved.x, saved.y) {
         (Some(sx), Some(sy)) => {
             // 窗口矩形是否与可见屏幕并集有交集
-            let intersects = sx < max_x && sx + w as i32 > min_x
-                && sy < max_y && sy + h as i32 > min_y;
+            let intersects =
+                sx < max_x && sx + w as i32 > min_x && sy < max_y && sy + h as i32 > min_y;
             if intersects {
                 // 夹紧坐标到并集内，保证窗口至少部分可见
-                let nx = (sx as i64).clamp(min_x as i64, (max_x as i64 - w as i64).max(min_x as i64));
-                let ny = (sy as i64).clamp(min_y as i64, (max_y as i64 - h as i64).max(min_y as i64));
+                let nx =
+                    (sx as i64).clamp(min_x as i64, (max_x as i64 - w as i64).max(min_x as i64));
+                let ny =
+                    (sy as i64).clamp(min_y as i64, (max_y as i64 - h as i64).max(min_y as i64));
                 (nx as i32, ny as i32)
             } else {
                 // 保存的位置不可见：回落到主屏居中
@@ -173,7 +211,12 @@ fn resolve_geometry<R: Runtime>(
 /// 无历史状态时不改动窗口，由 builder 的默认 `inner_size(1280, 840)`
 /// （逻辑像素，居中）生效。
 pub fn restore_main_window<R: Runtime>(app: &AppHandle<R>, window: &WebviewWindow<R>) {
-    let saved = get_window_state(app);
+    let mut saved = get_window_state(app);
+    if !saved.size_is_inner {
+        if let (Ok(outer), Ok(inner)) = (window.outer_size(), window.inner_size()) {
+            saved = migrate_legacy_outer_size(&saved, outer, inner);
+        }
+    }
     let Some((size, pos)) = resolve_geometry(app, &saved) else {
         return;
     };
@@ -196,6 +239,7 @@ mod tests {
         assert!(state.y.is_none());
         assert_eq!(state.width, DEFAULT_WINDOW_WIDTH as u32);
         assert_eq!(state.height, DEFAULT_WINDOW_HEIGHT as u32);
+        assert!(state.size_is_inner);
     }
 
     #[test]
@@ -206,6 +250,7 @@ mod tests {
             y: Some(-200),
             width: 1920,
             height: 1080,
+            size_is_inner: true,
         };
         let json = serde_json::to_string(&state).expect("serialize");
         let parsed: WindowState = serde_json::from_str(&json).expect("deserialize");
@@ -220,6 +265,49 @@ mod tests {
     fn window_state_ignores_missing_fields() {
         // 老版本/缺失字段时也应能反序列化并回落到默认值
         let parsed: WindowState = serde_json::from_str("{}").expect("deserialize");
-        assert_eq!(parsed, WindowState::default());
+        assert!(!parsed.maximized);
+        assert!(parsed.x.is_none());
+        assert!(parsed.y.is_none());
+        assert_eq!(parsed.width, DEFAULT_WINDOW_WIDTH as u32);
+        assert_eq!(parsed.height, DEFAULT_WINDOW_HEIGHT as u32);
+        assert!(!parsed.size_is_inner);
+    }
+
+    #[test]
+    fn legacy_outer_size_is_converted_for_set_size() {
+        let saved = WindowState {
+            width: 1137,
+            height: 792,
+            size_is_inner: false,
+            ..WindowState::default()
+        };
+
+        let migrated = migrate_legacy_outer_size(
+            &saved,
+            PhysicalSize::new(1293, 848),
+            PhysicalSize::new(1267, 833),
+        );
+
+        assert_eq!(migrated.width, 1111);
+        assert_eq!(migrated.height, 777);
+        assert!(migrated.size_is_inner);
+    }
+
+    #[test]
+    fn inner_size_is_not_converted_twice() {
+        let saved = WindowState {
+            width: 1111,
+            height: 777,
+            size_is_inner: true,
+            ..WindowState::default()
+        };
+
+        let migrated = migrate_legacy_outer_size(
+            &saved,
+            PhysicalSize::new(1293, 848),
+            PhysicalSize::new(1267, 833),
+        );
+
+        assert_eq!(migrated, saved);
     }
 }
