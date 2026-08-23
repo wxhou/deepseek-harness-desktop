@@ -97,6 +97,14 @@ pub fn save_geometry<R: Runtime>(window: &Window<R>) {
         return;
     }
 
+    // 窗口尚未显示（Windows 上 builder 先隐藏创建、恢复几何后再 show）时，
+    // build()/restore 阶段触发的 Moved/Resized 事件拿到的可能是瞬态尺寸
+    // （常被夹到最小尺寸），一旦落盘就会让窗口永久卡在最小尺寸。
+    // 因此未显示前不采样；真正几何在 show 之后的下一次移动/缩放或退出时保存。
+    if !window.is_visible().unwrap_or(false) {
+        return;
+    }
+
     let pos = window.outer_position().ok();
     let size = window.inner_size().ok();
     let state = WindowState {
@@ -140,6 +148,15 @@ fn migrate_legacy_outer_size(
     }
 }
 
+/// 保存的尺寸是否退化到最小尺寸（含以下）。
+///
+/// 启动过渡、瞬态采样或损坏数据被 `resolve_geometry` 夹到最小尺寸后，往往会在
+/// 下一次移动/缩放时被当作「用户真实尺寸」写回 store，导致窗口永久卡在最小尺寸。
+/// 这类记录不该被当作可恢复几何，否则无法自愈；此时应回落到 builder 默认尺寸。
+fn is_degenerate_size(saved: &WindowState) -> bool {
+    (saved.width as f64) <= MIN_WINDOW_WIDTH && (saved.height as f64) <= MIN_WINDOW_HEIGHT
+}
+
 /// 把保存的几何解析成「实际可用的矩形」，并夹紧到当前可见屏幕。
 ///
 /// 返回 `(物理尺寸, 物理坐标)`：
@@ -151,6 +168,11 @@ fn resolve_geometry<R: Runtime>(
     app: &AppHandle<R>,
     saved: &WindowState,
 ) -> Option<(PhysicalSize<u32>, PhysicalPosition<i32>)> {
+    // 保存的尺寸退化到最小尺寸：大概率是启动过渡/瞬态采样或损坏数据被夹到最小，
+    // 不应当作可恢复几何，否则窗口会永久卡在最小尺寸。回落 builder 默认并重新采样。
+    if is_degenerate_size(saved) {
+        return None;
+    }
     // 取当前所有监视器，计算可见屏幕的并集矩形
     let monitors = app.available_monitors().ok()?;
     if monitors.is_empty() {
@@ -309,5 +331,39 @@ mod tests {
         );
 
         assert_eq!(migrated, saved);
+    }
+
+    #[test]
+    fn degenerate_size_is_detected() {
+        // 恰好是最小尺寸或更小 → 视为退化，避免窗口永久卡在最小尺寸
+        let at_min = WindowState {
+            width: MIN_WINDOW_WIDTH as u32,
+            height: MIN_WINDOW_HEIGHT as u32,
+            ..WindowState::default()
+        };
+        assert!(is_degenerate_size(&at_min));
+
+        let below_min = WindowState {
+            width: 200,
+            height: 200,
+            ..WindowState::default()
+        };
+        assert!(is_degenerate_size(&below_min));
+
+        // 正常尺寸 → 不作为退化处理
+        let normal = WindowState {
+            width: DEFAULT_WINDOW_WIDTH as u32,
+            height: DEFAULT_WINDOW_HEIGHT as u32,
+            ..WindowState::default()
+        };
+        assert!(!is_degenerate_size(&normal));
+
+        // 仅宽度达标、高度尚未达标 → 两个维度都退化才算退化（单个维度可能是用户的真实窗口）
+        let half_normal = WindowState {
+            width: DEFAULT_WINDOW_WIDTH as u32,
+            height: MIN_WINDOW_HEIGHT as u32,
+            ..WindowState::default()
+        };
+        assert!(!is_degenerate_size(&half_normal));
     }
 }
