@@ -27,10 +27,15 @@ use super::installed::profile_dir;
 /// 前端监听的事件名：需要弹出插件异常修复界面时推送。
 pub(crate) const RECOVERY_REQUIRED_EVENT: &str = "plugin-recovery-required";
 
-/// 核心 bundle / 官方包：无论如何不可被「修复卸载」删除。
+/// 真正不可被「修复卸载」删除的核心 bundle / 官方包。
+///
+/// `dshmarket`（插件市场）虽然列在预设清单里，但它本身是第三方插件（npm 包
+/// `dshmarket`，来源 `dsh-market/dsh-market`），不是核心/官方包，必须允许用户
+/// 卸载。若把它列入保护名单，用户从插件面板点「卸载」时，`dsh plugin remove`
+/// 因 dshmarket 属于 in-box bundle（`pnpm remove` 不动它）会返回成功但插件仍在，
+/// 桌面端又因 protection 跳过离线卸载兜底，最终「提示成功但插件仍在」。
 fn is_core_package(name: &str) -> bool {
-    name == "dshmarket"
-        || name == "@deepseek-ai/dsh-base"
+    name == "@deepseek-ai/dsh-base"
         || name == "@deepseek-ai/dsh-web-app"
         || name.starts_with("@deepseek-ai/")
 }
@@ -610,7 +615,8 @@ mod tests {
         assert!(!is_package_name("with:colon"));
         assert!(!is_package_name("@bare"));
         assert!(!is_actionable_plugin_ref("@deepseek-ai/dsh-base"));
-        assert!(!is_actionable_plugin_ref("dshmarket"));
+        // dshmarket 是第三方市场插件，可卸载（不应被当作核心保护包）
+        assert!(is_actionable_plugin_ref("dshmarket"));
         assert!(is_actionable_plugin_ref("dsh-better-sidebar"));
     }
 
