@@ -93,6 +93,26 @@ impl Drop for LaunchGuard {
     }
 }
 
+/// 端口释放等待上限：刚结束/清扫过上个会话的残留 dsh 进程后，TCP 端口释放
+/// 存在短暂滞后（taskkill 返回 ≠ 端口已可复用）。等待窗口内端口回落为空闲则
+/// 复用配置端口；到期仍未释放才按“真占用”逐级递增。
+const PORT_RELEASE_WAIT: std::time::Duration = std::time::Duration::from_millis(1500);
+
+/// 轮询等待配置端口释放为空闲（端口本来就空闲则立即返回）。
+///
+/// async（tokio）实现，避免长时间阻塞启动线程。与 `stop()` 里“给系统一点时间
+/// 释放端口”的目的一致，但以“端口确实空闲”为准而不是固定睡 800ms——因此
+/// 端口很快释放时几乎不额外耗时，只有真占用才等到超时。
+async fn wait_for_port_release(port: u16) {
+    let deadline = tokio::time::Instant::now() + PORT_RELEASE_WAIT;
+    while tokio::time::Instant::now() < deadline {
+        if !is_port_in_use(port) {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+    }
+}
+
 /// 从起始端口向上查找第一个空闲端口，绝不结束未知的端口占用进程。
 fn find_available_port(start: u16) -> Result<u16, String> {
     let mut port = start;
@@ -551,6 +571,12 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     let _launch_guard = LaunchGuard;
 
     // 端口冲突时从当前值开始逐个递增，并持久化最终选择供所有调用方复用。
+    // 注意：上个会话的残留 dsh 进程刚被我们结束/清扫（sweep_orphan、stop、
+    // stop_on_exit），TCP 端口释放存在短暂滞后——此刻立刻探测会把“刚释放的
+    // 端口”误判为仍占用，从而把配置端口永久顶高（dev 热更新下 3081→3082→…
+    // 一路漂移，表现为“端口持续累加 + 首次启动超时、刷新后恢复”）。先留出
+    // 窗口等配置端口回落为空闲，再决定是否真的逐级递增。
+    wait_for_port_release(setting.port).await;
     let available_port = find_available_port(setting.port)?;
     if available_port != setting.port {
         log::info!(
@@ -1018,6 +1044,32 @@ mod tests {
         let selected = find_available_port(occupied).expect("find next free port");
         assert!(selected > occupied);
         assert!(!is_port_in_use(selected));
+    }
+
+    /// 模拟“上个会话残留进程刚被杀、端口仍在释放”的场景：先占用端口，随后在
+    /// 另一线程释放。验证 `wait_for_port_release` 在端口回落后立即返回，而不是
+    /// 等到完整等待窗口——这正是避免端口永久顶高（dev 热更新下 3081→3082→…）
+    /// 的关键行为。
+    #[tokio::test]
+    async fn wait_for_port_release_returns_shortly_after_port_is_released() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind held test port");
+        let held = listener.local_addr().expect("read held port").port();
+
+        // 端口此刻确实被占用（模拟残留进程仍在监听）
+        assert!(is_port_in_use(held));
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            drop(listener);
+        });
+
+        let started = std::time::Instant::now();
+        wait_for_port_release(held).await;
+        // 端口 150ms 后释放 + 80ms 轮询间隔，应远小于 1.5s 等待上限
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(800),
+            "wait_for_port_release should return shortly after the port is released, not wait the full window"
+        );
+        assert!(!is_port_in_use(held));
     }
 
     #[test]
