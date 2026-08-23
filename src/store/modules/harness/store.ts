@@ -82,7 +82,7 @@ async function checkHealthViaProxy(): Promise<HealthCheckResult> {
       || result.includes('201')
       || lower.includes('ok')
     ) {
-      console.warn('[Harness] health check passed:', result)
+      console.warn('[Harness] health check passed:', result.split(' - <!doctype html>')[0])
       return { healthy: true, notOwned: false }
     }
     console.warn('[Harness] health check returned:', result)
