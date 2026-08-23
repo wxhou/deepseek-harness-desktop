@@ -8,7 +8,7 @@ directory (the Tauri app-data dir for identifier
 
 - `runtime/` — the bundled Node.js runtime (downloaded on first run)
 - `dependencies/dsh/` — the packaged DeepSeek Harness distribution (downloaded from the
-  `hairyf/deepseek-harness-pkg` release feed)
+  `dsh-tauri-desk/deepseek-harness-pkg` release feed)
 - `data/dsh/` — **legacy** `$DSH_HOME` location (pre-migration builds only; see below)
 - `logs/` — application and `dsh` service logs
 - `.store.dat` — desktop settings (port, auto-start, language, etc.)

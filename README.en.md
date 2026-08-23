@@ -101,7 +101,7 @@ Want to get involved in the development? See [docs/DEVELOPMENT.md](./docs/DEVELO
         http://127.0.0.1:3080/  ← embedded UI
 ```
 
-The prebuilt Harness bundle is published by [deepseek-harness-pkg](https://github.com/hairyf/deepseek-harness-pkg). Every launch diffs the installed bundle against the latest release and re-downloads when outdated — keeping the local install when GitHub is unreachable. A local core installed globally via your package manager (CLI) is preferred when present.
+The prebuilt Harness bundle is published by [deepseek-harness-pkg](https://github.com/dsh-tauri-desk/deepseek-harness-pkg). Every launch diffs the installed bundle against the latest release and re-downloads when outdated — keeping the local install when GitHub is unreachable. A local core installed globally via your package manager (CLI) is preferred when present.
 
 ## Notes
 
@@ -114,7 +114,7 @@ The prebuilt Harness bundle is published by [deepseek-harness-pkg](https://githu
 ## Related
 
 - [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) — the upstream `dsh` agent platform
-- [deepseek-harness-pkg](https://github.com/hairyf/deepseek-harness-pkg) — prebuilt Harness bundles consumed by this app
+- [deepseek-harness-pkg](https://github.com/dsh-tauri-desk/deepseek-harness-pkg) — prebuilt Harness bundles consumed by this app
 - [n8n-desktop](https://github.com/tangtao646/n8n-desktop) — reference implementation
 
 ## License
