@@ -16,7 +16,7 @@ import { listen } from '@tauri-apps/api/event'
 import i18next from 'i18next'
 import { defineStore } from 'valtio-define'
 import { queryClient } from '@/config/client'
-import { pickErrorLines } from '@/utils/log-utils'
+import { pickErrorLines } from '@/utils/log'
 import { harnessUpdater } from '../harness-updater'
 
 const MAX_RETRIES = 8

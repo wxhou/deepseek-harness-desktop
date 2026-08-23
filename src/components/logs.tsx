@@ -2,7 +2,7 @@ import type { ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import { If } from 'react-if-lite'
 import { cn } from 'tailwind-variants'
-import { formatLogLine } from '@/utils/log-utils'
+import { formatLogLine } from '@/utils/log'
 
 /**
  * 日志面板：带边框的「› + 行」日志容器 + 空日志占位。

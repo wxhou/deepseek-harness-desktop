@@ -5,7 +5,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import { useEffect } from 'react'
 import { useEvent, useInterval, useMountedState } from 'react-use'
 import { queryClient } from '@/config/client'
-import { getIframeOrigin } from '@/utils/iframe-origin'
+import { getIframeOrigin } from '@/utils/iframe'
 
 interface NativeNotificationMessage {
   source?: 'dsh-notification-bridge'

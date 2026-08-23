@@ -7,7 +7,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import i18next from 'i18next'
 import { defineStore } from 'valtio-define'
-import { toast } from '@/utils'
+import { toast } from '@/utils/toast'
 
 const DISMISS_KEY = 'desktop-update-dismissed-tag'
 

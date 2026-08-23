@@ -3,7 +3,7 @@ import type { DshUpdateInfo } from './types'
 import { invoke } from '@tauri-apps/api/core'
 import i18next, { t } from 'i18next'
 import { defineStore } from 'valtio-define'
-import { toast } from '@/utils'
+import { toast } from '@/utils/toast'
 import { harness } from '../harness'
 
 /**

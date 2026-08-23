@@ -5,7 +5,7 @@ import { useTranslation } from 'react-i18next'
 import { useStore } from 'valtio-define'
 import { DesktopUpdateDialog } from '@/components/desktop-update-dialog'
 import { store } from '@/store'
-import { toast } from '@/utils'
+import { toast } from '@/utils/toast'
 
 /** 桌面端自更新轮询间隔：Rust 侧不再缓存，改为低频轮询以免触发 GitHub 未认证限流（60 次/小时/IP） */
 const POLL_INTERVAL = 10 * 60_000

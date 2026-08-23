@@ -23,7 +23,7 @@ import { DesktopUpdateDialog } from '@/components/desktop-update-dialog'
 import { useDshPlugins } from '@/hooks/use-dsh-plugins'
 import { useIframeTauri } from '@/hooks/use-iframe-tauri'
 import { store } from '@/store'
-import { toast } from '@/utils'
+import { toast } from '@/utils/toast'
 import { useMacOSAppMenu } from './use-macos-app-menu'
 
 /**

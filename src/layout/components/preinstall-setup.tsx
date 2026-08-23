@@ -10,7 +10,7 @@ import { Empty } from '@/components/empty'
 import { Item } from '@/components/item'
 import { Logs } from '@/components/logs'
 import { store } from '@/store'
-import { toast } from '@/utils'
+import { toast } from '@/utils/toast'
 
 /**
  * 预装插件引导页：首次安装（或老版本升级）后展示推荐插件列表，

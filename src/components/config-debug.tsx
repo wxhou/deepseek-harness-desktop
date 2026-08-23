@@ -7,7 +7,7 @@ import { useTranslation } from 'react-i18next'
 import { If } from 'react-if-lite'
 import { useStore } from 'valtio-define'
 import { store } from '@/store'
-import { toast } from '@/utils'
+import { toast } from '@/utils/toast'
 import { Info } from './info'
 
 export interface RuntimeInfo {
