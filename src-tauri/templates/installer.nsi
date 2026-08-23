@@ -3,9 +3,10 @@
 ;
 ; Keep it in sync with upstream tauri-bundler upgrades, but preserve the
 ; Deepseek Harness Desktop customizations (marked with "Deepseek Harness Desktop:").
-; The single customization so far is in PageReinstall: a version UPGRADE defaults to
-; "don't uninstall" (direct in-place update) instead of upstream's "uninstall before
-; installing". This mirrors Clash Nyanpasu's installer behavior.
+; The single customization so far is in PageReinstall: a cross-version UPGRADE is
+; applied in place — the redundant "uninstall / don't uninstall" prompt is skipped
+; entirely (no uninstall, keep user data). The standalone "add/remove programs"
+; uninstall path is untouched.
 
 Unicode true
 ManifestDPIAware true
@@ -267,13 +268,23 @@ Function PageReinstall
     Abort
   ${EndIf}
 
-  ; Skip showing the page if passive
+  ; Skip showing the page if passive, or if we are UPGRADING.
+  ;
+  ; Deepseek Harness Desktop: a cross-version UPGRADE ($R0 = 1) is the in-app
+  ; update path, so the redundant "uninstall / don't uninstall" choice is skipped
+  ; entirely and the new version updates in place (keeps user data). Mark
+  ; $UpdateMode so the rest of the flow (PageLeaveReinstall, WebView2, shortcuts)
+  ; treats this as an update — no uninstall prompt, no webview2 reinstall, no
+  ; shortcut churn. The standalone "add/remove programs" uninstall is untouched.
   ;
   ; Note that we don't call this earlier at the begining
   ; of this function because we need to populate some variables
   ; related to current installed version if detected and whether
   ; we are downgrading or not.
-  ${If} $PassiveMode = 1
+  ${If} $R0 = 1
+    StrCpy $UpdateMode 1
+    Call PageLeaveReinstall
+  ${ElseIf} $PassiveMode = 1
     Call PageLeaveReinstall
   ${Else}
     nsDialogs::Create 1018
@@ -295,16 +306,12 @@ Function PageReinstall
     !endif
     ${NSD_OnClick} $R3 PageReinstallUpdateSelection
 
-    ; Deepseek Harness Desktop: on first entry, default to the second radio
-    ; "don't uninstall" (direct in-place update) for a cross-version UPGRADE
-    ; ($R0 = 1), instead of upstream's default of "uninstall before installing".
-    ; Same-version and downgrade keep the upstream default. The decision is still
-    ; read live from $R2 in PageLeaveReinstall, so leaving $ReinstallPageCheck
-    ; at 0 here is fine.
-    ${If} $ReinstallPageCheck = 0
-    ${AndIf} $R0 = 1
-      SendMessage $R3 ${BM_SETCHECK} ${BST_CHECKED} 0
-    ${ElseIf} $ReinstallPageCheck <> 2
+    ; Deepseek Harness Desktop: default to the first radio (add/reinstall on a
+    ; same-version run, or "uninstall before installing" on a downgrade) unless
+    ; the user already picked the second one. The cross-version UPGRADE case
+    ; ($R0 = 1) never reaches this dialog — it is handled above by skipping
+    ; straight to an in-place update.
+    ${If} $ReinstallPageCheck <> 2
       SendMessage $R2 ${BM_SETCHECK} ${BST_CHECKED} 0
     ${Else}
       SendMessage $R3 ${BM_SETCHECK} ${BST_CHECKED} 0
