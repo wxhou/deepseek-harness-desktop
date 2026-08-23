@@ -387,7 +387,15 @@ pub fn sweep_orphan_harness(app_handle: &tauri::AppHandle) {
 fn port_owner_pid(port: u16) -> Option<u32> {
     #[cfg(windows)]
     {
-        let output = Command::new("netstat").arg("-ano").output().ok()?;
+        // 打包版是 GUI 进程（无控制台）：netstat 是控制台子系统程序，直接运行会
+        // 新建一个可见的黑色 cmd 窗口（启动时的孤儿清扫会走到这里）。必须
+        // CREATE_NO_WINDOW，否则每次启动闪一个黑窗。
+        use std::os::windows::process::CommandExt;
+        let output = Command::new("netstat")
+            .arg("-ano")
+            .creation_flags(0x08000000)
+            .output()
+            .ok()?;
         let text = String::from_utf8_lossy(&output.stdout);
         let needle = format!(":{port} ");
         for line in text.lines() {

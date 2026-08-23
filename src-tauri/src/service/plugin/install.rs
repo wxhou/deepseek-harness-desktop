@@ -549,10 +549,18 @@ async fn ensure_pnpm(app_handle: &AppHandle, window: &WebviewWindow) -> Result<b
 /// （corepack shim 在 Node 24 上 ERR_INVALID_THIS 崩溃等）返回 None。
 fn user_pnpm_major_version(app_handle: &AppHandle) -> Option<u32> {
     let pnpm = cli::find_user_pnpm(app_handle)?;
-    let output = std::process::Command::new(&pnpm)
-        .arg("--version")
-        .output()
-        .ok()?;
+    // 打包版是 GUI 进程（无控制台）：直接运行 pnpm（控制台子系统）会新建一个
+    // 可见的黑色 cmd 窗口。`harness_prefer_bundled_pnpm` 在每次服务启动都会调本
+    // 函数探测用户 pnpm，若不隐藏窗口则每次打开应用都会闪一个黑窗。此处与
+    // `config::runtime::node_version_output` 的 CREATE_NO_WINDOW 处理保持一致。
+    let mut cmd = std::process::Command::new(&pnpm);
+    cmd.arg("--version");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let output = cmd.output().ok()?;
     if !output.status.success() {
         return None;
     }
