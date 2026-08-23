@@ -3,14 +3,14 @@ import { formatLogLine, pickErrorLines } from '../src/utils/log'
 
 describe('formatLogLine', () => {
   it('strips the official GitHub release download prefix', () => {
-    const url = 'https://github.com/hairyf/deepseek-harness-pkg/releases/download/dsh-0.1.1-rc.1-32457794457/deepseek-harness-pkg-windows.zip'
+    const url = 'https://github.com/dsh-tauri-desk/deepseek-harness-pkg/releases/download/dsh-0.1.1-rc.1-32457794457/deepseek-harness-pkg-windows.zip'
     expect(formatLogLine(`Download ${url}`)).toBe(
       'Download dsh-0.1.1-rc.1-32457794457/deepseek-harness-pkg-windows.zip',
     )
   })
 
   it('strips the ghfast.top mirror wrapper prefix', () => {
-    const url = 'https://ghfast.top/https://github.com/hairyf/deepseek-harness-pkg/releases/download/dsh-0.1.x-x/deepseek-harness-pkg-linux.zip'
+    const url = 'https://ghfast.top/https://github.com/dsh-tauri-desk/deepseek-harness-pkg/releases/download/dsh-0.1.x-x/deepseek-harness-pkg-linux.zip'
     expect(formatLogLine(`Download ${url}`)).toContain('deepseek-harness-pkg-linux.zip')
     expect(formatLogLine(`Download ${url}`)).not.toContain('ghfast.top')
   })
