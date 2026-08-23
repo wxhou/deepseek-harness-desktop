@@ -19,6 +19,11 @@
 //! 本脚本会自动让位，不会覆盖原生或已存在的实现。
 
 /// 注入 `AbortSignal.any` 的幂等 polyfill（WebKit 17.3 / WebKitGTK 缺失时启用）。
+///
+/// 仅在非 Windows 平台注入（`[`crate::desktop::builder`] 的
+/// `initialization_script_for_all_frames`）；Windows 使用 WebView2（Chromium），
+/// 原生支持 `AbortSignal.any`，无需此 polyfill，故该常量不参与 Windows 构建。
+#[cfg(not(windows))]
 pub(crate) const ABORT_SIGNAL_ANY_SHIM_JS: &str = r#"(function () {
   if (window.__dsh_abortsignal_any__) return;
   if (typeof AbortSignal === 'undefined' || typeof AbortSignal.any === 'function') return;
