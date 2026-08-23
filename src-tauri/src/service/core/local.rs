@@ -6,6 +6,8 @@
 use crate::service::cli;
 use std::path::{Path, PathBuf};
 use tauri::AppHandle;
+#[cfg(unix)]
+use tauri::Manager;
 
 /// 解析出的本地核心信息
 pub(super) struct LocalCore {
