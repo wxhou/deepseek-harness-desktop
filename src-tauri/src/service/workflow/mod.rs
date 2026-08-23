@@ -1013,10 +1013,31 @@ pub async fn install(
     Ok(dsh_updated)
 }
 
+/// 无持有进程时应返回给前端的探测信号。
+///
+/// `launch` 仍在进行（LAUNCH_GUARD 未释放）时，无持有进程是**临时**状态：`launch`
+/// 已抢到守卫、尚未把持有进程登记进槽位（spawn 未完成，典型为 auto_start 与前端
+/// boot 并发拉起——前端 `launch_harness` 命中“launch already in progress, skipping”
+/// 后立刻来探测，此刻 `wait_for_port_release` 可能仍在等待端口回落）。若把这种
+/// 临时状态当作 `HARNESS_NOT_OWNED`，前端会命中快速失败分支（`notOwned` → 立即
+/// 放弃重试），表现为“首次启动超时、刷新/重试后恢复”。
+///
+/// 因此 `launch` 仍在进行时返回可重试的“启动中”（`HARNESS_NOT_READY`），让前端
+/// 继续轮询；守卫已释放却仍无持有进程，才是真正崩溃/从未拉起（进程随后退出、槽位
+/// 被监视线程清空），返回 `HARNESS_NOT_OWNED` 让前端快速失败，避免把“启动即崩溃”
+/// 误判成“启动慢”而白白耗完 8 轮重试。
+fn not_owned_probe_signal(launch_in_progress: bool) -> &'static str {
+    if launch_in_progress {
+        "HARNESS_NOT_READY: Harness service is still starting"
+    } else {
+        "HARNESS_NOT_OWNED: no Harness process is owned by this app"
+    }
+}
+
 /// 健康检查（通过 Rust 代理，避免 WebView CORS 问题）
 pub async fn proxy_health_check(port: u16) -> Result<String, String> {
     if !has_owned_process() {
-        return Err("HARNESS_NOT_OWNED: no Harness process is owned by this app".to_string());
+        return Err(not_owned_probe_signal(LAUNCH_GUARD.load(Ordering::SeqCst)).to_string());
     }
     let client = utils::loopback_http_client(config::HEALTH_CHECK_TIMEOUT)
         .map_err(|e| format!("HARNESS_HEALTH_CLIENT_FAILED: {e}"))?;
@@ -1064,6 +1085,17 @@ mod tests {
         let selected = find_available_port(occupied).expect("find next free port");
         assert!(selected > occupied);
         assert!(!is_port_in_use(selected));
+    }
+
+    /// 回归：无持有进程在“launch 仍在进行”（守卫未释放）时应返回可重试的
+    /// `HARNESS_NOT_READY`，而不是把临时状态当成崩溃的 `HARNESS_NOT_OWNED` —
+    /// 后者会让前端命中快速失败分支，表现为“首次启动超时、刷新/重试后恢复”。
+    #[test]
+    fn not_owned_is_retryable_during_launch_not_fatal() {
+        // launch 仍在进行（守卫未释放）：无持有进程是启动中的临时状态，前端继续轮询
+        assert!(not_owned_probe_signal(true).starts_with("HARNESS_NOT_READY"));
+        // 启动已结束（守卫释放）却仍无持有进程：进程已退出/从未拉起 → 快速失败
+        assert!(not_owned_probe_signal(false).starts_with("HARNESS_NOT_OWNED"));
     }
 
     /// 模拟“上个会话残留进程刚被杀、端口仍在释放”的场景：先占用端口，随后在
