@@ -285,6 +285,13 @@ export const harness = defineStore({
             i18next.t('errors.service_start_timeout', { port: new URL(this.serviceUrl).port || '3080' }),
           )
         }
+        // 服务已就绪后再取一次真实地址：`launch_harness` 可能因后端已在并发拉起
+        // （auto_start）而提前返回，此刻端口若尚未落库，上面读到的 service_url 会是
+        // 旧端口；健康检查通过意味着服务已在最终端口就绪，此时读取必然准确。
+        // 避免 iframe 挂载到一个无人监听的地址（表现为首次加载失败、刷新后恢复）。
+        const readyInfo = await invoke<{ service_url: string }>('get_runtime_info')
+        this.serviceUrl = readyInfo.service_url
+        this.iframeSrc = generateTimestampedUrl(readyInfo.service_url)
         this.serviceHealthy = true
         // 服务（重）启动成功：清空插件异常修复态（若曾进入），并重置已「暂不处理」的插件
         this.recovery = { required: false, info: null, attempts: 0, busy: false }
