@@ -259,6 +259,11 @@ pub fn build_main_window(app: &tauri::AppHandle<Wry>) -> tauri::Result<tauri::We
             .min_inner_size(860.0, 620.0)
             .resizable(true);
 
+    // Windows/WebView2 在 build() 尚未返回时就可能绘制窗口。先隐藏创建，
+    // 等保存的几何恢复完成再显示，避免启动时先闪出默认尺寸再跳到历史尺寸。
+    #[cfg(windows)]
+    let webview_builder = webview_builder.visible(false);
+
     // macOS 保留原生交通灯：绿色按钮由 AppKit 进入独立 Space 的原生全屏，
     // 同时用 Overlay 让 44px 壳层导航栏继续与窗口 chrome 融合。其他平台
     // 仍由 ShellNavBar 的右侧按钮提供窗口控制。
@@ -315,6 +320,8 @@ pub fn build_main_window(app: &tauri::AppHandle<Wry>) -> tauri::Result<tauri::We
     // 恢复上次的窗口大小/位置/最大化状态（无历史时保持 builder 默认的 1280×840，
     // 由 Tauri 自动居中；见 config::window_state）。
     crate::config::restore_main_window(app, &webview_window);
+    #[cfg(windows)]
+    webview_window.show()?;
 
     #[cfg(windows)]
     {
