@@ -48,7 +48,7 @@ pub struct DshPlugin {
     pub recommended: bool,
     /// 预设清单中的「修复」标记（黄色 chip）
     pub fix: bool,
-    /// 是否有可用更新（由 `service::plugin::updates` 探测；尚未判定时为 false，
+    /// 是否有可用更新（由 `service::plugin::update` 探测；尚未判定时为 false，
     /// 前端在挂载后经 `refresh_plugin_updates` 补齐——因此有更新时才显示升级按钮，
     /// 不会「常驻」）
     pub update_available: bool,

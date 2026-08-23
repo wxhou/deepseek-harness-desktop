@@ -30,7 +30,7 @@ mod installed;
 mod preset;
 mod process;
 pub mod recovery;
-pub mod updates;
+pub mod update;
 pub mod watch;
 
 pub use cancel::cancel;

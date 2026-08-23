@@ -76,7 +76,7 @@ pub async fn open_preinstall_repo(app_handle: AppHandle, id: String) -> Result<(
 #[tauri::command]
 pub fn get_dsh_plugins(app_handle: AppHandle) -> Vec<plugin::DshPlugin> {
     let mut plugins = plugin::watch::list(&app_handle);
-    plugin::updates::apply_cache(&app_handle, &mut plugins);
+    plugin::update::apply_cache(&app_handle, &mut plugins);
     plugins
 }
 
@@ -87,7 +87,7 @@ pub fn get_dsh_plugins(app_handle: AppHandle) -> Vec<plugin::DshPlugin> {
 /// 按钮只在确有更新（或异常修复）时出现，而不是常驻。
 #[tauri::command]
 pub async fn refresh_plugin_updates(app_handle: AppHandle) -> Result<Vec<plugin::DshPlugin>, String> {
-    plugin::updates::refresh(&app_handle).await
+    plugin::update::refresh(&app_handle).await
 }
 
 /// 升级单个已安装插件：`dsh plugin --profile <当前档案> update <id>`，
