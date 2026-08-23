@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatLogLine, pickErrorLines } from '../src/utils/log-utils'
+import { formatLogLine, pickErrorLines } from '../src/utils/log'
 
 describe('formatLogLine', () => {
   it('strips the official GitHub release download prefix', () => {
