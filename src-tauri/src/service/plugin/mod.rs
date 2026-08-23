@@ -30,10 +30,12 @@ mod installed;
 mod preset;
 mod process;
 pub mod recovery;
+pub mod updates;
 pub mod watch;
 
 pub use cancel::cancel;
 pub use install::{install, remove, update};
+pub(crate) use install::harness_prefer_bundled_pnpm;
 pub use installed::{list, PreinstallPlugin};
 pub(crate) use installed::ensure_profile_npmrc;
 pub use preset::repo_url_of;

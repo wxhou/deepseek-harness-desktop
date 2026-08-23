@@ -592,6 +592,9 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     // bin 目录：persistent bash（--noprofile --norc）不执行 profile 脚本、PATH
     // 完全继承服务进程，若不含 Git 的 usr/bin，ls/sed/find 等 coreutils 全会
     // `command not found`（MSYS 运行时在部分环境下不会自动补 /usr/bin）。
+    // 前置应用自身的 shim 目录，使市场（dsh-market）及其子进程通过名字解析的
+    // `pnpm`/`dsh` 都命中桌面端 shim，从而受桌面端 pnpm 选版策略管辖
+    // （轻量缓解，issue #69 系列）。
     if let Some(node_dir) = node_binary_path.parent() {
         if let Some(existing_path) = std::env::var_os("PATH") {
             let git_dirs = win_inspector::git_bash_bin_dirs();
@@ -599,13 +602,22 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
             for dir in &git_dirs {
                 log::debug!("harness service PATH prepend: {}", dir.to_string_lossy());
             }
-            let mut paths = vec![node_dir.to_path_buf()];
+            let mut paths = vec![crate::service::cli::get_bin_dir(&app_handle)];
+            paths.push(node_dir.to_path_buf());
             paths.extend(git_dirs);
             paths.extend(std::env::split_paths(&existing_path));
             if let Ok(new_path) = std::env::join_paths(paths) {
                 envs.insert("PATH".to_string(), new_path.to_string_lossy().into_owned());
             }
         }
+    }
+
+    // 让市场子进程的 pnpm 与桌面端同一套受控策略（store 主版本感知、避免落到系统
+    // homebrew pnpm）。与插件安装路径的 ensure_pnpm 版本感知一致，但启动阶段绝不
+    // 触发下载；捆绑版未安装或与 store 不匹配时不注入（交由用户 pnpm）。
+    // 最佳努力：失败只告警，不阻断启动。
+    if crate::service::plugin::harness_prefer_bundled_pnpm(&app_handle) {
+        envs.insert("DSH_PREFER_BUNDLED_PNPM".to_string(), "1".to_string());
     }
 
     // 日志文件（前端日志面板读取）。
