@@ -44,6 +44,13 @@ export function ConfigCore() {
   const rows = cores.filter(core => !(core.source === 'local' && !core.present))
   const localCore = cores.find(c => c.source === 'local')
 
+  // 本地核心是否有新版可更新：仅当存在更新的预打包发布时才显示「更新本地核心」。
+  // 版本行按 tags 最新在前，取第一个 app 版本作为"当前最新可用版本"（本地版本
+  // 已是最新时不再展示更新入口，避免"已最新仍提示更新"）。
+  const localVersion = localCore?.version ?? ''
+  const latestVersion = cores.find(c => c.source === 'app')?.version ?? ''
+  const hasLocalUpdate = !!(localCore?.present && localVersion && latestVersion && compareVersions(localVersion, latestVersion) < 0)
+
   /** 包裹行内操作：全局单例守卫 + 该行 busy 标记 */
   async function runBusy(id: string, action: () => Promise<unknown>) {
     if (busy)
@@ -268,12 +275,8 @@ export function ConfigCore() {
                       {t('core.uninstall')}
                     </Button>
                   </If>
-                </>
-              )}
-              footer={(
-                // 本地核心更新入口（放在主行之后，避免与勾选/卸载操作混排）
-                <If cond={core.source === 'local' && core.present}>
-                  <div className="flex justify-end">
+                  {/* 本地核心：已是最新时不显示；有新版时提供更新入口（与预打包行同栏，统一布局） */}
+                  <If cond={core.source === 'local' && core.present && hasLocalUpdate}>
                     <Button
                       size="sm"
                       variant="tertiary"
@@ -284,11 +287,11 @@ export function ConfigCore() {
                         onUpdateLocal()
                       }}
                     >
-                      <If cond={busyId === core.id} then={<Spinner size="sm" color="current" />} else={<ArrowRotateRight className="size-3.5" />} />
+                      <If cond={busyId === core.id && busy} then={<Spinner size="sm" color="current" />} else={<ArrowRotateRight className="size-3.5" />} />
                       {t('core.update_local')}
                     </Button>
-                  </div>
-                </If>
+                  </If>
+                </>
               )}
             />
           ))}
@@ -308,4 +311,53 @@ export function ConfigCore() {
 /** 版本展示：优先版本号，缺失回落来源 id */
 function displayVersion(version: HarnessCore): string {
   return version.version || (version.source === 'local' ? 'local' : 'app')
+}
+
+/**
+ * 简化 semver 比较（不引入额外依赖），可处理 `0.1.1-rc.2` / `0.1.1` 格式。
+ * 返回值：负数 a < b，0 相等，正数 a > b。
+ */
+function compareVersions(a: string, b: string): number {
+  const parse = (v: string) => {
+    const [core, pre = ''] = v.split('-', 2)
+    const nums = core.split('.').map(n => parseInt(n, 10) || 0)
+    return { nums, pre }
+  }
+  const pa = parse(a)
+  const pb = parse(b)
+  for (let i = 0; i < 3; i++) {
+    const x = pa.nums[i] ?? 0
+    const y = pb.nums[i] ?? 0
+    if (x !== y)
+      return x < y ? -1 : 1
+  }
+  // 无预发布号 > 有预发布号
+  if (!pa.pre && !pb.pre)
+    return 0
+  if (!pa.pre)
+    return 1
+  if (!pb.pre)
+    return -1
+  // 预发布号按点分段比较：数字按数值、非数字按字典序
+  const paParts = pa.pre.split('.').map(p => (Number.isNaN(Number(p)) ? p : Number(p)))
+  const pbParts = pb.pre.split('.').map(p => (Number.isNaN(Number(p)) ? p : Number(p)))
+  const len = Math.max(paParts.length, pbParts.length)
+  for (let i = 0; i < len; i++) {
+    const x = paParts[i]
+    const y = pbParts[i]
+    if (x === undefined)
+      return -1
+    if (y === undefined)
+      return 1
+    if (x === y)
+      continue
+    if (typeof x === 'number' && typeof y === 'number')
+      return x < y ? -1 : 1
+    if (typeof x === 'number')
+      return -1
+    if (typeof y === 'number')
+      return 1
+    return x < y ? -1 : 1
+  }
+  return 0
 }
