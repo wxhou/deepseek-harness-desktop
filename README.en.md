@@ -50,13 +50,19 @@
 Plugins offered on the first-run wizard; select what you need and install on demand:
 
 - [DSH Win Terminal Inspector](https://github.com/clearkurt/dsh-win-terminal-inspector) — Windows-only fix for Minimal mode
-- [DSH Tauri](https://github.com/dsh-tauri-desk/dsh-tauri) — desktop message bridge: a communication channel with the Tauri 2 shell (Recommended)
 - [DSH Market](https://github.com/dsh-market/dsh-market) — the visual plugin market: browse, search, and one-click install community plugins (Recommended)
 - [DSH Better Sidebar](https://github.com/omdsh-dev/DSH-better-sidebar) — a VSCode-like right sidebar (explorer/editor/terminal/git/browser), isolated per session (Recommended)
 - [DSH Notification](https://github.com/omdsh-dev/dsh-notification) — desktop notifications when a turn finishes: per-outcome toggles plus include/exclude keyword rules
 - [DSH Session Context Menu](https://github.com/baihejiangnan/dsh-session-context-menu) — right-click context menu for the DSH app shell: quick actions for conversations, workspaces, inputs, and links
 
 > Want to add new presets? Modify [preset-plugins.json](https://github.com/hairyf/deepseek-harness-desktop/blob/main/src-tauri/resources/preset-plugins.json) and submit a PR.
+
+## Built-in plugins
+
+First-party plugins bundled with the installer：
+
+- [DSH Tauri](https://github.com/dsh-tauri-desk/dsh-tauri) — desktop message bridge: a communication channel with the Tauri 2 shell
+- [DSH Tauri UI](https://github.com/dsh-tauri-desk/dsh-tauri-ui) — customized Tauri UI plugin (skeleton) for the desktop shell: registers the `shell.overlay` seat for future desktop chrome
 
 ## Quick Start
 
@@ -65,14 +71,14 @@ Download the installer for your platform from [Releases](https://github.com/hair
 **macOS (Homebrew):** you can also install it in one command via Homebrew (auto-verified signing / notarization):
 
 ```bash
-brew install dsh-tauri-desk/desktop/deepseek-harness-desktop
+brew install dsh-tauri-desk/desktop/deepseek-harness
 ```
 
 The first run downloads the Node runtime and Harness core (~a few hundred MB) and takes you straight into the harness at `http://127.0.0.1:3080`. Everything after that runs locally — no network required.
 
 **Requirements:** Windows 10+ (64-bit) · macOS 10.15+ · Linux (AppImage / `.deb`, Ubuntu 22.04+) · network on first launch
 
-> **Linux Wayland note (PikaOS / GNOME Wayland):** AppImage may crash or render black on Wayland due to WebKitGTK; `v0.7.6` auto-fixes the common case. If it still fails, prefer `.deb` (verified on PikaOS 4 Wayland) or run `WEBKIT_DISABLE_COMPOSITING_MODE=1 WEBKIT_DISABLE_DMABUF_RENDERER=1 GDK_BACKEND=x11 ./AppImage`.
+> **Linux Wayland note (PikaOS / GNOME Wayland):** AppImage may crash or render black on Wayland due to WebKitGTK; the app auto-fixes the common case. If it still fails, prefer `.deb` (verified on PikaOS 4 Wayland) or run `WEBKIT_DISABLE_COMPOSITING_MODE=1 WEBKIT_DISABLE_DMABUF_RENDERER=1 GDK_BACKEND=x11 ./AppImage`.
 
 ## Dev
 
