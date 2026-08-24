@@ -903,6 +903,28 @@ pub fn parse_version_from_tag(tag: &str) -> Option<String> {
     (!version.is_empty()).then(|| version.to_string())
 }
 
+/// 安装记录（`dsh_pkg_commit` / `dsh_pkg_tag`）是否对应「最新 release 的同一发布」。
+///
+/// commit 存在两种合法形态：完整 git SHA（api.github.com 正常时解析，如
+/// `1eed6dd6c078…`）与 tag 内嵌 build-id（api.github.com 限流时兜底，见
+/// [`commit_fallback_from_tag`]，如 `32485170079`）。同一 tag 的两种形态互不
+/// 相等，而安装记录写成哪一种取决于安装当时 API 是否可用：限流期安装会把
+/// build-id 写进记录，API 恢复后的检查却解析出完整 SHA。若只按字符串相等比对，
+/// API 状态在两次启动之间翻转（限流 ↔ 恢复）会让同一 release 永远比对不上，
+/// `resolve_update` 把同版本误判为「同版本热修」→ 每次启动都提示更新
+/// （issue #92）。因此需归一化：记录 tag 与最新 tag 相同（同一次发布，任何
+/// 形态的 commit 都来自该 tag），或记录 commit 与 release 的任一合法标识一致。
+pub fn record_matches_latest_release(
+    record_commit: Option<&str>,
+    record_tag: Option<&str>,
+    latest: &LatestDshPkg,
+) -> bool {
+    record_tag == Some(latest.tag.as_str())
+        || record_commit.is_some_and(|rc| {
+            rc == latest.commit.as_str() || rc == commit_fallback_from_tag(&latest.tag)
+        })
+}
+
 /// 更新判定结果
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpdateCheck {
@@ -920,8 +942,8 @@ pub enum UpdateCheck {
 /// 更新、或安装时 GitHub API 失败未落盘，记录会滞后于文件，造成每次都误报
 /// 更新。这里以磁盘上实际的 `@deepseek-ai/dsh` 版本为准核对：
 /// - 最新 release 版本号与已装版本不同 → 有更新（不论 commit）；
-/// - 版本号相同且 commit 一致 → 无更新；
-/// - 版本号相同：记录 tag 版本也相同 → 同版本热修 → 有更新；
+/// - 版本号相同且记录对应同一 release（commit 任一形态匹配，或记录 tag 相同）→ 无更新；
+/// - 版本号相同但记录是同一版本的另一发布（不同 build-id 的 tag）→ 同版本热修 → 有更新；
 ///   记录 tag 版本更旧（或记录无 tag，经 `legacy_tags` 反查）→ 记录滞后 → 修正记录。
 ///
 /// 注意必须先比版本、再比 commit：dsh 仓库的 rc 发布会重打同一 git commit，
@@ -941,7 +963,7 @@ pub fn resolve_update(
         (installed_version, parse_version_from_tag(&latest.tag))
     else {
         // 版本信息不可解析时回退旧行为：记录不一致即视为有更新
-        return if record_commit == Some(latest.commit.as_str()) {
+        return if record_matches_latest_release(record_commit, record_tag, latest) {
             UpdateCheck::UpToDate
         } else {
             UpdateCheck::UpdateAvailable
@@ -955,8 +977,9 @@ pub fn resolve_update(
     if installed != latest_version {
         return UpdateCheck::UpdateAvailable;
     }
-    // 版本相同且 commit 一致 → 安装文件即最新 release，无更新。
-    if record_commit == Some(latest.commit.as_str()) {
+    // 版本相同 → 确认是否「同一发布」再判免打扰：记录与最新 release 对应
+    // （见 [`record_matches_latest_release`]）即文件已是最新，无更新。
+    if record_matches_latest_release(record_commit, record_tag, latest) {
         return UpdateCheck::UpToDate;
     }
     // 文件已经是“最新版本”，此时需要甄别记录是否滞后
@@ -1175,6 +1198,43 @@ mod tests {
             Some("6c659bb2636b3ad396a204c4c6ff110276fa3a09"),
             Some("dsh-0.1.0-rc.7-32054485373"),
             Some("0.1.0-rc.7"),
+            &latest,
+            &[],
+        );
+        assert_eq!(decision, UpdateCheck::UpToDate);
+    }
+
+    #[test]
+    fn resolve_build_id_record_vs_real_sha_latest_is_up_to_date() {
+        // issue #92 现场：限流期安装把 build-id 写进记录，API 恢复后的检查解析出
+        // 完整 SHA——同一 release（dsh-0.1.1-rc.2-32485170079）的两种标识互不相等，
+        // 必须归一化判定为无更新，而不是每次启动都误报「同版本热修」。
+        let latest = latest(
+            "dsh-0.1.1-rc.2-32485170079",
+            "1eed6dd6c0780000000000000000000000000000",
+        );
+        let decision = resolve_update(
+            Some("32485170079"), // 记录 commit：限流期写入的 build-id
+            Some("dsh-0.1.1-rc.2-32485170079"),
+            Some("0.1.1-rc.2"),
+            &latest,
+            &[],
+        );
+        assert_eq!(decision, UpdateCheck::UpToDate);
+    }
+
+    #[test]
+    fn resolve_real_sha_record_vs_build_id_latest_is_up_to_date() {
+        // 反向翻转：记录是完整 SHA，本次检查因 API 限流兜底出 build-id。
+        // record_tag 与 latest.tag 相同即同一发布，不得误报更新。
+        let latest = latest(
+            "dsh-0.1.1-rc.2-32485170079",
+            "32485170079", // 本次检查限流，commit 兜底为 build-id
+        );
+        let decision = resolve_update(
+            Some("1eed6dd6c0780000000000000000000000000000"), // 记录：完整 SHA
+            Some("dsh-0.1.1-rc.2-32485170079"),
+            Some("0.1.1-rc.2"),
             &latest,
             &[],
         );

@@ -999,15 +999,22 @@ pub async fn install(
             && dsh_latest.as_ref().is_some_and(|info| {
                 let installed_version = config::get_dsh_version(app_handle);
                 let latest_version = download::parse_version_from_tag(&info.tag);
-                // 版本号可解析且不同 → 必须更新；版本不可解析时退回 commit 比对
+                // 版本号可解析且不同 → 必须更新；版本不可解析时退回同一发布判定
                 let version_differs =
                     match (installed_version.as_deref(), latest_version.as_deref()) {
                         (Some(a), Some(b)) => a != b,
                         _ => false,
                     };
+                // 「同一发布」判定与 resolve_update 完全一致：记录 tag 与最新 tag
+                // 相同、或记录 commit 与 release 的任一合法标识（完整 SHA / build-id）
+                // 一致。限流期安装会把 build-id 写进记录，API 恢复后解析出的完整
+                // SHA 与之不等但仍是同一 release，不能据此误判为过期而重下。
                 version_differs
-                    || config::get_dsh_pkg_commit(app_handle).as_deref()
-                        != Some(info.commit.as_str())
+                    || !download::record_matches_latest_release(
+                        config::get_dsh_pkg_commit(app_handle).as_deref(),
+                        config::get_dsh_pkg_tag(app_handle).as_deref(),
+                        info,
+                    )
             });
         if task.check_installed(app_handle) && !outdated {
             log::debug!(
