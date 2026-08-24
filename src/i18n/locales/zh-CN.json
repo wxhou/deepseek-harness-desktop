@@ -12,7 +12,7 @@
   "status.error": "启动失败",
   "status.loading": "Loading plugins…",
   "status.loading_plugins": "Loading plugins…",
-  "status.loading_internal": "正在加载内置插件…",
+  "status.loading_internal": "Loading internal plugins…",
   "preinstall.title": "安装推荐插件",
   "preinstall.subtitle": "选择要在启动前安装的插件，之后也可以在设置中的插件市场里管理。",
   "preinstall.recommend": "推荐",
