@@ -39,6 +39,7 @@
 - 🖥️ **Config** — One dialog for Debug / Profiles / Plugins / Core, with a fully localized (zh/en) UI and dark-mode support.
 - 🗂️ **Profile isolation** — Create, switch, and remove isolated profiles in the config center; plugins, patches, and settings stay independent per profile.
 - 🧩 **Plugin management** — The plugin panel lists installed plugins read-only and offers upgrade / uninstall when one misbehaves, with live error sync.
+- 🎁 **Built-in plugins** — Ships with first-party built-in plugins such as `dsh-tauri` and `dsh-tauri-ui` that work out of the box, and will bring more high-quality built-in plugins in the future.
 - 🪶 **Native & lightweight** — A Tauri 2 shell (not Electron): smaller installers, lower memory, native windows. Windows / macOS / Linux, bilingual UI.
 - ⌨️ **CLI ready** — Registers `dsh` commands (`*/bin`) after install, ready in a new terminal; never overwrites your existing shell config.
 - 🧭 **Launch wizard** — On first launch, pick the recommended plugins (e.g. the dsh-market plugin store) and watch the install stream in real time; skip anytime and reopen later from the sidebar.
