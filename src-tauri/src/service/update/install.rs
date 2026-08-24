@@ -309,10 +309,11 @@ pub async fn open_installer(app_handle: &AppHandle, path: String) -> Result<(), 
     if !p.exists() || !p.is_file() {
         return Err(format!("UPDATE_NOT_FOUND: {path}"));
     }
-    // 规范化后必须仍在 updates 目录内（防 `..`、符号链接、路径穿越）
-    let canonical = p.canonicalize().map_err(|e| format!("UPDATE_OPEN: {e}"))?;
-    let updates_real = updates_dir
-        .canonicalize()
+    // 规范化后必须仍在 updates 目录内（防 `..`、符号链接、路径穿越）。
+    // 用 `dunce::canonicalize`（std `fs::canonicalize`）——它返回的路径不带
+    // Windows `\\?\` verbatim 前缀，`starts_with` 与日志展示更一致。
+    let canonical = dunce::canonicalize(p).map_err(|e| format!("UPDATE_OPEN: {e}"))?;
+    let updates_real = dunce::canonicalize(&updates_dir)
         .map_err(|e| format!("UPDATE_DIR: {e}"))?;
     if !canonical.starts_with(&updates_real) {
         log::error!(

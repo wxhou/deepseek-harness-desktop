@@ -60,6 +60,7 @@ tar = "0.4"
 async-trait = "0.1"
 tokio = { version = "1", features = [ "full" ] }
 semver = "1"
+dunce = "1.0.5"
 
 [target.'cfg(windows)'.dependencies]
 rfd = "0.16"

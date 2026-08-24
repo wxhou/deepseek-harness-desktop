@@ -43,15 +43,14 @@ pub fn validate_id(id: &str) -> Result<(), String> {
 
 /// 校验 `child` canonicalize 后仍位于 `root` canonicalize 的目录内。
 ///
-/// 使用 `canonicalize` 后再比较，避免字符串前缀误判（`/data/foobar` 不作为
-/// `/data/foo` 的子路径）以及 `..`、符号链接改写。`root` 不存在时（尚未初始化）
-/// 直接拒绝——删除操作的前提是父目录存在。
+/// 使用 `dunce::canonicalize`（std `fs::canonicalize` 在 Windows 上返回 `\\?\`
+/// verbatim 前缀路径，dunce 把它归一化成常规形式）后再比较，避免字符串前缀误判
+/// （`/data/foobar` 不作为 `/data/foo` 的子路径）以及 `..`、符号链接改写。
+/// `root` 不存在时（尚未初始化）直接拒绝——删除操作的前提是父目录存在。
 pub fn ensure_within(child: &Path, root: &Path) -> Result<PathBuf, String> {
-    let root_real = root
-        .canonicalize()
+    let root_real = dunce::canonicalize(root)
         .map_err(|e| format!("ROOT_RESOLVE_FAILED: {e}"))?;
-    let child_real = child
-        .canonicalize()
+    let child_real = dunce::canonicalize(child)
         .map_err(|e| format!("PATH_RESOLVE_FAILED: {e}"))?;
     if !child_real.starts_with(&root_real) {
         return Err(format!(

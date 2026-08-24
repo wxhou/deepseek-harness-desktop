@@ -43,16 +43,20 @@ fn existing_roots(app_handle: &AppHandle) -> Vec<PathBuf> {
 }
 
 /// `path` canonicalize 后是否位于任一允许根目录内。
+///
+/// 用 `dunce::canonicalize`（内部是 std `fs::canonicalize`）把路径与根统一归一到
+/// 常规形式（Windows 上 `fs::canonicalize` 会带 `\\?\` verbatim 前缀，dunce 剥掉），
+/// 避免某侧带前缀、另一侧不带导致 `starts_with` 边界失配。
 pub fn is_allowed_path(app_handle: &AppHandle, path: &Path) -> bool {
     if !path.exists() {
         return false;
     }
-    let Ok(real) = path.canonicalize() else {
+    let Ok(real) = dunce::canonicalize(path) else {
         return false;
     };
     existing_roots(app_handle)
         .iter()
-        .filter_map(|root| root.canonicalize().ok())
+        .filter_map(|root| dunce::canonicalize(root).ok())
         .any(|root| real.starts_with(&root))
 }
 

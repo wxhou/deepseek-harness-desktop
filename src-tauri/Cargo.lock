@@ -819,6 +819,7 @@ dependencies = [
  "arboard",
  "async-trait",
  "base64 0.22.1",
+ "dunce",
  "flate2",
  "futures-util",
  "image",
