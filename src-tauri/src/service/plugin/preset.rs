@@ -162,9 +162,36 @@ fn parse_dev_internal_dir(content: &str) -> Option<PathBuf> {
 /// 路径解析并建立目录联接（junction，改源码重启服务即热更新）。pnpm 按传入
 /// 形式把 `link:` 依赖写入 profile 的 package.json；安装（`install.rs`）与启动
 /// 自愈（`internal.rs`）共用这一规范形比对路径是否正确。
+///
+/// 生成前先剥离 Windows 扩展长度路径前缀（`\\?\` verbatim）：`resource_dir()`
+/// 在部分 Windows 环境返回 verbatim 形式，直接拼进 `link:` 会得到 `link://?/G:/...`，
+/// pnpm 会把 `//?/G:/...` 当作相对路径解析并生成 `..\?\G:\...` 的坏联接
+/// （内置插件重装死循环的根因），因此此处统一转成常规绝对路径。
 pub(crate) fn bundled_dep_spec(dir: &std::path::Path) -> String {
-    let normalized = dir.to_string_lossy().replace('\\', "/");
+    let normalized = strip_verbatim_path(&dir.to_string_lossy());
     format!("link:{}", normalized.trim_end_matches('/'))
+}
+
+/// 剥离 Windows 扩展长度路径前缀（`\\?\` verbatim）并统一分隔符为正斜杠。
+///
+/// Windows 文件的 verbatim 路径形如 `\\?\C:\...`（`canonicalize` 或部分环境下
+/// `resource_dir()` 会返回该形式）。文件系统 API 对两者等价，但把它写进依赖
+/// spec（`link:`）时 pnpm 会误把 `//?/` 当相对路径，必须剥掉，保证 pnpm 按常规
+/// 绝对路径解析并建立正确联接。
+///
+/// - 常规路径：分隔符统一为正斜杠，原样返回；
+/// - 盘符 verbatim（`\\?\G:\...`）：剥离 `\\?\`；
+/// - UNC verbatim（`\\?\UNC\server\share`）：转成常规 UNC（`\\server\share`，
+///   即在 `//server/share` 形式下保留双斜杠）。
+pub(crate) fn strip_verbatim_path(path: &str) -> String {
+    let s = path.replace('\\', "/");
+    if let Some(rest) = s.strip_prefix("//?/UNC/") {
+        format!("//{rest}")
+    } else if let Some(rest) = s.strip_prefix("//?/") {
+        rest.to_string()
+    } else {
+        s
+    }
 }
 
 /// 解析预设清单 JSON
@@ -369,6 +396,41 @@ mod tests {
             bundled_dep_spec(std::path::Path::new("/opt/dsh/plugins/x/")),
             "link:/opt/dsh/plugins/x"
         );
+    }
+
+    #[test]
+    fn bundled_dep_spec_strips_verbatim_prefix() {
+        // 回归：Windows 扩展长度路径前缀（`\\?\`）不该进入 link: spec。
+        // `resource_dir()` 返回 verbatim 路径时，未剥离会导致 pnpm 把
+        // `//?/G:/...` 当相对路径解析、生成 `..\?\G:\...` 的坏联接而安装失败。
+        let dir = std::path::Path::new(
+            r"\\?\G:\Deepseek Harness Desktop\resources\preset-plugins\dsh-tauri",
+        );
+        assert_eq!(
+            bundled_dep_spec(dir),
+            "link:G:/Deepseek Harness Desktop/resources/preset-plugins/dsh-tauri"
+        );
+    }
+
+    #[test]
+    fn strip_verbatim_path_variants() {
+        // 常规路径：仅统一切换分隔符
+        assert_eq!(
+            strip_verbatim_path("C:\\Apps\\dsh\\plugins\\x"),
+            "C:/Apps/dsh/plugins/x"
+        );
+        // 盘符 verbatim：剥离 `\\?\`
+        assert_eq!(
+            strip_verbatim_path(r"\\?\G:\Apps\dsh\plugins\x"),
+            "G:/Apps/dsh/plugins/x"
+        );
+        // UNC verbatim：转成常规 UNC（保留 `//`）
+        assert_eq!(
+            strip_verbatim_path(r"\\?\UNC\server\share\plugins\x"),
+            "//server/share/plugins/x"
+        );
+        // 已是无 verbatim 前缀的（Unix 或正斜杠）原样保留
+        assert_eq!(strip_verbatim_path("/opt/dsh/plugins/x"), "/opt/dsh/plugins/x");
     }
 
     #[cfg(debug_assertions)]

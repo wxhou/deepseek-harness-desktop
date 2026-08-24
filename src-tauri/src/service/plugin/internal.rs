@@ -14,7 +14,9 @@ use std::collections::HashMap;
 use tauri::{AppHandle, Emitter};
 
 use super::installed::{installed_name, profile_dir, ProfilePackageJson};
-use super::preset::{bundled_dep_spec, bundled_plugin_dir, load_presets, PreinstallPluginInfo};
+use super::preset::{
+    bundled_dep_spec, bundled_plugin_dir, load_presets, strip_verbatim_path, PreinstallPluginInfo,
+};
 
 /// 核对并强制安装缺失/路径不正确/被卸载的内置插件，在服务进程启动前调用。
 ///
@@ -125,7 +127,13 @@ fn dep_matches_spec(actual: &str, expected: &str) -> bool {
             .strip_prefix("link:")
             .or_else(|| spec.strip_prefix("file:"))
             .unwrap_or(spec);
-        stripped.replace('\\', "/").trim_end_matches('/').to_string()
+        // 剥离 Windows 扩展长度路径前缀（`\\?\`，见 preset::strip_verbatim_path）：
+        // 期望值已经由 bundled_dep_spec 归一化掉前缀，若历史命中的实值仍带
+        // `//?/` 前缀（旧版 or 含 `\\?\` 的联接目标），先归一化再比对，保证幂等
+        // （避免旧值一次次触发不必要的重装）。
+        strip_verbatim_path(stripped)
+            .trim_end_matches('/')
+            .to_string()
     };
     let actual = norm(actual);
     let expected = norm(expected);
@@ -163,6 +171,12 @@ mod tests {
         // 历史遗留 file: 形式（协议切换前已安装的值）
         assert!(dep_matches_spec(
             "file:C:/Apps/dsh/resources/preset-plugins/dsh-tauri",
+            expected
+        ));
+        // 实值仍带 Windows 扩展长度前缀（`\\?\`，见 preset::strip_verbatim_path）
+        // 与归一化掉前缀的期望值仍视为同一路径（幂等，避免不必要的重装）
+        assert!(dep_matches_spec(
+            "link://?/C:/Apps/dsh/resources/preset-plugins/dsh-tauri",
             expected
         ));
     }
