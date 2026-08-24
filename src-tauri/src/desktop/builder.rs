@@ -72,7 +72,13 @@ pub fn setup(app_handle: tauri::AppHandle) {
 
 /// setup tray
 pub fn tray<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<()> {
-    // 使用默认窗口图标
+    // 平台差异的托盘图标策略：
+    // - macOS：使用 scoped template 透明图标（NSImage template），由系统按菜单栏
+    //   深浅/半透明材质自动着色，呈现与系统一致的半透明玻璃观感，而非彩色方块。
+    // - 其他平台：沿用默认窗口图标。
+    #[cfg(target_os = "macos")]
+    let icon = tauri::image::Image::from_bytes(include_bytes!("../../icons/macos-tray.png"))?;
+    #[cfg(not(target_os = "macos"))]
     let icon = app.default_window_icon().unwrap().clone();
 
     // 构建菜单
@@ -104,7 +110,20 @@ pub fn tray<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<()> {
         }
     }
 
-    // 构建托盘图标
+    // 构建托盘图标。macOS 上把模板图标记为 NSImage template，由系统按菜单栏
+    // 深浅/半透明材质自动着色，呈现与系统一致的半透明玻璃观感。
+    #[cfg(target_os = "macos")]
+    let _ = TrayIconBuilder::new()
+        .icon(icon)
+        .icon_as_template(true)
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .tooltip("Deepseek Harness Desktop")
+        .on_menu_event(move |app, event| handle_menu_event(app, &event))
+        .on_tray_icon_event(move |tray, event| handle_tray_icon_event(tray, &event))
+        .build(app)?;
+
+    #[cfg(not(target_os = "macos"))]
     let _ = TrayIconBuilder::new()
         .icon(icon)
         .menu(&menu)
