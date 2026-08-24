@@ -8,6 +8,9 @@
 //!   永远是最新发布，不会因上传期间的旧结果而误判「已是最新」。
 //! - 通过 GitHub 的 **HTML/atom 页面**（releases.atom、expanded_assets）而非
 //!   api.github.com 查询，绕开未认证 API 60 次/小时/IP 的限流。
+//! - 只对**正式版**（纯数字版本）提示更新：rc/beta/alpha 与手动测试 release
+//!   （`test-*` tag）一律跳过（见 [`version`] 的 `is_stable`），不会把测试版
+//!   推给用户；装了 rc 的用户仍会按 semver 收到之后的正式版通知。
 //! - 安装包下载到 AppData/updates 目录；已存在则视为「已下载」，不再重复拉取。
 //! - 打开安装器（exe/msi/dmg 等）交给系统默认处理器（ShellExecute/LaunchServices）。
 //!

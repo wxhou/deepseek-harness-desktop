@@ -3,33 +3,38 @@
 //! 纯函数：不触网、不依赖运行时状态（仅 `linux_package_family` 探测包管理家族），
 //! 均为 `更新` 模块内其它部分的判定基础。
 
+use semver::Version;
+
 /// 当前桌面端版本号（来自 Cargo.toml / tauri.conf.json）
 pub(super) fn current_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
-/// 解析版本号为数字段序列：`v0.5.2` / `0.5.2` → [0, 5, 2]
-fn parse_version(v: &str) -> Option<Vec<u64>> {
-    let s = v.trim().trim_start_matches('v');
-    s.split('.')
-        .map(|p| p.parse().ok())
-        .collect::<Option<Vec<_>>>()
+/// 解析版本号为 semver（容忍 `v` 前缀）；非合法 semver 返回 `None`。
+///
+/// 用标准 semver 语义而非手写数字段比较：`0.7.14-rc.1` / `0.7.14-beta` 这样的
+/// pre-release 与 `test-main-123` 这类手动测试 release tag 都能被正确识别。
+pub(super) fn parse_version(v: &str) -> Option<Version> {
+    Version::parse(v.trim().trim_start_matches('v')).ok()
 }
 
-/// 判断 `latest` 是否严格高于 `current`（逐段比较，段数多者视作更新）
+/// 是否「正式版」：纯数字版本，无 pre-release 与 build metadata（如 `0.7.14`）。
+///
+/// 更新通知只发给正式版：`0.7.14-rc.1` / `0.7.14-beta` 等 pre-release 一律跳过，
+/// 用户不会收到非正式版的更新提示（见 [`super::meta`]）。
+pub(super) fn is_stable(version: &Version) -> bool {
+    version.pre.is_empty() && version.build.is_empty()
+}
+
+/// 判断 `latest` 是否严格高于 `current`（semver 语义）。
+///
+/// 注意 `0.7.14 > 0.7.14-rc.1`：装了 rc 的用户也能收到同号正式版的通知，
+/// 而 rc 自身（`0.7.14-rc.2`）永远不会高于同号后的正式版。
 pub(super) fn is_newer(latest: &str, current: &str) -> bool {
-    let Some(a) = parse_version(latest) else {
-        return false;
-    };
-    let Some(b) = parse_version(current) else {
-        return false;
-    };
-    for (x, y) in a.iter().zip(b.iter()) {
-        if x != y {
-            return x > y;
-        }
+    match (parse_version(latest), parse_version(current)) {
+        (Some(a), Some(b)) => a > b,
+        _ => false,
     }
-    a.len() > b.len()
 }
 
 /// 根据资产文件名判断其架构匹配度，用于同扩展名下挑选正确架构的安装包：
@@ -134,26 +139,46 @@ mod tests {
 
     #[test]
     fn parse_version_strips_v_prefix() {
-        assert_eq!(parse_version("v0.5.2").as_deref(), Some(&[0u64, 5, 2][..]));
-        assert_eq!(parse_version("0.5.2").as_deref(), Some(&[0u64, 5, 2][..]));
-        assert_eq!(parse_version("0.5").as_deref(), Some(&[0u64, 5][..]));
+        assert_eq!(parse_version("v0.5.2").unwrap().to_string(), "0.5.2");
+        assert_eq!(parse_version("0.5.2").unwrap().to_string(), "0.5.2");
+        // pre-release 也是合法 semver
+        assert_eq!(parse_version("0.5.2-rc.1").unwrap().to_string(), "0.5.2-rc.1");
+        // 非法 semver（如手动测试 release 的 tag / 只有两段）返回 None
         assert_eq!(parse_version("abc"), None);
+        assert_eq!(parse_version("test-main-123"), None);
+        assert_eq!(parse_version("0.5"), None);
     }
 
     #[test]
-    fn is_newer_compares_segments() {
+    fn is_newer_compares_semver() {
         assert!(is_newer("0.5.2", "0.5.1"));
         assert!(is_newer("1.0.0", "0.9.0"));
-        assert!(is_newer("0.5.0", "0.5"));
+        // rc 数值段更高 → 比旧正式版新
+        assert!(is_newer("0.7.14-rc.1", "0.7.13"));
+        // 正式版高于同号 rc（装了 rc 的用户能收到正式版通知）
+        assert!(is_newer("0.7.14", "0.7.14-rc.1"));
+        assert!(is_newer("0.7.14-rc.2", "0.7.14-rc.1"));
         assert!(!is_newer("0.5.1", "0.5.2"));
         assert!(!is_newer("0.5.1", "0.5.1"));
-        assert!(!is_newer("0.5.1", "1.0.0"));
+        // rc 不会高于同号正式版
+        assert!(!is_newer("0.7.14-rc.1", "0.7.14"));
     }
 
     #[test]
     fn is_newer_ignores_unparseable() {
         assert!(!is_newer("abc", "0.5.1"));
         assert!(!is_newer("0.5.1", "abc"));
+        assert!(!is_newer("test-main-123", "0.5.1"));
+    }
+
+    #[test]
+    fn is_stable_only_pure_numeric() {
+        assert!(is_stable(&parse_version("0.7.14").unwrap()));
+        assert!(is_stable(&parse_version("0.7.0").unwrap()));
+        assert!(!is_stable(&parse_version("0.7.14-rc.1").unwrap()));
+        assert!(!is_stable(&parse_version("0.7.14-beta.2").unwrap()));
+        assert!(!is_stable(&parse_version("0.7.14-alpha").unwrap()));
+        assert!(!is_stable(&parse_version("0.7.14+build.5").unwrap()));
     }
 
     #[test]

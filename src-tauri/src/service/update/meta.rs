@@ -3,10 +3,14 @@
 //! 不依赖 api.github.com，仅通过 `releases.atom` 与 `releases/expanded_assets/<tag>`
 //! 轻量解析最新 tag、发布时间、资产名与作者填写的 SHA-256 摘要。摘要缺失不阻断
 //! 官方直连下载，但会禁用镜像兜底（见 [`super::install`]）。
+//!
+//! 更新判定只接受**正式版**（纯数字版本，见 [`super::version::is_stable`]）：
+//! rc/beta/alpha 等 pre-release 与手动测试 release（`test-*` tag）一律跳过，
+//! 用户不会收到非正式版的更新通知；装了 rc 的用户仍会按 semver 收到之后的正式版。
 
 use std::time::Duration;
 
-use super::version::{current_version, is_newer, pick_asset};
+use super::version::{current_version, is_newer, is_stable, parse_version, pick_asset};
 use super::REPO_URL;
 
 /// 最新可用发布信息（仅在有更新且匹配到当前平台安装包时才有意义）
@@ -39,10 +43,33 @@ fn find_token<'a>(s: &'a str, marker: &str, end_marker: &str) -> Option<&'a str>
     Some(&s[start..end])
 }
 
-/// 从 releases.atom 解析最新 release 的 (tag, 发布时间)。
+/// 从 releases.atom 正文解析全部 (tag, 发布时间)，按 feed 顺序（最新在前）。
 ///
-/// 不走 api.github.com，故不受未认证限流约束。
-pub(super) async fn fetch_latest_meta() -> Result<(String, String), String> {
+/// GitHub 的 atom feed 会包含 pre-release（rc/beta/alpha）与手动测试 release
+/// （`prerelease: true`），是否参与更新判定由调用方按 [`super::version::is_stable`]
+/// 过滤。纯函数，便于测试。
+fn parse_atom_entries(body: &str) -> Vec<(String, String)> {
+    let mut releases = Vec::new();
+    let mut rest = body;
+    while let Some(start) = rest.find("<entry>") {
+        let end = rest[start..]
+            .find("</entry>")
+            .map(|e| start + e)
+            .unwrap_or(rest.len());
+        let block = &rest[start..end];
+        if let Some(tag) = find_token(block, "releases/tag/", "\"") {
+            let published_at = find_token(block, "<updated>", "</updated>")
+                .unwrap_or_default()
+                .to_string();
+            releases.push((tag.to_string(), published_at));
+        }
+        rest = &rest[end..];
+    }
+    releases
+}
+
+/// 拉取 releases.atom 并解析全部 release（不走 api.github.com，不受未认证限流约束）。
+pub(super) async fn fetch_releases_meta() -> Result<Vec<(String, String)>, String> {
     let body = http_client()?
         .get(format!("{REPO_URL}/releases.atom"))
         .send()
@@ -53,19 +80,11 @@ pub(super) async fn fetch_latest_meta() -> Result<(String, String), String> {
         .text()
         .await
         .map_err(|e| format!("UPDATE_ATOM: {e}"))?;
-
-    // 取第一条 <entry> 作为最新 release
-    let entry = body
-        .find("<entry>")
-        .and_then(|p| body[p..].find("</entry>").map(|e| &body[p..p + e]))
-        .unwrap_or(&body);
-    let tag = find_token(entry, "releases/tag/", "\"")
-        .ok_or_else(|| "UPDATE_PARSE: missing tag in atom feed".to_string())?
-        .to_string();
-    let published_at = find_token(entry, "<updated>", "</updated>")
-        .unwrap_or_default()
-        .to_string();
-    Ok((tag, published_at))
+    let releases = parse_atom_entries(&body);
+    if releases.is_empty() {
+        return Err("UPDATE_PARSE: no releases found in atom feed".to_string());
+    }
+    Ok(releases)
 }
 
 /// 从 expanded_assets 页面 HTML 中提取给定 tag 的全部资产文件名（纯函数，便于测试）。
@@ -127,30 +146,59 @@ async fn fetch_expanded_assets(tag: &str) -> Result<(Vec<String>, String), Strin
     Ok((names, body))
 }
 
-/// 查询最新 Release（无缓存，每次实时检查，走 HTML/atom 而非 api.github.com）。
+/// 查询最新可用的**正式版** Release（无缓存，每次实时检查，走 HTML/atom 而非
+/// api.github.com）。
+///
+/// 按 feed 顺序（最新在前）扫描：跳过非法 semver（如手动测试 release 的
+/// `test-*` tag）与 pre-release（rc/beta/alpha），只接受**纯数字正式版**且严格
+/// 高于当前版本。首个命中即返回；当前平台无匹配安装包时继续看更旧的正式版。
 ///
 /// 返回 `Ok(Some(LatestRelease))` 表示有更新且匹配到当前平台安装包；
 /// `Ok(None)` 表示无更新（或未匹配到资产）。网络失败返回 Err。
 pub(super) async fn fetch_latest_release() -> Result<Option<LatestRelease>, String> {
-    let (tag, published_at) = fetch_latest_meta().await?;
-    let version = tag.trim_start_matches('v').to_string();
-    if !is_newer(&version, &current_version()) {
-        return Ok(None);
+    let current = current_version();
+    for (tag, published_at) in fetch_releases_meta().await? {
+        let version = tag.trim_start_matches('v').to_string();
+        let Some(parsed) = parse_version(&version) else {
+            log::debug!("UPDATE_SKIP: {tag} 非法 semver（手动测试 release?），跳过");
+            continue;
+        };
+        if !is_stable(&parsed) {
+            log::debug!("UPDATE_SKIP: {tag} 为 pre-release（非正式版），不通知用户");
+            continue;
+        }
+        if !is_newer(&version, &current) {
+            log::debug!("UPDATE_SKIP: {tag} 不高于当前版本 {current}");
+            continue;
+        }
+        if let Some(release) = fetch_release_assets(&tag, &version, &published_at).await? {
+            return Ok(Some(release));
+        }
     }
+    Ok(None)
+}
 
+/// 为选定的正式版 tag 挑选当前平台安装包并解析摘要。
+///
+/// 摘要必须按**当前平台选中的资产**解析：多平台 release 的页面里每个安装包
+/// 各有各的 `sha256:`，取错资产（如页面里第一个）会拿别的包的摘要来校验，
+/// 导致 `INTEGRITY_CHECK_FAILED` 误伤合法下载。摘要缺失不阻断官方直连下载，
+/// 但镜像兜底需要可信摘要（见 [`super::install`]）防止投毒。
+///
+/// 返回 `None` 表示该 release 无匹配当前平台的安装包（调用方继续看更旧的正式版）。
+async fn fetch_release_assets(
+    tag: &str,
+    version: &str,
+    published_at: &str,
+) -> Result<Option<LatestRelease>, String> {
     // 一次拉取 expanded_assets 页面，得到资产名列表与原始 HTML（避免两次请求）
-    let (names, body) = fetch_expanded_assets(&tag).await?;
+    let (names, body) = fetch_expanded_assets(tag).await?;
     let Some(asset_name) = pick_asset(&names) else {
+        log::debug!("UPDATE_SKIP: {tag} 无当前平台安装包，继续看更旧的正式版");
         return Ok(None);
     };
 
-    // 摘要必须按**当前平台选中的资产**解析：多平台 release 的页面里每个安装包
-    // 各有各的 `sha256:`，取错资产（如页面里第一个）会拿别的包的摘要来校验，
-    // 导致 `INTEGRITY_CHECK_FAILED` 误伤合法下载。
     let digest = parse_digest_from_expanded_assets(&body, &asset_name);
-
-    // 摘要缺失不阻断：官方直连仍可按旧行为下载（兼容早期未填摘要的发布），
-    // 但镜像兜底需要可信摘要（见 `download`）防止投毒。
     log::debug!(
         "Release {tag} digest for picked asset {}: {}",
         asset_name,
@@ -160,9 +208,9 @@ pub(super) async fn fetch_latest_release() -> Result<Option<LatestRelease>, Stri
     // 下载地址由 tag + 资产名直接构造，无需 API
     let url = format!("{REPO_URL}/releases/download/{tag}/{asset_name}");
     Ok(Some(LatestRelease {
-        version,
-        tag,
-        published_at,
+        version: version.to_string(),
+        tag: tag.to_string(),
+        published_at: published_at.to_string(),
         url,
         asset_name,
         digest,
@@ -180,6 +228,27 @@ mod tests {
         let s2 = "<updated>2026-08-19T09:27:38Z</updated>";
         assert_eq!(find_token(s2, "<updated>", "</updated>"), Some("2026-08-19T09:27:38Z"));
         assert_eq!(find_token("no marker", "releases/tag/", "\""), None);
+    }
+
+    /// feed 解析回归：多 entry 按序解析；pre-release 与手动测试 tag 照常解析
+    /// （是否参与更新判定由调用方按 `is_stable` 过滤）。
+    #[test]
+    fn parse_atom_entries_multiple_entries_in_order() {
+        let feed = r#"<feed>
+            <entry><id>1</id><link rel="alternate" href="/hairyf/deepseek-harness-desktop/releases/tag/v0.7.14-rc.1"/><updated>2026-08-20T01:00:00Z</updated></entry>
+            <entry><id>2</id><link rel="alternate" href="/hairyf/deepseek-harness-desktop/releases/tag/v0.7.13"/><updated>2026-08-19T00:00:00Z</updated></entry>
+            <entry><id>3</id><link rel="alternate" href="/hairyf/deepseek-harness-desktop/releases/tag/test-main-42"/></entry>
+        </feed>"#;
+        assert_eq!(
+            parse_atom_entries(feed),
+            vec![
+                ("v0.7.14-rc.1".to_string(), "2026-08-20T01:00:00Z".to_string()),
+                ("v0.7.13".to_string(), "2026-08-19T00:00:00Z".to_string()),
+                ("test-main-42".to_string(), String::new()),
+            ]
+        );
+        assert!(parse_atom_entries("").is_empty());
+        assert!(parse_atom_entries("<feed></feed>").is_empty());
     }
 
     #[test]

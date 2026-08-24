@@ -1,6 +1,6 @@
 //! About 对话框信息：版本来自编译常量，发布时间实时查询最新 Release（不缓存）。
 
-use super::meta::fetch_latest_meta;
+use super::meta::fetch_releases_meta;
 use super::version::current_version;
 use super::{COPYRIGHT, POWERED_BY, REPO_URL};
 
@@ -18,7 +18,11 @@ pub struct DesktopAboutInfo {
 /// 关于信息：版本来自编译常量，发布时间每次实时查询最新 Release（不缓存），
 /// 查询失败则留空、不影响展示。
 pub async fn about() -> DesktopAboutInfo {
-    let published_at = fetch_latest_meta().await.map(|(_, p)| p).unwrap_or_default();
+    let published_at = fetch_releases_meta()
+        .await
+        .ok()
+        .and_then(|releases| releases.first().map(|(_, p)| p.clone()))
+        .unwrap_or_default();
     DesktopAboutInfo {
         version: current_version(),
         published_at,
