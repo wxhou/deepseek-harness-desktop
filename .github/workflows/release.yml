@@ -91,7 +91,8 @@ jobs:
             arch: x86_64
           - id: windows
             platform: windows-latest
-            args: ''
+            # MSI(WiX) 只接受纯数字版本，见下方 "Prepare MSI version override" 步骤
+            args: --config release-msi-version.tmp.json
           # Linux 打包跑在 ubuntu-22.04 而非 ubuntu-latest：
           # 22.04 的 glibc/WebKitGTK 版本更老，产出的 .deb/.AppImage 才能在
           # Ubuntu 22.04 及更高版本上运行；用 latest(24.04) 构建的产物会因依赖新
@@ -193,6 +194,22 @@ jobs:
             printf '::error::Missing required macOS signing secrets: %s\n' "${missing[*]}"
             exit 1
           fi
+
+      # Windows 的 MSI(WiX) 目标只接受纯数字 `major.minor.patch[.build]` 版本：
+      # 当 tauri.conf.json 的版本带 pre-release（如 0.7.14-rc.1 / 0.7.14-beta）或
+      # build metadata 时，tauri-bundler 的 convert_version 会直接报
+      # "optional pre-release identifier in app version must be numeric-only ... 65535"
+      # 导致打包失败（v0.7.0-rc.1 因此没有产出任何 Windows 安装包）。
+      # 这里把版本去掉 `-`/`+` 后缀后写入 bundle.windows.wix.version 覆盖项：
+      # MSI 用纯数字版本，NSIS 仍保留完整 semver，macOS/Linux 不受影响。
+      # 该选项来自 tauri-apps/tauri#11388（`wix > version`，需 tauri-cli >= 2.1）。
+      - name: Prepare MSI version override
+        if: steps.check.outputs.should_run == 'true' && matrix.id == 'windows'
+        shell: bash
+        run: |
+          APP_VERSION=$(node -p 'require("./src-tauri/tauri.conf.json").version.replace(/[-+].*$/, "")')
+          node -e "require('fs').writeFileSync('release-msi-version.tmp.json', JSON.stringify({ bundle: { windows: { wix: { version: process.argv[1] } } } }))" "$APP_VERSION"
+          echo "MSI (WiX) version override -> $APP_VERSION"
 
       # 正式发布：release 已由 changelog 任务创建，这里只上传产物。
       # 注意：不要传 releaseBody —— tauri-action 会用它覆盖已有 release 的正文。
