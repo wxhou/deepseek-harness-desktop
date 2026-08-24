@@ -29,60 +29,60 @@
   <img src="./docs/images/hero-en.png" width="100%" alt="DSH Desktop English promotional banner" />
 </p>
 
-
 > [More preview images](./docs/PREVIEW.md)
 
 ## Features
 
-- ⚡️ **Zero setup** — First launch bootstraps the bundled Node runtime and Harness core automatically; a compatible local Node / Pnpm setup is reused as-is when present.
-- 🔄 **Core update** — Every launch syncs with the latest upstream Harness release, so upstream updates reach you without reinstalling; download, switch, and uninstall multiple core versions (auto-restart after switching).
-- 🖥️ **Config** — One dialog for Debug / Profiles / Plugins / Core, with a fully localized (zh/en) UI and dark-mode support.
-- 🗂️ **Profile isolation** — Create, switch, and remove isolated profiles in the config center; plugins, patches, and settings stay independent per profile.
-- 🧩 **Plugin management** — The plugin panel lists installed plugins read-only and offers upgrade / uninstall when one misbehaves, with live error sync.
-- 🎁 **Built-in plugins** — Ships with first-party built-in plugins such as `dsh-tauri` and `dsh-tauri-ui` that work out of the box, and will bring more high-quality built-in plugins in the future.
-- 🪶 **Native & lightweight** — A Tauri 2 shell (not Electron): smaller installers, lower memory, native windows. Windows / macOS / Linux, bilingual UI.
-- ⌨️ **CLI ready** — Registers `dsh` commands (`*/bin`) after install, ready in a new terminal; never overwrites your existing shell config.
-- 🧭 **Launch wizard** — On first launch, pick the recommended plugins (e.g. the dsh-market plugin store) and watch the install stream in real time; skip anytime and reopen later from the sidebar.
-- 🚀 **Self-update** — Checks GitHub releases independently and downloads the installer; dev/prod builds are isolated by port and data dir.
+- ⚡️ **Zero setup** — First launch needs no Node runtime or Harness core; uses the local environment by default and does not modify your existing system environment.
+- 🔄 **Core update** — Syncs the latest upstream Harness version in-app, so upstream updates take effect without reinstalling; supports managing multiple core versions.
+- 🖥️ **Config** — One dialog for Debug / Profiles / Plugins / Core, with bilingual (zh/en) UI labels and dark-mode support.
+- 🗂️ **Profile isolation** — Profiles are isolated from each other in the config; plugins, patches, and settings stay independent and do not interfere.
+- 🧩 **Plugin management** — The plugin panel manages installed plugins; when something misbehaves it offers upgrade / uninstall entry points plus error details.
+- 🎁 **Built-in plugins** — Ships with bundled plugins; more high-quality built-in plugins are coming in the future.
+- 🪶 **Native & lightweight** — A Tauri 2 shell (not Electron): smaller installers, lower memory, native windows.
+- ⌨️ **CLI integration** — Install automatically registers the `dsh` command, ready in a new terminal; does not overwrite your existing shell config.
+- 🧭 **Launch wizard** — On first launch, choose recommended plugins, or re-select them later in config.
+- 🚀 **Self-update** — In-app updates; no need to re-download.
 
 ## Presets
 
-Plugins offered on the first-run wizard; select what you need and install on demand:
+Plugins offered in the first-run wizard; select what you need and install on demand:
 
 - [DSH Win Terminal Inspector](https://github.com/clearkurt/dsh-win-terminal-inspector) — Windows-only fix for Minimal mode
-- [DSH Market](https://github.com/dsh-market/dsh-market) — the visual plugin market: browse, search, and one-click install community plugins (Recommended)
-- [DSH Better Sidebar](https://github.com/omdsh-dev/DSH-better-sidebar) — a VSCode-like right sidebar (explorer/editor/terminal/git/browser), isolated per session (Recommended)
-- [DSH Notification](https://github.com/omdsh-dev/dsh-notification) — desktop notifications when a turn finishes: per-outcome toggles plus include/exclude keyword rules
-- [DSH Session Context Menu](https://github.com/baihejiangnan/dsh-session-context-menu) — right-click context menu for the DSH app shell: quick actions for conversations, workspaces, inputs, and links
+- [DSH Market](https://github.com/dsh-market/dsh-market) — browse, search, and one-click install community plugins (Recommended)
+- [DSH Better Sidebar](https://github.com/omdsh-dev/DSH-better-sidebar) — a VSCode-like right sidebar, isolated per session (Recommended)
+- [DSH Notification](https://github.com/omdsh-dev/dsh-notification) — desktop notifications when a turn completes
+- [DSH Session Context Menu](https://github.com/baihejiangnan/dsh-session-context-menu) — DSH right-click menu: adds common actions for sessions, workspaces, the input box, and links
 
-> Want to add new presets? Modify [preset-plugins.json](https://github.com/hairyf/deepseek-harness-desktop/blob/main/src-tauri/resources/preset-plugins.json) and submit a PR.
+> Want to add new presets? Modify [preset-plugins.json](https://github.com/hairyf/deepseek-harness-desktop/blob/main/src-tauri/resources/preset-plugins.json) and submit a PR — once approved, it will be added as a preset in a future version.
 
 ## Built-in plugins
 
-First-party plugins bundled with the installer：
+First-party plugins bundled with the installer:
 
-- [DSH Tauri](https://github.com/dsh-tauri-desk/dsh-tauri) — desktop message bridge: a communication channel with the Tauri 2 shell
-- [DSH Tauri UI](https://github.com/dsh-tauri-desk/dsh-tauri-ui) — customized Tauri UI plugin (skeleton) for the desktop shell: registers the `shell.overlay` seat for future desktop chrome
+- [DSH Tauri](https://github.com/dsh-tauri-desk/dsh-tauri) — provides a communication channel with the Tauri 2 shell
+- [DSH Tauri UI](https://github.com/dsh-tauri-desk/dsh-tauri-ui) — provides a custom settings sidebar for the Tauri 2 shell
+- More coming soon...
 
 ## Quick Start
 
 Download the installer for your platform from [Releases](https://github.com/hairyf/deepseek-harness-desktop/releases), install, and launch.
 
-**macOS (Homebrew):** you can also install it in one command via Homebrew (auto-verified signing / notarization):
+**macOS (Homebrew):** you can also install it in one command via Homebrew:
 
 ```bash
 brew install dsh-tauri-desk/desktop/deepseek-harness
 ```
 
-The first run downloads the Node runtime and Harness core (~a few hundred MB) and takes you straight into the harness at `http://127.0.0.1:3080`. Everything after that runs locally — no network required.
+The first run downloads the Node runtime and Harness core (if `dsh` is already installed, the installed version is used), then takes you straight into the harness at `http://127.0.0.1:3080`; after that everything runs locally — no network required.
 
-**Requirements:** Windows 10+ (64-bit) · macOS 10.15+ · Linux (AppImage / `.deb`, Ubuntu 22.04+) · network on first launch
+**System requirements:** Windows 10+ · macOS 10.15+ · Linux (AppImage / .deb) · network on first launch
 
-> **Linux Wayland note (PikaOS / GNOME Wayland):** AppImage may crash or render black on Wayland due to WebKitGTK; the app auto-fixes the common case. If it still fails, prefer `.deb` (verified on PikaOS 4 Wayland) or run `WEBKIT_DISABLE_COMPOSITING_MODE=1 WEBKIT_DISABLE_DMABUF_RENDERER=1 GDK_BACKEND=x11 ./AppImage`.
+> **Linux Wayland note (PikaOS / GNOME Wayland / Ubuntu 22.04+):** AppImage may crash or render black on Wayland due to WebKitGTK; the app auto-fixes the common case. <details><summary>If it still crashes / renders black:</summary><br>**Prefer `.deb`** (verified on PikaOS 4 Wayland), or manually run `WEBKIT_DISABLE_COMPOSITING_MODE=1 WEBKIT_DISABLE_DMABUF_RENDERER=1 GDK_BACKEND=x11 ./AppImage`. If icons do not appear, copy the app's `hicolor` icons to `~/.local/share/icons` and run `update-desktop-database`.<br></details>
 
 ## Dev
 
-Want to get involved in the development? See [docs/DEVELOPMENT.md](./docs/DEVELOPMENT.md).
+Want to get involved in development? See [docs/DEVELOPMENT.md](./docs/DEVELOPMENT.md).
 
 ## How It Works
 
@@ -114,7 +114,7 @@ Want to get involved in the development? See [docs/DEVELOPMENT.md](./docs/DEVELO
         http://127.0.0.1:3080/  ← embedded UI
 ```
 
-The prebuilt Harness bundle is published by [deepseek-harness-pkg](https://github.com/dsh-tauri-desk/deepseek-harness-pkg). Every launch diffs the installed bundle against the latest release and re-downloads when outdated — keeping the local install when GitHub is unreachable. A local core installed globally via your package manager (CLI) is preferred when present.
+The prebuilt Harness bundle is published by [deepseek-harness-pkg](https://github.com/dsh-tauri-desk/deepseek-harness-pkg). Every launch compares against the latest release and prompts you to download the update when the local one is outdated — keeping the local install when GitHub is unreachable. A local core installed globally via the CLI is preferred when present.
 
 ## Notes
 
