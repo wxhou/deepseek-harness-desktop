@@ -1,6 +1,8 @@
 use std::fs;
 use std::sync::{Mutex, OnceLock};
 use tauri::{AppHandle, Emitter};
+#[cfg(target_os = "macos")]
+use tauri::Manager;
 
 use super::runtime::get_dsh_data_path;
 
@@ -60,7 +62,34 @@ fn parse_theme_preference(content: &str) -> Option<DshTheme> {
     None
 }
 
-/// 主题偏好变化时向前端推送 `dsh-theme-updated` 事件（仅在变化时触发一次）
+/// 把 dsh 主题偏好同步为主窗口的原生外观（仅 macOS）。
+///
+/// macOS 上窗口保留了原生标题栏（`decorations(true)` + `Overlay` + `hidden_title`），
+/// 其材质与交通灯底色跟随「系统外观」，而内嵌 dsh 页面的亮/暗由前端
+/// `html[data-theme]` 独立控制；两者不联动就会出现「内容已切亮色、顶部标题栏仍
+/// 是暗色」的割裂（issue #93）。这里把偏好直接落到原生外观：`system` → 跟随系统，
+/// `light` / `dark` → 强制指定，让原生 chrome 与 dsh 页面始终一致。
+///
+/// 非 macOS 平台关闭了窗口 decoration、整窗皆为前端 `data-theme`，无原生 chrome
+/// 可同步，无需（也无从）调用。
+#[cfg(target_os = "macos")]
+pub fn apply_window_theme(app_handle: &AppHandle, theme: DshTheme) {
+    let Some(window) = app_handle.get_webview_window("main") else {
+        log::debug!("apply_window_theme: main window not built yet");
+        return;
+    };
+    let appearance = match theme {
+        DshTheme::System => None,
+        DshTheme::Light => Some(tauri::Theme::Light),
+        DshTheme::Dark => Some(tauri::Theme::Dark),
+    };
+    if let Err(err) = window.set_theme(appearance) {
+        log::warn!("[theme] failed to sync native window appearance: {err}");
+    }
+}
+
+/// 主题偏好变化时向前端推送 `dsh-theme-updated` 事件（仅在变化时触发一次）。
+/// 变化时同步 macOS 原生窗口外观，与前端 `data-theme` 保持同源。
 pub fn check_and_emit_theme(app_handle: &AppHandle) {
     let theme = get_dsh_theme(app_handle);
     let mut last = LAST_EMITTED
@@ -73,4 +102,6 @@ pub fn check_and_emit_theme(app_handle: &AppHandle) {
     *last = Some(theme);
     log::debug!("dsh theme preference changed: {:?}", theme);
     let _ = app_handle.emit("dsh-theme-updated", &theme);
+    #[cfg(target_os = "macos")]
+    apply_window_theme(app_handle, theme);
 }

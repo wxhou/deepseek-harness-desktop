@@ -328,7 +328,15 @@ pub fn build_main_window(app: &tauri::AppHandle<Wry>) -> tauri::Result<tauri::We
         .hidden_title(true)
         // Wry 保留了 AppKit 原生按钮的纵向 frame 偏移；24px 在 44px
         // 壳层导航栏内的实测视觉圆心为 22px，而非 API 直觉上的 24px。
-        .traffic_light_position(tauri::LogicalPosition::new(14.0, 24.0));
+        .traffic_light_position(tauri::LogicalPosition::new(14.0, 24.0))
+        // 在创建时就把原生标题栏外观设为 dsh 主题偏好，避免启动瞬间出现
+        // 「内容已亮、顶栏仍暗」的闪变（issue #93）。system → None 即跟随系统。
+        // 后续偏好变化由 `config::check_and_emit_theme` 调用 `apply_window_theme` 同步。
+        .theme(match crate::config::get_dsh_theme(app) {
+            crate::config::DshTheme::System => None,
+            crate::config::DshTheme::Light => Some(tauri::Theme::Light),
+            crate::config::DshTheme::Dark => Some(tauri::Theme::Dark),
+        });
 
     #[cfg(not(target_os = "macos"))]
     let webview_builder = webview_builder.decorations(false);
