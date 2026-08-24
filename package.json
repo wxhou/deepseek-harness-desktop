@@ -16,7 +16,7 @@
     "knip": "knip",
     "lint:fix": "eslint . --fix",
     "typecheck": "tsc --noEmit",
-    "icons": "tauri icon public/favicon.svg"
+    "icons": "tauri icon public/favicon.svg && node scripts/rebuild-macos-icon.cjs"
   },
   "dependencies": {
     "@gravity-ui/icons": "^2.21.0",
