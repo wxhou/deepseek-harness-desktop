@@ -252,7 +252,7 @@ export function Navbar({ iframeRef }: NavbarProps) {
           <ArrowRight />
         </Button>
       </If>
-      <If cond={!IS_MACOS || !isFullscreen}>
+      <If cond={!IS_MACOS}>
         <div className="ml-1">
           <Button
             className="rounded-lg h-6 text-xs px-1.5"
