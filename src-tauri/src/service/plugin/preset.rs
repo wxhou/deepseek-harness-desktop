@@ -155,13 +155,16 @@ fn parse_dev_internal_dir(content: &str) -> Option<PathBuf> {
     None
 }
 
-/// 内置插件的安装依赖形式：`file:<绝对路径>`（正斜杠、去尾部斜杠）。
+/// 内置插件的安装依赖形式：`link:<绝对路径>`（正斜杠、去尾部斜杠）。
 ///
-/// pnpm 按传入形式把 `file:` 依赖写入 profile 的 package.json，这里生成规范形，
-/// 安装（`install.rs`）与启动自愈（`internal.rs`）共用同一基准比对路径是否正确。
-pub(crate) fn file_dep_spec(dir: &std::path::Path) -> String {
+/// 用 `link:` 而非 `file:`：pnpm 会把 `file:D:/...`（Windows 盘符冒号）当相对
+/// 路径拼到 cwd 下（报 `scandir <cwd>\D:\... ENOENT`），而 `link:` 正确按绝对
+/// 路径解析并建立目录联接（junction，改源码重启服务即热更新）。pnpm 按传入
+/// 形式把 `link:` 依赖写入 profile 的 package.json；安装（`install.rs`）与启动
+/// 自愈（`internal.rs`）共用这一规范形比对路径是否正确。
+pub(crate) fn bundled_dep_spec(dir: &std::path::Path) -> String {
     let normalized = dir.to_string_lossy().replace('\\', "/");
-    format!("file:{}", normalized.trim_end_matches('/'))
+    format!("link:{}", normalized.trim_end_matches('/'))
 }
 
 /// 解析预设清单 JSON
@@ -356,15 +359,15 @@ mod tests {
     }
 
     #[test]
-    fn file_dep_spec_normalizes_windows_separators() {
+    fn bundled_dep_spec_normalizes_windows_separators() {
         assert_eq!(
-            file_dep_spec(std::path::Path::new("C:\\Apps\\dsh\\resources\\preset-plugins\\dsh-tauri")),
-            "file:C:/Apps/dsh/resources/preset-plugins/dsh-tauri"
+            bundled_dep_spec(std::path::Path::new("C:\\Apps\\dsh\\resources\\preset-plugins\\dsh-tauri")),
+            "link:C:/Apps/dsh/resources/preset-plugins/dsh-tauri"
         );
         // 尾部斜杠去除（Windows 盘符 C:\ 不会出现，路径恒为子目录）
         assert_eq!(
-            file_dep_spec(std::path::Path::new("/opt/dsh/plugins/x/")),
-            "file:/opt/dsh/plugins/x"
+            bundled_dep_spec(std::path::Path::new("/opt/dsh/plugins/x/")),
+            "link:/opt/dsh/plugins/x"
         );
     }
 

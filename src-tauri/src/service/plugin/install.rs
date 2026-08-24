@@ -25,7 +25,7 @@ use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 
 use super::errors;
 use super::installed::{is_installed, profile_dir};
-use super::preset::{bundled_plugin_dir, file_dep_spec, load_presets, PreinstallPluginInfo};
+use super::preset::{bundled_dep_spec, bundled_plugin_dir, load_presets, PreinstallPluginInfo};
 use super::process::{run_plugin_process, PreinstallLogPayload, PREINSTALL_LOG_EVENT};
 use super::recovery::is_actionable_plugin_ref;
 use super::uninstall_recovery;
@@ -60,8 +60,9 @@ pub async fn install(app_handle: &AppHandle, ids: &[String]) -> Result<(), Strin
         let preset = preset_map
             .get(id.as_str())
             .ok_or_else(|| format!("PREINSTALL_INVALID_ID: {id}"))?;
-        // 内置插件改为从随包分发的捆绑目录安装（`file:` 本地依赖，见
-        // preset::file_dep_spec），其余沿用清单声明的 spec；随后统一把
+        // 内置插件改为从随包分发的捆绑目录安装（`link:` 本地联接依赖，见
+        // preset::bundled_dep_spec；不用 `file:`——pnpm 对盘符冒号的绝对路径
+        // 会当相对路径解析），其余沿用清单声明的 spec；随后统一把
         // `github:user/repo` 规范为显式 `git+https://...`，绕开 pnpm 对
         // GitHub 简写「HTTPS 探测失败即回退 SSH」的已知缺陷（pnpm issue
         // #3948 / #7243 / #13276）：公开仓库一旦落进 git+ssh，在没有 SSH 配置
@@ -220,7 +221,7 @@ fn preset_spec_for_install(
             preset.id
         )
     })?;
-    Ok(file_dep_spec(&dir))
+    Ok(bundled_dep_spec(&dir))
 }
 
 /// 构建 `dsh plugin` 子进程的环境变量：隔离 $DSH_HOME、关闭遥测与颜色，
@@ -1006,12 +1007,13 @@ mod tests {
 
     #[test]
     fn install_spec_uses_bundled_dir_for_internal_preset() {
-        // 内置插件：安装依赖为 file:<捆绑目录>（正斜杠规范形）
+        // 内置插件：安装依赖为 link:<捆绑目录>（正斜杠规范形；pnpm 对
+        // `file:D:/...` 的盘符绝对路径会按相对解析，必须用 `link:`）
         let p = preset("dsh-tauri", "dsh-tauri@0.2.0", true);
         let dir = PathBuf::from("C:\\Apps\\dsh\\resources\\preset-plugins\\dsh-tauri");
         assert_eq!(
             preset_spec_for_install(&p, Some(dir)).unwrap(),
-            "file:C:/Apps/dsh/resources/preset-plugins/dsh-tauri"
+            "link:C:/Apps/dsh/resources/preset-plugins/dsh-tauri"
         );
     }
 
