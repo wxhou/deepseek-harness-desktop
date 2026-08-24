@@ -61,6 +61,12 @@ Plugins offered on the first-run wizard; select what you need and install on dem
 
 Download the installer for your platform from [Releases](https://github.com/hairyf/deepseek-harness-desktop/releases), install, and launch.
 
+**macOS (Homebrew):** you can also install it in one command via Homebrew (auto-verified signing / notarization):
+
+```bash
+brew install dsh-tauri-desk/homebrew-deepseek-harness-desktop
+```
+
 The first run downloads the Node runtime and Harness core (~a few hundred MB) and takes you straight into the harness at `http://127.0.0.1:3080`. Everything after that runs locally — no network required.
 
 **Requirements:** Windows 10+ (64-bit) · macOS 10.15+ · Linux (AppImage / `.deb`, Ubuntu 22.04+) · network on first launch
