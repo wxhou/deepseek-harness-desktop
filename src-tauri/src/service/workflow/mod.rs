@@ -725,6 +725,14 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     if let Err(e) = crate::service::plugin::ensure_internal_plugins(&app_handle).await {
         log::warn!("ensure internal plugins failed: {e}");
     }
+    // 预装插件完整性自检：清单引用的预装插件若在 node_modules 缺失产物，服务
+    // 启动时 loader 会对每个缺失插件抛 ERR_MODULE_NOT_FOUND 而整体失败（issue
+    // #90，日志特征 `Cannot find package`）。用 `pnpm install` 以现有 manifest +
+    // lockfile 为准重建依赖图修复；修复失败只告警并给缺失插件记录错误标记
+    // （启动失败场景由前端 recovery 对话框兜底，见 service::plugin::recovery）。
+    if let Err(e) = crate::service::plugin::ensure_preset_plugins(&app_handle).await {
+        log::warn!("ensure preset plugins failed: {e}");
+    }
     let mut envs: HashMap<String, String> = HashMap::new();
     envs.insert(
         "DSH_HOME".to_string(),

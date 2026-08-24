@@ -88,8 +88,8 @@ pub struct PreinstallPlugin {
 }
 
 /// 用于“已安装”检测的包名：预设显式声明 `package` 时用它（scoped 包名与预设
-/// id 不一致），未声明则回落到 `id`。
-fn installed_name(p: &PreinstallPluginInfo) -> &str {
+/// id 不一致），未声明则回落到 `id`。供内部（`internal.rs` 内置插件自愈）复用。
+pub(crate) fn installed_name(p: &PreinstallPluginInfo) -> &str {
     p.package.as_deref().unwrap_or(p.id.as_str())
 }
 
@@ -101,6 +101,9 @@ pub fn list(app_handle: &AppHandle) -> Vec<PreinstallPlugin> {
     load_presets(app_handle)
         .into_iter()
         .filter(|p| !p.win_only || is_windows)
+        // 内置插件（internal:true）由启动自愈强制安装，不进入首次引导清单：
+        // 对用户而言它们“必装”，给出可取消的勾选框反而造成歧义。
+        .filter(|p| !p.internal)
         .map(|p| {
             // 已安装检测以实际 npm 包名为准：预设可显式声明 package（scoped 包
             // 名与预设 id 不一致时），未声明则回落到 id。
@@ -260,6 +263,7 @@ mod tests {
             fix: false,
             default_checked: true,
             win_only: false,
+            internal: false,
         };
         // scoped 包名与预设 id 不同：以 package 为准
         assert_eq!(

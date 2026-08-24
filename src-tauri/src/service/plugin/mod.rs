@@ -17,6 +17,8 @@
 //! 模块划分（参考 `service/cli/`、`service/download/`）：
 //! - [`preset`]：预设清单读取与解析（`resources/preset-plugins.json`）
 //! - [`installed`]：profile 内已安装插件检测（解析 package.json 的依赖与 bundles）
+//! - [`internal`]：内置插件启动自愈（随包分发产物缺失/路径变更时强制重装）
+//! - [`verify`]：预装插件完整性自检（清单引用但 node_modules 产物缺失时 `pnpm install` 修复）
 //! - [`install`]：对外安装/升级/卸载编排（校验、环境准备、调用 dsh 子进程）
 //! - [`errors`]：插件错误记录（安装/升级/卸载失败 + 页面运行期上报，持久化）
 //! - [`process`]：dsh 子进程启动与输出流逐行转发
@@ -27,10 +29,12 @@ mod cancel;
 pub mod errors;
 mod install;
 mod installed;
+mod internal;
 mod preset;
 mod process;
 pub mod recovery;
 pub mod update;
+pub mod verify;
 pub mod watch;
 
 pub use cancel::cancel;
@@ -38,7 +42,9 @@ pub use install::{install, remove, update};
 pub(crate) use install::harness_prefer_bundled_pnpm;
 pub use installed::{list, PreinstallPlugin};
 pub(crate) use installed::ensure_profile_npmrc;
+pub(crate) use internal::ensure as ensure_internal_plugins;
 pub use preset::repo_url_of;
 pub(crate) use preset::{current_preset_hash, preinstall_pending};
 pub use recovery::{detect as detect_recovery, uninstall as uninstall_recovery, PluginRecoveryInfo};
+pub(crate) use verify::ensure_preset_plugins;
 pub use watch::DshPlugin;

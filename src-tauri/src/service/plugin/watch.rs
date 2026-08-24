@@ -341,6 +341,7 @@ mod tests {
             default_checked: false,
             win_only: false,
             package: None,
+            internal: false,
         }]
     }
 

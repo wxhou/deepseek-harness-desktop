@@ -25,7 +25,7 @@ use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 
 use super::errors;
 use super::installed::{is_installed, profile_dir};
-use super::preset::load_presets;
+use super::preset::{bundled_plugin_dir, file_dep_spec, load_presets, PreinstallPluginInfo};
 use super::process::{run_plugin_process, PreinstallLogPayload, PREINSTALL_LOG_EVENT};
 use super::recovery::is_actionable_plugin_ref;
 use super::uninstall_recovery;
@@ -50,21 +50,23 @@ pub async fn install(app_handle: &AppHandle, ids: &[String]) -> Result<(), Strin
 
     // 单次读取预设并构建查找表，提升算法效率至 O(N)
     let presets = load_presets(app_handle);
-    let preset_map: HashMap<&str, &str> = presets
+    let preset_map: HashMap<&str, &PreinstallPluginInfo> = presets
         .iter()
-        .map(|p| (p.id.as_str(), p.spec.as_str()))
+        .map(|p| (p.id.as_str(), p))
         .collect();
 
     let mut specs = Vec::with_capacity(ids.len());
     for id in ids {
-        let spec = preset_map
+        let preset = preset_map
             .get(id.as_str())
             .ok_or_else(|| format!("PREINSTALL_INVALID_ID: {id}"))?;
-        // 统一把 `github:user/repo` 规范为显式 `git+https://...`，绕开 pnpm 对
+        // 内置插件改为从随包分发的捆绑目录安装（`file:` 本地依赖，见
+        // preset::file_dep_spec），其余沿用清单声明的 spec；随后统一把
+        // `github:user/repo` 规范为显式 `git+https://...`，绕开 pnpm 对
         // GitHub 简写「HTTPS 探测失败即回退 SSH」的已知缺陷（pnpm issue
         // #3948 / #7243 / #13276）：公开仓库一旦落进 git+ssh，在没有 SSH 配置
         // 的桌面机上必然 `Host key verification failed` / `Permission denied (publickey)`。
-        specs.push(normalize_git_spec(spec));
+        specs.push(normalize_git_spec(&preset_spec_for_install(preset, bundled_dir_of(app_handle, preset))?));
     }
 
     // 确保 pnpm/dsh shim 存在
@@ -191,9 +193,42 @@ pub async fn install(app_handle: &AppHandle, ids: &[String]) -> Result<(), Strin
     Ok(())
 }
 
+/// 内置插件才需要解析捆绑目录（普通插件无此概念），避免无谓的资源探测
+fn bundled_dir_of(app_handle: &AppHandle, preset: &PreinstallPluginInfo) -> Option<PathBuf> {
+    if !preset.internal {
+        return None;
+    }
+    bundled_plugin_dir(app_handle, &preset.id)
+}
+
+/// 解析某预设的安装 spec（纯函数，便于单测）：内置插件固定为随包捆绑目录的
+/// `file:` 本地依赖（路径正确性由 [`super::internal::ensure`] 启动自愈核对）；
+/// 普通插件沿用清单声明。
+///
+/// 捆绑目录缺失时返回错误：内置插件缺失意味着构建期 prebuild 未执行或产物被
+/// 删，属发布缺陷而非用户侧的普通安装失败，错误前缀便于区分。
+fn preset_spec_for_install(
+    preset: &PreinstallPluginInfo,
+    bundled_dir: Option<PathBuf>,
+) -> Result<String, String> {
+    if !preset.internal {
+        return Ok(preset.spec.clone());
+    }
+    let dir = bundled_dir.ok_or_else(|| {
+        format!(
+            "BUNDLED_PLUGIN_MISSING: no bundled dir for internal plugin {} (run scripts/prebuild.ts at build time)",
+            preset.id
+        )
+    })?;
+    Ok(file_dep_spec(&dir))
+}
+
 /// 构建 `dsh plugin` 子进程的环境变量：隔离 $DSH_HOME、关闭遥测与颜色，
 /// PATH 前置 shim 目录与 node 目录；用户 pnpm 过旧时强制捆绑版（见 ensure_pnpm）。
-fn build_plugin_envs(app_handle: &AppHandle, prefer_bundled_pnpm: bool) -> HashMap<String, String> {
+///
+/// 供本模块的安装/升级/卸载与 [`super::verify`] 的完整性修复共用：子进程（dsh
+/// 或 pnpm）都按同一套桌面端环境策略运行，保证 $DSH_HOME / PATH 布局一致。
+pub(crate) fn build_plugin_envs(app_handle: &AppHandle, prefer_bundled_pnpm: bool) -> HashMap<String, String> {
     let node = config::get_node_binary_path(app_handle);
     let bin_dir = cli::get_bin_dir(app_handle);
     let mut envs = HashMap::from([
@@ -287,22 +322,30 @@ pub async fn update(app_handle: &AppHandle, id: &str) -> Result<(), String> {
 
 /// 卸载单个插件：`dsh plugin --profile <当前档案> remove <id>`
 pub async fn remove(app_handle: &AppHandle, id: &str) -> Result<(), String> {
-    run_single_plugin_command(app_handle, id, "remove", &["remove".to_string(), id.to_string()])
-        .await?;
+    let command_result =
+        run_single_plugin_command(app_handle, id, "remove", &["remove".to_string(), id.to_string()])
+            .await;
     // `dsh plugin remove` 以子进程退出码为准，可能出现「命令成功但插件仍在」的
-    // 边界（如 bundle 层残留、pnpm 静默失败）：核验 profile 清单，若插件仍被引用
-    // 则回落到离线卸载（直接改清单 + 删目录 + 清 lockfile），确保插件真正移除
+    // 边界（如 bundle 层残留、pnpm 静默失败）；node_modules / lockfile 损坏时
+    // （典型：安装只写入了 profile 清单而产物缺失，见 issue #90）pnpm 甚至会
+    // 直接失败。两种情形统一核验 profile 清单：只要插件仍被引用就回落离线卸载
+    // （直接改清单 + 删目录 + 清 lockfile），确保插件真正移除
     // （参考 dsh-market 的「卸载后核验」约定：确认插件离开 profile 才算成功）。
     if is_installed(app_handle, id) {
         // 第三方可卸载插件才允许离线兜底；核心/官方等受保护包即使残留也不强删
-        // （`uninstall_recovery` 对它们会拒绝），仅记录告警，避免把已成功的卸载
-        // 误报为失败。
+        // （`uninstall_recovery` 对它们会拒绝）。
         if is_actionable_plugin_ref(id) {
+            let outcome = match &command_result {
+                Ok(()) => "reported success".to_string(),
+                Err(e) => format!("failed: {e}"),
+            };
             log::warn!(
-                "dsh plugin remove reported success but {id} is still referenced by profile manifest; forcing offline uninstall"
+                "dsh plugin remove {outcome} but {id} is still referenced by profile manifest; forcing offline uninstall"
             );
             uninstall_recovery(app_handle, id)?;
         } else {
+            // 受保护包：命令失败则如实上报（不要把失败误报为成功），成功则仅告警。
+            command_result?;
             log::warn!(
                 "dsh plugin remove reported success but protected package {id} is still referenced by profile manifest; skipping offline uninstall"
             );
@@ -547,7 +590,9 @@ async fn ensure_pnpm(app_handle: &AppHandle, window: &WebviewWindow) -> Result<b
 
 /// 用户 pnpm 主版本号（解析 `pnpm --version` 首个点分字段）；不存在或不可运行
 /// （corepack shim 在 Node 24 上 ERR_INVALID_THIS 崩溃等）返回 None。
-fn user_pnpm_major_version(app_handle: &AppHandle) -> Option<u32> {
+///
+/// 供 [`ensure_pnpm`] 选版与 [`super::verify`] 的修复选版共用（store 主版本匹配）。
+pub(crate) fn user_pnpm_major_version(app_handle: &AppHandle) -> Option<u32> {
     let pnpm = cli::find_user_pnpm(app_handle)?;
     // 打包版是 GUI 进程（无控制台）：直接运行 pnpm（控制台子系统）会新建一个
     // 可见的黑色 cmd 窗口。`harness_prefer_bundled_pnpm` 在每次服务启动都会调本
@@ -574,7 +619,8 @@ fn user_pnpm_major_version(app_handle: &AppHandle) -> Option<u32> {
 /// pnpm 10 与 11 的 store 布局互不兼容：用与 store 主版本不一致的 pnpm 更新
 /// 已装插件会 `ERR_PNPM_UNEXPECTED_STORE` 退出。档案尚未安装过依赖（没有
 /// node_modules）时返回 `None`，由调用方走"全新档案"逻辑。
-fn profile_store_major(app_handle: &AppHandle) -> Option<u32> {
+/// 供 [`ensure_pnpm`] 选版与 [`super::verify`] 的修复选版共用。
+pub(crate) fn profile_store_major(app_handle: &AppHandle) -> Option<u32> {
     let modules_yaml = profile_dir(app_handle)
         .join("node_modules")
         .join(".modules.yaml");
@@ -598,7 +644,9 @@ fn parse_store_major_from_modules_yaml(content: &str) -> Option<u32> {
 
 /// 捆绑版 pnpm 的主版本（读 `dependencies/pnpm/package.json` 的 version 字段）；
 /// 未安装或清单缺失返回 None。
-fn bundled_pnpm_major(app_handle: &AppHandle) -> Option<u32> {
+///
+/// 供 [`ensure_pnpm`] 选版与 [`super::verify`] 的修复选版共用（store 主版本匹配）。
+pub(crate) fn bundled_pnpm_major(app_handle: &AppHandle) -> Option<u32> {
     let manifest = config::get_pnpm_install_path(app_handle).join("package.json");
     let content = std::fs::read_to_string(manifest).ok()?;
     let value: serde_json::Value = serde_json::from_str(&content).ok()?;
@@ -922,7 +970,59 @@ pub(crate) fn harness_prefer_bundled_pnpm(app_handle: &AppHandle) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_allow_build_keys, collapse_allow_builds_duplicates, extract_allow_line_key, git_transport_hint, normalize_git_spec, parse_allowlist_keys, parse_store_major_from_modules_yaml};
+    use std::path::PathBuf;
+    use super::{apply_allow_build_keys, collapse_allow_builds_duplicates, extract_allow_line_key, git_transport_hint, normalize_git_spec, parse_allowlist_keys, parse_store_major_from_modules_yaml, preset_spec_for_install, PreinstallPluginInfo};
+
+    /// 构造预设条目的测试助手（internal 由各用例显式指定）
+    fn preset(id: &str, spec: &str, internal: bool) -> PreinstallPluginInfo {
+        PreinstallPluginInfo {
+            id: id.into(),
+            spec: spec.into(),
+            package: None,
+            name: String::new(),
+            description: String::new(),
+            repo_url: String::new(),
+            recommended: false,
+            fix: false,
+            default_checked: false,
+            win_only: false,
+            internal,
+        }
+    }
+
+    #[test]
+    fn install_spec_passthrough_for_regular_preset() {
+        // 普通插件：spec 原样返回，与捆绑目录无关
+        let p = preset("dshmarket", "dshmarket", false);
+        assert_eq!(
+            preset_spec_for_install(&p, None).unwrap(),
+            "dshmarket"
+        );
+        assert_eq!(
+            preset_spec_for_install(&p, Some(PathBuf::from("/ignored"))).unwrap(),
+            "dshmarket"
+        );
+    }
+
+    #[test]
+    fn install_spec_uses_bundled_dir_for_internal_preset() {
+        // 内置插件：安装依赖为 file:<捆绑目录>（正斜杠规范形）
+        let p = preset("dsh-tauri", "github:hairyf/dsh-tauri", true);
+        let dir = PathBuf::from("C:\\Apps\\dsh\\resources\\preset-plugins\\dsh-tauri");
+        assert_eq!(
+            preset_spec_for_install(&p, Some(dir)).unwrap(),
+            "file:C:/Apps/dsh/resources/preset-plugins/dsh-tauri"
+        );
+    }
+
+    #[test]
+    fn install_spec_errors_when_internal_bundle_missing() {
+        // 内置插件捆绑目录缺失：发布缺陷，显式报错而非静默走 git spec
+        let p = preset("dsh-tauri", "github:hairyf/dsh-tauri", true);
+        let err = preset_spec_for_install(&p, None).unwrap_err();
+        assert!(err.starts_with("BUNDLED_PLUGIN_MISSING"));
+        assert!(err.contains("dsh-tauri"));
+    }
 
     #[test]
     fn store_major_parsed_from_modules_yaml() {
