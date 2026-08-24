@@ -63,14 +63,14 @@
 **macOS（Homebrew）：** 也可通过 Homebrew 一键安装：
 
 ```bash
-brew install dsh-tauri-desk/homebrew-deepseek-harness-desktop
+brew install dsh-tauri-desk/desktop/deepseek-harness-desktop
 ```
 
 首次运行会下载 Node 运行时与 Harness 内核，随后直接进入 `http://127.0.0.1:3080` 的 Harness 界面；此后完全本地运行，无需联网。
 
 **系统要求：** Windows 10+（64 位）· macOS 10.15+ · Linux（AppImage / `.deb`，基于 Ubuntu 22.04 构建，兼容 22.04 及更新版本）· 首次运行需要网络
 
-> **Linux Wayland 注意（PikaOS / GNOME Wayland / Ubuntu 22.04+）：** AppImage 捆绑的 WebKitGTK 4.1 在 Wayland 下可能报 `Could not create default EGL display: EGL_BAD_PARAMETER` + `g_task_set_static_name`（宿主 `gvfs`/`glib` 版本与 AppImage 内 bundled 不一致）。已在 `v0.7.6` 自动 workaround（`XDG_SESSION_TYPE=wayland` 时 `WEBKIT_DISABLE_COMPOSITING_MODE=1`）。若仍黑屏/崩溃：**推荐 `.deb`**（使用宿主 `libwebkit2gtk-4.1.so.0`，已验证 PikaOS 4 Wayland），或手动 `WEBKIT_DISABLE_COMPOSITING_MODE=1 WEBKIT_DISABLE_DMABUF_RENDERER=1 GDK_BACKEND=x11 ./AppImage`。图标若不显示：`cp` 应用内 `hicolor` 图标到 `~/.local/share/icons` 并 `update-desktop-database`。
+> **Linux Wayland 注意（PikaOS / GNOME Wayland / Ubuntu 22.04+）：** AppImage 在 Wayland 下可能因 WebKitGTK 黑屏/崩溃，`v0.7.6` 已自动处理常见情形。若仍黑屏/崩溃：**改用 `.deb`**（已验证 PikaOS 4 Wayland），或手动 `WEBKIT_DISABLE_COMPOSITING_MODE=1 WEBKIT_DISABLE_DMABUF_RENDERER=1 GDK_BACKEND=x11 ./AppImage`。图标不显示时，将应用内 `hicolor` 图标复制到 `~/.local/share/icons` 并运行 `update-desktop-database`。
 
 ## 开发
 

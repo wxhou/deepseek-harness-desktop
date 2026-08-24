@@ -64,14 +64,14 @@ Download the installer for your platform from [Releases](https://github.com/hair
 **macOS (Homebrew):** you can also install it in one command via Homebrew (auto-verified signing / notarization):
 
 ```bash
-brew install dsh-tauri-desk/homebrew-deepseek-harness-desktop
+brew install dsh-tauri-desk/desktop/deepseek-harness-desktop
 ```
 
 The first run downloads the Node runtime and Harness core (~a few hundred MB) and takes you straight into the harness at `http://127.0.0.1:3080`. Everything after that runs locally — no network required.
 
 **Requirements:** Windows 10+ (64-bit) · macOS 10.15+ · Linux (AppImage / `.deb`, Ubuntu 22.04+) · network on first launch
 
-> **Linux Wayland note (PikaOS / GNOME Wayland):** AppImage bundles WebKitGTK 4.1 and may fail with `Could not create default EGL display: EGL_BAD_PARAMETER` on Wayland. Fixed in `v0.7.6` (`XDG_SESSION_TYPE=wayland` → `WEBKIT_DISABLE_COMPOSITING_MODE=1`). If still black/ crash: use `.deb` (host `libwebkit2gtk-4.1`, verified on PikaOS 4 Wayland) or run `WEBKIT_DISABLE_COMPOSITING_MODE=1 WEBKIT_DISABLE_DMABUF_RENDERER=1 GDK_BACKEND=x11 ./AppImage`.
+> **Linux Wayland note (PikaOS / GNOME Wayland):** AppImage may crash or render black on Wayland due to WebKitGTK; `v0.7.6` auto-fixes the common case. If it still fails, prefer `.deb` (verified on PikaOS 4 Wayland) or run `WEBKIT_DISABLE_COMPOSITING_MODE=1 WEBKIT_DISABLE_DMABUF_RENDERER=1 GDK_BACKEND=x11 ./AppImage`.
 
 ## Dev
 
