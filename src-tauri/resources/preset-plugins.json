@@ -12,11 +12,11 @@
   },
   {
     "id": "dsh-tauri",
-    "spec": "github:hairyf/dsh-tauri",
+    "spec": "dsh-tauri@0.2.0",
     "internal": true,
     "name": "DSH Tauri",
     "description": "Message bridge for the DeepSeek Harness desktop shell",
-    "repoUrl": "https://github.com/hairyf/dsh-tauri",
+    "repoUrl": "https://github.com/dsh-tauri-desk/dsh-tauri",
     "recommended": true
   },
   {

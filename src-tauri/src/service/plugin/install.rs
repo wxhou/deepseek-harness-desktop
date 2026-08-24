@@ -1007,7 +1007,7 @@ mod tests {
     #[test]
     fn install_spec_uses_bundled_dir_for_internal_preset() {
         // 内置插件：安装依赖为 file:<捆绑目录>（正斜杠规范形）
-        let p = preset("dsh-tauri", "github:hairyf/dsh-tauri", true);
+        let p = preset("dsh-tauri", "dsh-tauri@0.2.0", true);
         let dir = PathBuf::from("C:\\Apps\\dsh\\resources\\preset-plugins\\dsh-tauri");
         assert_eq!(
             preset_spec_for_install(&p, Some(dir)).unwrap(),
@@ -1017,8 +1017,8 @@ mod tests {
 
     #[test]
     fn install_spec_errors_when_internal_bundle_missing() {
-        // 内置插件捆绑目录缺失：发布缺陷，显式报错而非静默走 git spec
-        let p = preset("dsh-tauri", "github:hairyf/dsh-tauri", true);
+        // 内置插件捆绑目录缺失：发布缺陷，显式报错而非静默走 npm/git spec
+        let p = preset("dsh-tauri", "dsh-tauri@0.2.0", true);
         let err = preset_spec_for_install(&p, None).unwrap_err();
         assert!(err.starts_with("BUNDLED_PLUGIN_MISSING"));
         assert!(err.contains("dsh-tauri"));

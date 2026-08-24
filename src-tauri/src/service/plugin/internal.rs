@@ -127,8 +127,8 @@ mod tests {
     #[test]
     fn dep_spec_rejects_wrong_path_or_source() {
         let expected = "file:C:/Apps/dsh/resources/preset-plugins/dsh-tauri";
-        // 仍指向 git 源（用户手动从仓库安装）
-        assert!(!dep_matches_spec("github:hairyf/dsh-tauri", expected));
+        // 仍指向 npm 版本（用户手动从 npm 安装，非捆绑 file: 源）
+        assert!(!dep_matches_spec("dsh-tauri@0.2.0", expected));
         // 指向其它位置（旧版本安装目录等）
         assert!(!dep_matches_spec("file:D:/elsewhere/dsh-tauri", expected));
         // 同名不同宿主盘符
