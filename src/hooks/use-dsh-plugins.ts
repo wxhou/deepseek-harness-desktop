@@ -31,6 +31,8 @@ export interface DshPlugin {
   recommended: boolean
   /** 预设清单中的「修复」标记 */
   fix: boolean
+  /** 预设清单中的「内置」标记（随包分发/本地热更新）：隐藏卸载入口并标注 [内置] */
+  internal: boolean
   /** 是否有可用更新（由 `service::plugin::updates` 探测；未判定时为 false） */
   updateAvailable: boolean
   /** 判定得到的「最新版本」（registry latest / git HEAD SHA）；未判定时缺省 */

@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
 use super::errors::{self, PluginError};
-use super::installed::{profile_dir, ProfilePackageJson};
+use super::installed::{installed_name, profile_dir, ProfilePackageJson};
 use super::preset::{load_presets, PreinstallPluginInfo};
 
 /// 前端监听的事件名（插件列表变化时推送）
@@ -48,6 +48,8 @@ pub struct DshPlugin {
     pub recommended: bool,
     /// 预设清单中的「修复」标记（黄色 chip）
     pub fix: bool,
+    /// 预设清单中的「内置」标记（随包分发/本地热更新，前端据此隐藏卸载入口并标注）
+    pub internal: bool,
     /// 是否有可用更新（由 `service::plugin::update` 探测；尚未判定时为 false，
     /// 前端在挂载后经 `refresh_plugin_updates` 补齐——因此有更新时才显示升级按钮，
     /// 不会「常驻」）
@@ -135,6 +137,14 @@ fn parse_plugins(profile: &Path, presets: &[PreinstallPluginInfo]) -> Vec<DshPlu
     let preset_map: HashMap<&str, &PreinstallPluginInfo> =
         presets.iter().map(|p| (p.id.as_str(), p)).collect();
 
+    // 内置插件按真实依赖键（installed_name：package 优先否则 id）归集，
+    // 与 `internal.rs::ensure` 的安装/自愈口径一致
+    let internal_names: HashSet<String> = presets
+        .iter()
+        .filter(|p| p.internal)
+        .map(|p| installed_name(p).to_string())
+        .collect();
+
     let mut dep_ids: Vec<&String> = manifest.dependencies.keys().collect();
     // 稳定排序：启动加载（bundles）的插件在前，其余按 id 字典序
     dep_ids.sort_by_key(|id| (!bundled.contains(id.as_str()), id.as_str()));
@@ -174,6 +184,7 @@ fn parse_plugins(profile: &Path, presets: &[PreinstallPluginInfo]) -> Vec<DshPlu
                 bundled: bundled.contains(id.as_str()),
                 recommended: preset.map(|p| p.recommended).unwrap_or(false),
                 fix: preset.map(|p| p.fix).unwrap_or(false),
+                internal: internal_names.contains(id.as_str()),
                 update_available: false,
                 latest_version: None,
                 error: None,
@@ -403,6 +414,45 @@ mod tests {
         assert_eq!(market.version, "");
         assert_eq!(market.description, "Visual plugin market");
         assert_eq!(market.repo_url, "https://github.com/dsh-market/dsh-market");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn parse_plugins_marks_internal_presets() {
+        let dir = build_profile(
+            "internal",
+            &[
+                (
+                    "dsh-tauri",
+                    r#"{"name":"dsh-tauri","version":"0.2.0","description":"bridge"}"#,
+                ),
+                (
+                    "dshmarket",
+                    r#"{"name":"dshmarket","version":"1.13.1"}"#,
+                ),
+            ],
+        );
+        let mut presets = presets_for_test();
+        presets.push(PreinstallPluginInfo {
+            id: "dsh-tauri".into(),
+            spec: "dsh-tauri@0.2.0".into(),
+            name: "DSH Tauri".into(),
+            description: "Message bridge".into(),
+            repo_url: "https://github.com/dsh-tauri-desk/dsh-tauri".into(),
+            recommended: true,
+            fix: false,
+            default_checked: false,
+            win_only: false,
+            package: None,
+            internal: true,
+        });
+        let plugins = parse_plugins(&dir, &presets);
+        assert_eq!(plugins.len(), 2);
+        let tauri = plugins.iter().find(|p| p.id == "dsh-tauri").unwrap();
+        assert!(tauri.internal);
+        let market = plugins.iter().find(|p| p.id == "dshmarket").unwrap();
+        assert!(!market.internal);
 
         std::fs::remove_dir_all(&dir).ok();
     }

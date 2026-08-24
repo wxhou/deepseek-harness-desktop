@@ -3,6 +3,7 @@ import type { UnlistenFn } from '@tauri-apps/api/event'
 import type {
   InstallerState,
   InstallProgress,
+  InternalPluginsPhasePayload,
   PluginRecoveryInfo,
   PreinstallLogPayload,
   PreinstallPlugin,
@@ -180,6 +181,8 @@ export const harness = defineStore({
     iframeKey: 0,
     serviceHealthy: false,
     serviceRunning: false,
+    /** 内置插件核对/安装阶段：加载屏在「Loading internal plugins…」与「Loading plugins…」间切换 */
+    internalLoading: false,
     busyAction: null as SidebarBusyAction,
   }),
   actions: {
@@ -189,6 +192,7 @@ export const harness = defineStore({
         return
       bootStarted = true
       void this.listenPluginRecovery()
+      void this.listenInternalPhase()
       void this.boot()
     },
 
@@ -204,6 +208,22 @@ export const harness = defineStore({
       }
       catch (err) {
         console.error('[Harness] failed to listen plugin-recovery-required:', err)
+      }
+    },
+
+    /**
+     * 订阅后端「内置插件核对阶段」推送：`internal-plugins-phase` 事件
+     * （loading / done），加载屏据此在「Loading internal plugins…」与
+     * 「Loading plugins…」之间切换。事件在服务启动前发出，健康轮询期间到达。
+     */
+    async listenInternalPhase() {
+      try {
+        await listen<InternalPluginsPhasePayload>('internal-plugins-phase', (event) => {
+          this.internalLoading = event.payload.phase === 'loading'
+        })
+      }
+      catch (err) {
+        console.error('[Harness] failed to listen internal-plugins-phase:', err)
       }
     },
 
@@ -356,6 +376,19 @@ export const harness = defineStore({
           }
           await invoke('install_dependencies')
         }
+
+        // 内置插件自愈（独立于预装引导）：无论是否进入预装页、点不点「继续/跳过」，
+        // 都在启动阶段先把内置插件核对/安装到位——加载屏先显示「Loading internal
+        // plugins…」（此处乐观置位消除文案闪跳，后端 internal-plugins-phase 事件为
+        // 权威信号），确保「下一步先加载内部插件」。后端幂等且不阻断：失败仅告警。
+        this.internalLoading = true
+        try {
+          await invoke('ensure_internal_plugins')
+        }
+        catch (err) {
+          console.error('[Harness] ensure internal plugins failed (best-effort):', err)
+        }
+        this.internalLoading = false
 
         // 预装插件引导：首次安装、老版本升级（无指纹基线）或 preset-plugins.json
         // 内容变更（社区新增推荐插件）时重新进入预设流程，装完/跳过后才拉起服务。

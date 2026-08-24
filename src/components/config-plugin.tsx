@@ -154,7 +154,7 @@ export function ConfigPlugin() {
           )}
         >
           <div className="space-y-3 flex-wrap gap-2">
-            {plugins.map(plugin => (
+            {plugins.sort(a => a.internal ? -1 : 1).map(plugin => (
               <Item
                 key={plugin.id}
                 left={(
@@ -191,6 +191,11 @@ export function ConfigPlugin() {
                           {plugin.version}
                         </code>
                       </If>
+                      <If cond={plugin.internal}>
+                        <code className="shrink-0 rounded bg-default px-1.5 py-0.5 font-mono text-[10px] text-muted">
+                          {t('plugins.builtin')}
+                        </code>
+                      </If>
                     </div>
                     <If cond={plugin.description !== ''}>
                       <TextEllipsis lineClamp={2} className="text-xs text-muted">
@@ -220,18 +225,20 @@ export function ConfigPlugin() {
                         </span>
                       </Chip>
                     </If>
-                    <Chip
-                      className={`rounded-md${busy ? ' cursor-not-allowed opacity-50' : ' cursor-pointer'}`}
-                      variant="primary"
-                      color="danger"
-                      size="sm"
-                      onClick={() => onRemove(plugin.id, plugin.name)}
-                    >
-                      <span className="flex items-center gap-1">
-                        <If cond={busy?.id === plugin.id && busy.action === 'remove'} then={<Spinner size="sm" color="current" />} />
-                        {t('plugins.uninstall')}
-                      </span>
-                    </Chip>
+                    <If cond={!plugin.internal}>
+                      <Chip
+                        className={`rounded-md${busy ? ' cursor-not-allowed opacity-50' : ' cursor-pointer'}`}
+                        variant="primary"
+                        color="danger"
+                        size="sm"
+                        onClick={() => onRemove(plugin.id, plugin.name)}
+                      >
+                        <span className="flex items-center gap-1">
+                          <If cond={busy?.id === plugin.id && busy.action === 'remove'} then={<Spinner size="sm" color="current" />} />
+                          {t('plugins.uninstall')}
+                        </span>
+                      </Chip>
+                    </If>
                   </>
                 )}
               />

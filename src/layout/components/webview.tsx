@@ -23,6 +23,7 @@ export function Webview() {
   const {
     status,
     serviceHealthy,
+    internalLoading,
     iframeError,
     iframeKey,
     iframeSrc,
@@ -79,7 +80,7 @@ export function Webview() {
       <div className="relative min-h-0 flex-1">
         <If
           cond={serviceHealthy}
-          else={<Loadable subtitle={t('status.loading')} />}
+          else={<Loadable subtitle={internalLoading ? t('status.loading_internal') : t('status.loading')} />}
         >
           <iframe
             key={iframeKey}

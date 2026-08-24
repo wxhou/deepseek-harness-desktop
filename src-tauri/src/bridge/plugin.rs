@@ -52,6 +52,19 @@ pub async fn skip_preinstall_plugins(app_handle: AppHandle) -> Result<(), String
     Ok(())
 }
 
+/// 内置插件启动自愈（供前端 boot 流程调用，独立于预装引导「继续/跳过」）。
+///
+/// 与 service 启动路径（`workflow::launch` 内）共用 `plugin::ensure_internal_plugins`
+/// 同一实现：内部有并发锁、幂等，此后启动/重启路径会再核对但均为 no-op。
+/// 最佳努力：失败只记告警，不阻断启动；前端据此在「Loading internal plugins…」
+/// 与「Loading plugins…」之间切换加载屏文案。
+#[tauri::command]
+pub async fn ensure_internal_plugins(app_handle: AppHandle) {
+    if let Err(e) = plugin::ensure_internal_plugins(&app_handle).await {
+        log::warn!("ensure internal plugins via bridge failed: {e}");
+    }
+}
+
 /// 是否有新的预装插件需要引导：预设清单内容与上次记录不一致（或老用户无基线）。
 /// 资源文件每次安装都被强制覆盖不可比对，只能比对 app-data 里记录的内容指纹。
 #[tauri::command]
