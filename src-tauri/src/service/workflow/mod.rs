@@ -1,5 +1,6 @@
 pub mod status;
 pub mod utils;
+pub(crate) mod renderer_patch;
 pub(crate) mod win_inspector;
 #[cfg(windows)]
 pub(crate) mod win_spawn;
@@ -709,6 +710,13 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     // minimal-win 用户 preset 落盘（幂等）。最佳努力：失败只告警，不阻断启动。
     if let Err(e) = win_inspector::apply(&app_handle) {
         log::warn!("win32 terminal support apply failed: {e}");
+    }
+    // renderer 的 SlotOutlet 一行导出补丁（dsh-tauri-ui 设置侧边栏依赖）：只补
+    // 活动核心的 dsh-client-ui-renderer lib/client.js，已含导出即跳过（幂等；核心
+    // 换版本后自动重打，上游官方导出后自动退休）。最佳努力：失败只告警，不阻断
+    // 启动——未打补丁时插件侧降级，官方设置 dialog 照常工作，绝不白屏。
+    if let Err(e) = renderer_patch::apply(&app_handle) {
+        log::warn!("renderer SlotOutlet patch failed: {e}");
     }
     // 预防性处理：pnpm 在无 TTY 环境（dsh-market 等子进程）下重装/更新插件时，
     // 清理/重建 node_modules 会触发交互确认并因无 TTY 直接中止
