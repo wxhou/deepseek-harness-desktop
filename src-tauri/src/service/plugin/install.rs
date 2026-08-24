@@ -67,7 +67,16 @@ pub async fn install(app_handle: &AppHandle, ids: &[String]) -> Result<(), Strin
         // GitHub 简写「HTTPS 探测失败即回退 SSH」的已知缺陷（pnpm issue
         // #3948 / #7243 / #13276）：公开仓库一旦落进 git+ssh，在没有 SSH 配置
         // 的桌面机上必然 `Host key verification failed` / `Permission denied (publickey)`。
-        specs.push(normalize_git_spec(&preset_spec_for_install(preset, bundled_dir_of(app_handle, preset))?));
+        //
+        // 最后经 shell_quote_spec 给含空格的 spec 加内嵌双引号：dsh CLI 以
+        // `shell:true` 把参数按空格拼接（Node 不引号转义），内置插件指向应用
+        // 安装目录（如 `G:\Deepseek Harness Desktop\...`，路径常含空格），拼进
+        // shell 后会被切碎成多个 spec，pnpm 报 `ERR_PNPM_SPEC_NOT_SUPPORTED`，
+        // 插件装不上、启动自愈每次重装（死循环）。引号让 shell 把整条 spec 视为
+        // 单一 token；pnpm 解析后自行剥离引号，落盘值仍是不带引号的 `link:<路径>`，
+        // 与内核对账的 `expected`（bundled_dep_spec）一致。
+        let raw = normalize_git_spec(&preset_spec_for_install(preset, bundled_dir_of(app_handle, preset))?);
+        specs.push(shell_quote_spec(&raw));
     }
 
     // 确保 pnpm/dsh shim 存在
@@ -914,6 +923,27 @@ fn normalize_git_spec(spec: &str) -> String {
     url
 }
 
+/// 给含空白字符的依赖 spec 加内嵌双引号，使其在 shell 拼接后仍保持单一 token。
+///
+/// `dsh plugin add` 在 JS 里用 `spawnSync("pnpm", args, {shell:true})` 把参数按
+/// 空格直接拼接传给 shell（Node 对 `shell:true` 不引号转义，仅拼接）。内置插件
+/// 的依赖是 `link:<应用安装目录>`，而 Windows 安装目录常含空格（如
+/// `G:\Deepseek Harness Desktop\resources\preset-plugins\dsh-tauri`），拼进 shell
+/// 后会被切碎成多个 spec，pnpm 报 `ERR_PNPM_SPEC_NOT_SUPPORTED` / 装成错误依赖，
+/// 导致启动自愈每轮都重装（死循环）。包一层双引号让 cmd / sh 把整条 spec 视为
+/// 一个参数；pnpm 解析后自行剥离引号，落盘 `package.json` 的值仍是不带引号的
+/// 规范 `link:<路径>`（与 [`super::preset::bundled_dep_spec`] 的内核对账一致）。
+///
+/// 仅在 spec 含空白时才包引号——普通 npm 包名 / `git+https://...` 无空格，原样
+/// 透传，避免无谓改动。
+fn shell_quote_spec(spec: &str) -> String {
+    if spec.chars().any(|c| c == ' ' || c == '\t') {
+        format!("\"{spec}\"")
+    } else {
+        spec.to_string()
+    }
+}
+
 /// 从 pnpm 失败输出里识别 git 传输层错误（区别于 allowBuilds 构建门禁），命中时
 /// 返回一句可读的成因/指引。pnpm 在这些场景下已经退到 git+ssh，再去补 allowBuilds
 /// 白名单是无效且误导的。
@@ -972,7 +1002,7 @@ pub(crate) fn harness_prefer_bundled_pnpm(app_handle: &AppHandle) -> bool {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
-    use super::{apply_allow_build_keys, collapse_allow_builds_duplicates, extract_allow_line_key, git_transport_hint, normalize_git_spec, parse_allowlist_keys, parse_store_major_from_modules_yaml, preset_spec_for_install, PreinstallPluginInfo};
+    use super::{apply_allow_build_keys, collapse_allow_builds_duplicates, extract_allow_line_key, git_transport_hint, normalize_git_spec, parse_allowlist_keys, parse_store_major_from_modules_yaml, preset_spec_for_install, shell_quote_spec, PreinstallPluginInfo};
 
     /// 构造预设条目的测试助手（internal 由各用例显式指定）
     fn preset(id: &str, spec: &str, internal: bool) -> PreinstallPluginInfo {
@@ -1223,6 +1253,44 @@ allowBuilds:
             normalize_git_spec("git+https://github.com/foo/bar.git"),
             "git+https://github.com/foo/bar.git"
         );
+    }
+
+    // ---- spec 引号化（内置插件 link: 路径含空格，绕开 dsh CLI shell 拼接切分）----
+
+    #[test]
+    fn shell_quote_quotes_spec_containing_spaces() {
+        // 安装目录含空格（如 G:\Deepseek Harness Desktop）：整条 spec 加双引号，
+        // 使 dsh CLI 的 shell:true 拼接后仍被 shell 视为单一 token
+        assert_eq!(
+            shell_quote_spec("link:G:/Deepseek Harness Desktop/resources/preset-plugins/dsh-tauri"),
+            "\"link:G:/Deepseek Harness Desktop/resources/preset-plugins/dsh-tauri\""
+        );
+        // 制表符同样触发
+        assert_eq!(shell_quote_spec("link:C:/x\ty"), "\"link:C:/x\ty\"");
+    }
+
+    #[test]
+    fn shell_quote_leaves_space_free_spec_untouched() {
+        // 普通 npm 包名 / git HTTPS spec 无空格：原样透传，不引入多余引号
+        assert_eq!(shell_quote_spec("dshmarket"), "dshmarket");
+        assert_eq!(
+            shell_quote_spec("git+https://github.com/omdsh-dev/DSH-better-sidebar.git#next"),
+            "git+https://github.com/omdsh-dev/DSH-better-sidebar.git#next"
+        );
+        // 无空格的内置插件路径同样不被改动（保持与 internal.rs expected 一致）
+        assert_eq!(
+            shell_quote_spec("link:C:/Apps/dsh/resources/preset-plugins/dsh-tauri"),
+            "link:C:/Apps/dsh/resources/preset-plugins/dsh-tauri"
+        );
+    }
+
+    #[test]
+    fn shell_quote_preserves_link_prefix_semantics() {
+        // 引号只包 path 部分也不影响 pnpm 解析（落盘值仍为不带引号的 link: 规范形）
+        let quoted = shell_quote_spec("link:G:/Deepseek Harness Desktop/resources/preset-plugins/dsh-tauri");
+        assert!(quoted.starts_with('"'));
+        assert!(quoted.ends_with('"'));
+        assert!(quoted.contains("Deepseek Harness Desktop"));
     }
 
     // ---- git 传输层错误识别（区别于 allowBuilds 门禁）----
