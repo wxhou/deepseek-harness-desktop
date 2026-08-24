@@ -1,4 +1,4 @@
-name: Unit Test
+name: CI
 
 on:
   push:
@@ -6,16 +6,92 @@ on:
   pull_request:
     branches: [main]
 
-permissions: {}
+permissions:
+  contents: read
+
+# 同一分支/PR 的新提交会取消上次仍在运行的 CI，避免浪费 runner 时间。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # doc 下的 debug 符号只会膨胀 target 目录、降低缓存命中率，测试不需要。
+  CARGO_PROFILE_DEV_DEBUG: 0
 
 jobs:
-  unit-test:
-    uses: sxzz/workflows/.github/workflows/unit-test.yml@main
-    with:
-      lint: pnpm run lint # && pnpm run knip
+  # 前端（vitest + typecheck + lint）：
+  frontend:
+    name: Frontend (vitest + typecheck + lint)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
 
-  # coverage:
-  #   uses: sxzz/workflows/.github/workflows/coverage.yml@main
-  #   needs: unit-test
-  #   permissions:
-  #     id-token: write
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Type check
+        run: pnpm run typecheck
+
+      - name: Lint
+        run: pnpm run lint
+
+      # 主逻辑在 Rust 侧，这里仅确认前端纯函数测试通过
+      - name: Unit test
+        run: pnpm run test -- --run
+
+  # Rust 单元测试（应用主体逻辑）：
+  # 这是 CI 此前完全缺失的部分。仓库里存在大量 #[cfg(windows)] 的 Windows 专属
+  # 代码（win_spawn / win_inspector / cli shim / path / MSI 版本处理），只能在
+  # Rust 单元测试（应用主体逻辑）：
+  # 这是 CI 此前完全缺失的部分。仓库存在大量平台专属代码，必须在对应 OS 上编译并测试：
+  #   - #[cfg(windows)]：win_spawn / win_inspector / cli shim / path / MSI 版本处理 → Windows
+  #   - #[cfg(target_os = "macos")]：homebrew Node 路径 & macOS 包名/资产名 → macOS
+  #   - Unix/Linux cfg 分支 → ubuntu
+  # 与官方 tauri-apps/tauri 的 test-core 矩阵一致：ubuntu + macos + windows，
+  # "更广泛"地覆盖应用实际发布的三个平台，而不是像前端那样按 Node 版本重复。
+  rust-test:
+    name: Rust tests
+    strategy:
+      fail-fast: false
+      matrix:
+        # Linux 用与 release workflow 相同的 ubuntu-22.04 + 同一套 apt 包，
+        # 保证首次跑 CI 就能编译（tauri 的 webkit/appindicator 原生依赖对齐已知可用环境）。
+        # macOS 用官方矩阵的 macos-14（Apple Silicon）。
+        os: [ubuntu-22.04, macos-14, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Run tests
+        run: cargo test --all-features --locked
+        working-directory: src-tauri
