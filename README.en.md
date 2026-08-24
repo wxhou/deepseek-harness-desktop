@@ -119,4 +119,4 @@ The prebuilt Harness bundle is published by [deepseek-harness-pkg](https://githu
 
 ## License
 
-[MIT](./LICENSE) © deepseek-harness-desktop contributors
+[MIT](./LICENSE) with a [Non-Commercial Condition](./LICENSE.details) © deepseek-harness-desktop contributors
