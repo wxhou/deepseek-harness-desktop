@@ -72,3 +72,13 @@ that adds one entry to the JSON array:
 `id` must be unique across the file. The plugin itself is **not** vendored into
 this repository — it is installed on the user's machine from `spec` at setup
 time, so the PR only needs to add the JSON entry.
+
+### Built-in (internal) plugins
+
+For plugins that must ship *with* the installer and are treated as part of the
+app (auto-installed and auto-healed at startup), set `"internal": true` and add
+an extra `package` field when the real npm name differs from `id`. Those entries
+are bundled at build time by `scripts/prebuild.ts` into
+`resources/preset-plugins/<id>/` (via `bundle.resources`) and never appear in the
+first-run checklist. See the [built-in plugin guide](../../docs/BUILTIN_PLUGINS.md)
+for the full workflow.

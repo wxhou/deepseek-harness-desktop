@@ -35,6 +35,8 @@ cargo test
 
 macOS 的 Developer ID 签名、公证与 GitHub Actions Secrets 配置见 [macOS 签名与公证](./MACOS_SIGNING.zh.md)。
 
+若要新增一个随安装包分发、内置在应用里的插件，请参阅 [内置插件（Internal Plugins）](./BUILTIN_PLUGINS.zh.md)。
+
 ## 小贴士
 
 - 调试模式使用 **3081** 端口，正式版使用 **3080** —— 两者互不冲突，可以同时运行已安装版本与开发构建。
