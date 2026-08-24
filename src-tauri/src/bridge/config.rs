@@ -27,6 +27,9 @@ pub async fn update_app_config(
             return Err("port must be a positive number".to_string());
         }
         setting.port = port;
+        // 记住用户手动选择的端口：自动避让递增后仍能回落回用户值，而不是
+        // 一路顶高（issue #91，见 workflow::launch 的端口自愈逻辑）
+        setting.manual_port = Some(port);
     }
     if let Some(auto_start) = auto_start {
         setting.auto_start = auto_start;

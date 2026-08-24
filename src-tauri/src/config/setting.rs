@@ -39,6 +39,12 @@ pub struct Setting {
     /// `Some("app")` = 桌面端预打包核心；`None` = 自动（本地核心存在时优先）。
     #[serde(default)]
     pub active_core: Option<String>,
+    /// 用户手动设置的服务端口（设置页「端口」输入，见 bridge::config）。
+    /// 自动避让递增（配置端口被占 → 逐级顶高，见 workflow::launch）后，启动时
+    /// 该端口空闲则回落回用户选择的值；`None` = 从未手动设置，回落目标为默认
+    /// 端口（3080/3081）。避免端口只增不减、一路从 3080 漂到 3084+（issue #91）。
+    #[serde(default)]
+    pub manual_port: Option<u16>,
 }
 
 /// 默认档案：桌面端内置的 web 档案
@@ -52,7 +58,7 @@ fn default_cli_link_enabled() -> bool {
 }
 
 /// 默认服务端口：debug 构建与生产隔离，避免开发时与已运行的桌面端争用 3080。
-fn default_port() -> u16 {
+pub fn default_port() -> u16 {
     if cfg!(debug_assertions) {
         DSH_DEV_PORT
     } else {
@@ -75,6 +81,7 @@ impl Default for Setting {
             dsh_home_migrated: false,
             active_profile: default_active_profile(),
             active_core: None,
+            manual_port: None,
         }
     }
 }

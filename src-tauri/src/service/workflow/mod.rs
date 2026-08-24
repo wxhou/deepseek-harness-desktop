@@ -127,6 +127,21 @@ fn find_available_port(start: u16) -> Result<u16, String> {
     }
 }
 
+/// 启动时端口自愈决策（纯函数，便于单测）。
+///
+/// 自动避让递增（配置端口被占 → 逐级顶高）遗留的非默认端口只在回落目标
+/// （用户手动端口或默认端口）空闲时才回落；回落目标被占则维持当前端口，
+/// 留给 `find_available_port` 逐级递增。用户手动设置的端口经 `manual_port`
+/// 记录，回落目标即用户值；从未手动设置时回落目标是默认端口（3080/3081）。
+/// 返回值与 `configured` 相同表示无需自愈。
+fn resolve_heal_port(configured: u16, heal_target: u16, heal_target_free: bool) -> u16 {
+    if configured != heal_target && heal_target_free {
+        heal_target
+    } else {
+        configured
+    }
+}
+
 /// dsh 版本是否支持 `--no-open` 标志。
 ///
 /// 0.1.0-rc.8 起 `dsh web` 默认在系统浏览器打开 UI（桌面端内嵌 WebView，
@@ -213,12 +228,54 @@ fn kill_pid_tree(pid: u32) {
 
     #[cfg(unix)]
     {
-        // Harness 根进程启动在独立进程组中，负 PID 只作用于该进程树。
+        // Harness 根进程启动在独立进程组中，负 PID 只作用于该进程树；手动通过
+        // CLI 拉起的外围 dsh 进程未必有独立进程组（组信号报错），此时回退直接
+        // 杀 PID——PID 的归属已由调用方确认（路径匹配或 .harness.pid 双重确认），
+        // 绝不会误杀未知进程。
         let group = format!("-{pid}");
-        let _ = Command::new("kill").args(["-TERM", "--", &group]).output();
+        let group_term_ok = Command::new("kill")
+            .args(["-TERM", "--", &group])
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false);
+        if !group_term_ok {
+            let _ = Command::new("kill")
+                .args(["-TERM", "--", &pid.to_string()])
+                .output();
+        }
         std::thread::sleep(std::time::Duration::from_millis(300));
-        let _ = Command::new("kill").args(["-KILL", "--", &group]).output();
+        let group_kill_ok = Command::new("kill")
+            .args(["-KILL", "--", &group])
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false);
+        if !group_kill_ok {
+            let _ = Command::new("kill")
+                .args(["-KILL", "--", &pid.to_string()])
+                .output();
+        }
     }
+}
+
+/// 解析 `ps -axo pid=,command=` 的一行：返回 `(PID, 命令行)`。
+///
+/// 输出形如 `   12345 node /path/to/bin.js --profile web ...`（PID 前可能有
+/// 前导空格、行尾有换行）。PID 缺失或不可解析的行返回 None（跳过该行）。
+#[cfg_attr(windows, allow(dead_code))] // 仅 Unix 清场分支与测试使用
+fn parse_ps_line(line: &str) -> Option<(u32, &str)> {
+    let trimmed = line.trim_start();
+    let split = trimmed.find(|c: char| c.is_whitespace())?;
+    let pid = trimmed[..split].trim().parse::<u32>().ok()?;
+    Some((pid, trimmed[split..].trim_start()))
+}
+
+/// 判断命令行是否为「从本应用 dsh 安装目录启动的 Harness 服务」。
+///
+/// 以 argv 整词精确匹配 dsh 入口路径（`dsh_bin`），避免子串误伤路径前缀
+/// 相似的其他程序（如 `/path/dsh-extra/...` 不会匹配 `/path/dsh/...`）。
+#[cfg_attr(windows, allow(dead_code))] // 仅 Unix 清场分支与测试使用
+fn is_harness_command_line(cmdline: &str, dsh_bin: &str) -> bool {
+    cmdline.split_whitespace().any(|token| token == dsh_bin)
 }
 
 pub fn has_owned_process() -> bool {
@@ -312,8 +369,40 @@ pub fn terminate_stale_harness_processes(app_handle: &tauri::AppHandle) {
     }
     #[cfg(not(windows))]
     {
-        // Unix 允许对打开中的文件重命名，孤儿进程不阻塞更新切换，无需处理。
-        let _ = app_handle;
+        // Unix 同样需要按路径清扫：打开中的文件允许重命名确实不阻塞更新切换，
+        // 但崩溃/强杀残留的孤儿 dsh 实例会持续监听端口，下一次启动只能一路
+        // 漂移端口（3080→3081→…）并被持久化，表现为「更新后端口递增」
+        // （issue #91）。用 `ps -axo pid=,command=` 枚举进程、按 argv 整词精确
+        // 匹配本应用 dsh 入口路径（与 Windows 的 CommandLine 匹配同一路径），
+        // 不会误杀用户其它 node 程序，因此可安全地全部结束。
+        let dsh_bin = config::get_dsh_binary_path(app_handle);
+        let Some(dsh_bin_str) = dsh_bin.to_str() else {
+            return;
+        };
+        let Ok(output) = Command::new("ps")
+            .args(["-axo", "pid=,command="])
+            .output()
+        else {
+            log::error!("Failed to enumerate stale Harness service processes");
+            return;
+        };
+        let mut found = 0;
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            let Some((pid, cmdline)) = parse_ps_line(line) else {
+                continue;
+            };
+            if !is_harness_command_line(cmdline, dsh_bin_str) {
+                continue;
+            }
+            found += 1;
+            log::warn!("Terminating stale Harness service process {pid} (from dsh install dir)");
+            kill_pid_tree(pid);
+        }
+        if found > 0 {
+            // 与 stop() 同理：信号发完后 PID 回收与端口释放还有短暂滞后，
+            // 让出一点时间避免紧随其后的启动探测撞上尚未释放的端口。
+            std::thread::sleep(std::time::Duration::from_millis(800));
+        }
     }
 }
 
@@ -578,6 +667,22 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     }
     let _launch_guard = LaunchGuard;
 
+    // 端口自愈：自动避让递增（配置端口被占 → 逐级顶高）遗留的非默认端口，
+    // 在回落目标（用户手动端口 manual_port，否则默认端口）空闲时回落，避免
+    // 端口只增不减、一路从 3080 漂到 3084+（issue #91）。先于
+    // wait_for_port_release 探测：既然放弃旧端口，就无需等它释放。
+    let heal_target = setting.manual_port.unwrap_or(config::default_port());
+    let healed_port = resolve_heal_port(setting.port, heal_target, !is_port_in_use(heal_target));
+    if healed_port != setting.port {
+        log::info!(
+            "Harness port healed from {} back to {} (no longer occupied)",
+            setting.port,
+            healed_port
+        );
+        setting.port = healed_port;
+        config::set_store_dat_setting(&app_handle, setting.clone());
+    }
+
     // 端口冲突时从当前值开始逐个递增，并持久化最终选择供所有调用方复用。
     // 注意：上个会话的残留 dsh 进程刚被我们结束/清扫（sweep_orphan、stop、
     // stop_on_exit），TCP 端口释放存在短暂滞后——此刻立刻探测会把“刚释放的
@@ -612,6 +717,13 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     // 已有配置）。最佳努力：失败只告警，不阻断启动。
     if let Err(e) = crate::service::plugin::ensure_profile_npmrc(&app_handle) {
         log::warn!("ensure profile .npmrc failed: {e}");
+    }
+    // 内置插件自愈：随包分发的内置插件（dsh-tauri 等）必须在服务进程加载插件
+    // 前就绪——核对「已安装 + 安装路径指向当前捆绑目录」，未安装、路径不正确
+    // 或用户卸载后重启，一律强制重装（见 service::plugin::internal）。最佳
+    // 努力：失败只告警，不阻断启动（核心功能缺失是发布缺陷，由 prebuild 报错）。
+    if let Err(e) = crate::service::plugin::ensure_internal_plugins(&app_handle).await {
+        log::warn!("ensure internal plugins failed: {e}");
     }
     let mut envs: HashMap<String, String> = HashMap::new();
     envs.insert(
@@ -1187,5 +1299,121 @@ mod tests {
         // 幂等：已清空后再次取出返回 None
         let mut slot: Option<OwnedProcess> = None;
         assert!(take_owned_process_if_matching(&mut slot, 42).is_none());
+    }
+
+    /// 端口自愈（issue #91）：自动避让递增遗留的非默认端口，在回落目标空闲时
+    /// 回落到目标（默认端口或用户手动端口），回落目标被占时维持当前端口。
+    #[test]
+    fn heal_port_returns_target_when_free() {
+        // 自动递增遗留 3084，默认 3080 空闲 → 回落默认端口
+        assert_eq!(resolve_heal_port(3084, 3080, true), 3080);
+        // 用户手动 9090 空闲 → 回落用户值
+        assert_eq!(resolve_heal_port(9091, 9090, true), 9090);
+    }
+
+    #[test]
+    fn heal_port_keeps_current_when_target_busy_or_aligned() {
+        // 回落目标被占 → 维持当前端口（留给 find_available_port 逐级递增）
+        assert_eq!(resolve_heal_port(3084, 3080, false), 3084);
+        // 当前端口即回落目标（已是最优）→ 不变
+        assert_eq!(resolve_heal_port(3080, 3080, true), 3080);
+        assert_eq!(resolve_heal_port(3080, 3080, false), 3080);
+    }
+
+    /// `ps -axo pid=,command=` 行解析：首列 PID，其余为命令行。
+    #[test]
+    fn parse_ps_line_extracts_pid_and_cmdline() {
+        // `.lines()` 迭代已去掉行尾换行
+        let (pid, cmdline) =
+            parse_ps_line("   12345 node /path/to/bin.js --profile web").expect("parse ps line");
+        assert_eq!(pid, 12345);
+        assert_eq!(cmdline, "node /path/to/bin.js --profile web");
+        // 多列空白（PID 与命令之间多个空格）+ 行首空白
+        let (pid, cmdline) = parse_ps_line("  67890    sh  -c  sleep 1").expect("parse ps line");
+        assert_eq!(pid, 67890);
+        assert_eq!(cmdline, "sh  -c  sleep 1");
+    }
+
+    #[test]
+    fn parse_ps_line_skips_invalid_rows() {
+        // 无空白分隔（纯 PID）→ 无法取命令行，跳过
+        assert!(parse_ps_line("12345").is_none());
+        // PID 不可解析（可能是表头残留）→ 跳过
+        assert!(parse_ps_line("PID COMMAND").is_none());
+        // 空行 → 跳过
+        assert!(parse_ps_line("").is_none());
+    }
+
+    /// 命令行匹配：argv 整词精确等于 dsh 入口路径才算本应用服务实例。
+    #[test]
+    fn harness_cmdline_matches_exact_bin_token() {
+        let bin = "/home/u/.dsh/dependencies/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js";
+        assert!(is_harness_command_line(
+            &format!("node {bin} --profile web --host 127.0.0.1 --port 3083"),
+            bin
+        ));
+        assert!(is_harness_command_line(bin, bin));
+    }
+
+    #[test]
+    fn harness_cmdline_rejects_foreign_and_prefix_paths() {
+        let bin = "/home/u/.dsh/dependencies/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js";
+        // 用户其它 node 程序
+        assert!(!is_harness_command_line("node /usr/bin/some-server.js", bin));
+        // 路径前缀相似但不同（整词匹配，不做子串匹配）
+        assert!(!is_harness_command_line(
+            "node /home/u/.dsh/dependencies/dsh-extra/tool.js",
+            bin
+        ));
+        // 空命令行
+        assert!(!is_harness_command_line("", bin));
+    }
+
+    /// 回归（issue #91）：Unix 上 `kill_pid_tree` 对「无独立进程组」的进程
+    /// 必须回退到直接杀 PID——否则手动 CLI 拉起的外围 dsh 永远杀不掉，
+    /// 残留进程持续占用端口导致端口一路递增。
+    #[cfg(unix)]
+    #[test]
+    fn kill_pid_tree_falls_back_to_direct_pid_kill() {
+        // 子进程不设独立进程组（模拟手动拉起的外围 dsh）；2 秒后自然退出，
+        // 若 kill_pid_tree 未能杀死它，wait 会等到 2 秒后自然退出 → 超时断言失败
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg("sleep 2")
+            .spawn()
+            .expect("spawn sleep child");
+        let pid = child.id();
+        // 给子进程一点时间进入 sleep，确保信号发到的是 sleep 而非刚 fork 的 sh
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let started = std::time::Instant::now();
+        kill_pid_tree(pid);
+        let status = child.wait().expect("wait for child");
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(1500),
+            "child should have been killed by kill_pid_tree, not waited for natural exit"
+        );
+        // 被信号杀死：success() 为 false（SIGTERM 143 / SIGKILL 137）
+        assert!(!status.success());
+    }
+
+    /// 正常路径：根进程在独立进程组中（与启动时 `process_group(0)` 对应），
+    /// 负 PID 组信号应能结束整个进程树。
+    #[cfg(unix)]
+    #[test]
+    fn kill_pid_tree_kills_process_group() {
+        use std::os::unix::process::CommandExt;
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg("sleep 2")
+            .process_group(0)
+            .spawn()
+            .expect("spawn group child");
+        let pid = child.id();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let started = std::time::Instant::now();
+        kill_pid_tree(pid);
+        let status = child.wait().expect("wait for group child");
+        assert!(started.elapsed() < std::time::Duration::from_millis(1500));
+        assert!(!status.success());
     }
 }
