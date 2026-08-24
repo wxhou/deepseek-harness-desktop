@@ -25,19 +25,24 @@ fn node_base_url(region: Region) -> &'static str {
     }
 }
 
+/// Node.js 官方发行包文件名（按平台与架构）
+///
+/// 抽成纯函数以便单元测试覆盖所有平台（与宿主操作系统无关），
+/// 生产代码用 `env::consts::OS` / `env::consts::ARCH` 调用。
+fn node_pkg_filename(os: &str, arch: &str) -> Result<String, String> {
+    match (os, arch) {
+        ("macos", "aarch64") => Ok(format!("node-{}-darwin-arm64.tar.gz", NODE_VERSION)),
+        ("macos", "x86_64") => Ok(format!("node-{}-darwin-x64.tar.gz", NODE_VERSION)),
+        ("windows", _) => Ok(format!("node-{}-win-x64.zip", NODE_VERSION)),
+        ("linux", "x86_64") => Ok(format!("node-{}-linux-x64.tar.gz", NODE_VERSION)),
+        ("linux", "aarch64") => Ok(format!("node-{}-linux-arm64.tar.gz", NODE_VERSION)),
+        _ => Err(format!("Unsupported platform: {} {}", os, arch)),
+    }
+}
+
 /// Node.js 运行时下载地址
 pub fn get_node_download_url() -> Result<String, String> {
-    let arch = env::consts::ARCH;
-    let os = env::consts::OS;
-
-    // 抽象文件名逻辑
-    let filename = match (os, arch) {
-        ("macos", "aarch64") => format!("node-{}-darwin-arm64.tar.gz", NODE_VERSION),
-        ("macos", "x86_64") => format!("node-{}-darwin-x64.tar.gz", NODE_VERSION),
-        ("windows", _) => format!("node-{}-win-x64.zip", NODE_VERSION),
-        _ => return Err(format!("Unsupported platform: {} {}", os, arch)),
-    };
-
+    let filename = node_pkg_filename(env::consts::OS, env::consts::ARCH)?;
     Ok(format!("{}/{}/{}", node_base_url(detect_region()), NODE_VERSION, filename))
 }
 
@@ -449,5 +454,44 @@ mod tests {
         let dsh = get_dsh_download_url().expect("dsh url");
         assert!(dsh.starts_with("https://"));
         assert!(dsh.ends_with(".zip"));
+    }
+
+    #[test]
+    fn node_pkg_filename_covers_all_supported_platforms() {
+        // 与 nodejs.org dist 布局一致（纯函数测试，不受宿主操作系统限制）
+        let cases = [
+            // (os, arch, 期望文件名)
+            ("linux", "x86_64", format!("node-{}-linux-x64.tar.gz", NODE_VERSION)),
+            ("linux", "aarch64", format!("node-{}-linux-arm64.tar.gz", NODE_VERSION)),
+            ("windows", "x86_64", format!("node-{}-win-x64.zip", NODE_VERSION)),
+            ("windows", "aarch64", format!("node-{}-win-x64.zip", NODE_VERSION)),
+            ("macos", "aarch64", format!("node-{}-darwin-arm64.tar.gz", NODE_VERSION)),
+            ("macos", "x86_64", format!("node-{}-darwin-x64.tar.gz", NODE_VERSION)),
+        ];
+        for (os, arch, expected) in cases {
+            assert_eq!(
+                node_pkg_filename(os, arch).expect("supported platform"),
+                expected,
+                "os: {os}, arch: {arch}"
+            );
+        }
+    }
+
+    #[test]
+    fn node_pkg_filename_rejects_unsupported_platform() {
+        // 未知操作系统/架构必须返回带 "Unsupported platform" 前缀的错误
+        let unsupported = [
+            ("freebsd", "x86_64"),
+            ("linux", "riscv64"),
+            ("openbsd", "aarch64"),
+            ("macos", "riscv64"),
+        ];
+        for (os, arch) in unsupported {
+            let err = node_pkg_filename(os, arch).expect_err("unsupported platform");
+            assert!(
+                err.starts_with("Unsupported platform: "),
+                "os: {os}, arch: {arch}, err: {err}"
+            );
+        }
     }
 }
