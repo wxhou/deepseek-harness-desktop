@@ -1,6 +1,7 @@
 pub mod status;
 pub mod utils;
 pub(crate) mod renderer_patch;
+pub(crate) mod workspace_patch;
 pub(crate) mod win_inspector;
 #[cfg(windows)]
 pub(crate) mod win_spawn;
@@ -758,6 +759,11 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     // 启动——未打补丁时插件侧降级，官方设置 dialog 照常工作，绝不白屏。
     if let Err(e) = renderer_patch::apply(&app_handle) {
         log::warn!("renderer SlotOutlet patch failed: {e}");
+    }
+    // worktree 会话以隔离 cwd 执行，但产品归属仍是源 Workspace；放宽上游显式
+    // attach 的 cwd 相等约束，其他 cwd 有效性校验保持不变。最佳努力且幂等。
+    if let Err(e) = workspace_patch::apply(&app_handle) {
+        log::warn!("workspace worktree membership patch failed: {e}");
     }
     // 预防性处理：pnpm 在无 TTY 环境（dsh-market 等子进程）下重装/更新插件时，
     // 清理/重建 node_modules 会触发交互确认并因无 TTY 直接中止
