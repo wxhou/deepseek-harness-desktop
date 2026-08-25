@@ -41,6 +41,15 @@ pub fn setup(app_handle: tauri::AppHandle) {
         log::warn!("dsh home migration deferred (old data kept): {e}");
     }
 
+    // 启动自愈：清理指向旧位置的 pnpm `.modules.yaml`。老版本完成迁移后该文件
+    // 仍记录旧 $DSH_HOME（AppData）下的绝对路径，导致任何 pnpm 操作抛
+    // `ERR_PNPM_UNEXPECTED_VIRTUAL_STORE`（插件安装/更新失败，issue #103）。
+    // 幂等、best-effort：仅在检测到失效路径时删除，下次 pnpm 操作自动重建。
+    let dsh_home = crate::config::get_dsh_data_path(&app_handle);
+    if let Err(e) = crate::service::migrate::heal_stale_pnpm_metadata(&dsh_home) {
+        log::warn!("pnpm modules metadata self-heal skipped: {e}");
+    }
+
     // 启动进程监控（tick 检测 dsh 服务状态）
     crate::service::scheduler::start(&app_handle);
 
