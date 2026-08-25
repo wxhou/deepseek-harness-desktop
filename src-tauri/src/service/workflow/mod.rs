@@ -270,13 +270,42 @@ fn parse_ps_line(line: &str) -> Option<(u32, &str)> {
     Some((pid, trimmed[split..].trim_start()))
 }
 
+/// 判断命令行中是否包含一个完整参数。
+///
+/// `ps` 会把 argv 用空格拼成命令行，但不会给本身含空格的参数补引号，因此不能
+/// 用 `split_whitespace` 还原参数。改为在原始命令行中匹配完整字符串，并校验
+/// 前后为空白或行边界；这样 macOS 的 `Library/Application Support` 路径也能
+/// 正确识别，同时不会把路径前缀相似的其他参数误判为目标。
+#[cfg_attr(windows, allow(dead_code))] // 仅 Unix 清场分支与测试使用
+fn command_line_has_argument(cmdline: &str, argument: &str) -> bool {
+    if argument.is_empty() {
+        return false;
+    }
+
+    cmdline.match_indices(argument).any(|(start, matched)| {
+        let before_is_boundary = cmdline[..start]
+            .chars()
+            .next_back()
+            .map_or(true, char::is_whitespace);
+        let end = start + matched.len();
+        let after_is_boundary = cmdline[end..]
+            .chars()
+            .next()
+            .map_or(true, char::is_whitespace);
+        before_is_boundary && after_is_boundary
+    })
+}
+
 /// 判断命令行是否为「从本应用 dsh 安装目录启动的 Harness 服务」。
 ///
-/// 以 argv 整词精确匹配 dsh 入口路径（`dsh_bin`），避免子串误伤路径前缀
-/// 相似的其他程序（如 `/path/dsh-extra/...` 不会匹配 `/path/dsh/...`）。
+/// 除入口路径外同时核对桌面端服务启动参数，避免清扫时误伤用户并行执行的
+/// `dsh plugin` 等短命令。
 #[cfg_attr(windows, allow(dead_code))] // 仅 Unix 清场分支与测试使用
 fn is_harness_command_line(cmdline: &str, dsh_bin: &str) -> bool {
-    cmdline.split_whitespace().any(|token| token == dsh_bin)
+    command_line_has_argument(cmdline, dsh_bin)
+        && command_line_has_argument(cmdline, "--host")
+        && command_line_has_argument(cmdline, "127.0.0.1")
+        && command_line_has_argument(cmdline, "--port")
 }
 
 pub fn has_owned_process() -> bool {
@@ -373,15 +402,15 @@ pub fn terminate_stale_harness_processes(app_handle: &tauri::AppHandle) {
         // Unix 同样需要按路径清扫：打开中的文件允许重命名确实不阻塞更新切换，
         // 但崩溃/强杀残留的孤儿 dsh 实例会持续监听端口，下一次启动只能一路
         // 漂移端口（3080→3081→…）并被持久化，表现为「更新后端口递增」
-        // （issue #91）。用 `ps -axo pid=,command=` 枚举进程、按 argv 整词精确
-        // 匹配本应用 dsh 入口路径（与 Windows 的 CommandLine 匹配同一路径），
-        // 不会误杀用户其它 node 程序，因此可安全地全部结束。
+        // （issue #91）。用 `ps -ww -axo pid=,command=` 枚举完整命令行（`-ww`
+        // 防止 macOS 按终端宽度截断长路径），按参数边界匹配本应用 dsh 入口与
+        // 服务参数，不会误杀用户其它 node/dsh 命令，因此可安全地全部结束。
         let dsh_bin = config::get_dsh_binary_path(app_handle);
         let Some(dsh_bin_str) = dsh_bin.to_str() else {
             return;
         };
         let Ok(output) = Command::new("ps")
-            .args(["-axo", "pid=,command="])
+            .args(["-ww", "-axo", "pid=,command="])
             .output()
         else {
             log::error!("Failed to enumerate stale Harness service processes");
@@ -1391,23 +1420,48 @@ mod tests {
 
     /// 命令行匹配：argv 整词精确等于 dsh 入口路径才算本应用服务实例。
     #[test]
-    fn harness_cmdline_matches_exact_bin_token() {
+    fn harness_cmdline_matches_service_arguments() {
         let bin = "/home/u/.dsh/dependencies/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js";
         assert!(is_harness_command_line(
             &format!("node {bin} --profile web --host 127.0.0.1 --port 3083"),
             bin
         ));
-        assert!(is_harness_command_line(bin, bin));
+    }
+
+    #[test]
+    fn harness_cmdline_matches_macos_app_data_path_with_spaces() {
+        let bin = "/Users/simon/Library/Application Support/io.github.hairyf.deepseek-harness-desktop/dependencies/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js";
+        let cmdline =
+            format!("/opt/homebrew/bin/node {bin} --profile web --host 127.0.0.1 --port 3084");
+        assert!(is_harness_command_line(&cmdline, bin));
     }
 
     #[test]
     fn harness_cmdline_rejects_foreign_and_prefix_paths() {
         let bin = "/home/u/.dsh/dependencies/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js";
         // 用户其它 node 程序
-        assert!(!is_harness_command_line("node /usr/bin/some-server.js", bin));
+        assert!(!is_harness_command_line(
+            "node /usr/bin/some-server.js",
+            bin
+        ));
         // 路径前缀相似但不同（整词匹配，不做子串匹配）
         assert!(!is_harness_command_line(
             "node /home/u/.dsh/dependencies/dsh-extra/tool.js",
+            bin
+        ));
+        // 完整路径只是另一参数的前缀时不能命中
+        assert!(!is_harness_command_line(
+            &format!("node {bin}.backup --profile web --host 127.0.0.1 --port 3083"),
+            bin
+        ));
+        // 同一 dsh 入口执行插件命令时不是 Harness 服务，不能清扫
+        assert!(!is_harness_command_line(
+            &format!("node {bin} plugin list"),
+            bin
+        ));
+        // 路径作为另一个参数的后缀时不能命中
+        assert!(!is_harness_command_line(
+            &format!("node prefix{bin} --host 127.0.0.1 --port 3083"),
             bin
         ));
         // 空命令行
