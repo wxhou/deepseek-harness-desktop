@@ -1212,11 +1212,36 @@ mod tests {
 
     #[test]
     fn occupied_port_advances_to_a_free_port() {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind occupied test port");
-        let occupied = listener.local_addr().expect("read occupied port").port();
+        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+        // 用固定低端口段构造占用（20000–29999，低于各类系统临时端口段下限：
+        // Linux 32768、macOS/Windows 49152），使替换扫描的下一端口也落在低段。
+        // 此前 `bind("127.0.0.1:0")` 拿到的是临时端口段内的随机端口，被占用的
+        // 起始端口与扫描到的下一端口同段，并行测试其它 `bind(0)` 用例会从该段
+        // 拿到随机端口、可能恰好抢走 `is_port_in_use(selected)` 断言前的目标 →
+        // TOCTOU flake（CI 偶发，如 main 上 32743285752 的
+        // `assertion failed: !is_port_in_use(selected)`）。低段无并发临时分配，
+        // 扫描结果确定。
+        const RANGE_START: u16 = 20000;
+        const RANGE_END: u16 = 30000;
+        let mut listener: Option<TcpListener> = None;
+        let mut occupied = 0u16;
+        for port in RANGE_START..RANGE_END {
+            let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
+            if let Ok(l) = TcpListener::bind(addr) {
+                listener = Some(l);
+                occupied = port;
+                break;
+            }
+        }
+        let listener = listener.expect("no free port in test range");
+        // 起始端口此刻确实被本测试占用（find_available_port 应跳过它）
+        assert!(is_port_in_use(occupied));
+
         let selected = find_available_port(occupied).expect("find next free port");
         assert!(selected > occupied);
         assert!(!is_port_in_use(selected));
+        drop(listener);
     }
 
     /// 回归：无持有进程在“launch 仍在进行”（守卫未释放）时应返回可重试的
