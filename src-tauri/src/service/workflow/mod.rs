@@ -116,9 +116,21 @@ async fn wait_for_port_release(port: u16) {
 
 /// 从起始端口向上查找第一个空闲端口，绝不结束未知的端口占用进程。
 fn find_available_port(start: u16) -> Result<u16, String> {
+    find_available_port_by(start, is_port_in_use)
+}
+
+/// 按调用方提供的占用判定查找第一个空闲端口。
+///
+/// 将扫描决策与真实套接字状态分离，使单测能确定性验证递增与溢出，不在函数
+/// 返回后再次探测系统端口；后者存在不可消除的 TOCTOU，任何端口段都可能被
+/// 其他进程在两次探测之间占用。
+fn find_available_port_by(
+    start: u16,
+    mut is_in_use: impl FnMut(u16) -> bool,
+) -> Result<u16, String> {
     let mut port = start;
     loop {
-        if !is_port_in_use(port) {
+        if !is_in_use(port) {
             return Ok(port);
         }
         log::warn!("Port {port} is occupied, trying the next port");
@@ -1241,36 +1253,21 @@ mod tests {
 
     #[test]
     fn occupied_port_advances_to_a_free_port() {
-        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+        let mut checked = Vec::new();
+        let selected = find_available_port_by(3080, |port| {
+            checked.push(port);
+            port < 3082
+        })
+        .expect("find next free port");
 
-        // 用固定低端口段构造占用（20000–29999，低于各类系统临时端口段下限：
-        // Linux 32768、macOS/Windows 49152），使替换扫描的下一端口也落在低段。
-        // 此前 `bind("127.0.0.1:0")` 拿到的是临时端口段内的随机端口，被占用的
-        // 起始端口与扫描到的下一端口同段，并行测试其它 `bind(0)` 用例会从该段
-        // 拿到随机端口、可能恰好抢走 `is_port_in_use(selected)` 断言前的目标 →
-        // TOCTOU flake（CI 偶发，如 main 上 32743285752 的
-        // `assertion failed: !is_port_in_use(selected)`）。低段无并发临时分配，
-        // 扫描结果确定。
-        const RANGE_START: u16 = 20000;
-        const RANGE_END: u16 = 30000;
-        let mut listener: Option<TcpListener> = None;
-        let mut occupied = 0u16;
-        for port in RANGE_START..RANGE_END {
-            let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
-            if let Ok(l) = TcpListener::bind(addr) {
-                listener = Some(l);
-                occupied = port;
-                break;
-            }
-        }
-        let listener = listener.expect("no free port in test range");
-        // 起始端口此刻确实被本测试占用（find_available_port 应跳过它）
-        assert!(is_port_in_use(occupied));
+        assert_eq!(selected, 3082);
+        assert_eq!(checked, vec![3080, 3081, 3082]);
+    }
 
-        let selected = find_available_port(occupied).expect("find next free port");
-        assert!(selected > occupied);
-        assert!(!is_port_in_use(selected));
-        drop(listener);
+    #[test]
+    fn occupied_port_reports_exhaustion_at_max_port() {
+        let error = find_available_port_by(u16::MAX, |_| true).expect_err("port exhaustion");
+        assert!(error.starts_with("PORT_EXHAUSTED:"));
     }
 
     /// 回归：无持有进程在“launch 仍在进行”（守卫未释放）时应返回可重试的
