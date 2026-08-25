@@ -8,8 +8,14 @@
 //! 迁移规则：
 //! - 目标不存在（场景 A）→ 整体搬移（同卷 `rename` 原子移动，跨卷自动退化为复制）；
 //! - 目标已存在（场景 B）→ 递归合并，同名文件按 mtime「较新者胜」；
-//! - `node_modules` 目录整体跳过：可再生的安装产物（dsh 启动时会按 profile 的
-//!   package.json 重新安装），且 pnpm 的硬链接/junction 直接复制会损坏；
+//! - `node_modules` 无损搬入以保留依赖（同卷 rename 下 pnpm 的硬链接/junction
+//!   移动无损坏；跨卷复制或目标已有时跳过，属可再生的安装产物）；
+//! - 搬入的 `node_modules` 会清除 pnpm 安装元数据 `.modules.yaml`：它记录的是
+//!   旧位置的绝对路径（storeDir / virtualStoreDir），迁移后必然失配，任何 pnpm
+//!   操作都会抛 `ERR_PNPM_UNEXPECTED_VIRTUAL_STORE`（见 issue #103）。pnpm 只在
+//!   该文件存在时做兼容性校验，删除后下次 install/add 会以新位置重建（物理链接
+//!   随整树搬移仍有效）；已用旧版完成迁移的用户由启动自愈
+//!   `heal_stale_pnpm_metadata` 兜底清理；
 //! - 迁移成功并删除旧目录后，在 `.store.dat` 置位 `dsh_home_migrated` 幂等标记；
 //! - 任何失败只告警不阻断启动：旧数据原地保留，下次启动重试。
 
@@ -83,6 +89,9 @@ fn migrate_impl(legacy: &Path, target: &Path) -> Result<(), String> {
         // 场景 A：目标不存在 → 整体搬移（rename 同卷原子，node_modules 一并
         // 无损搬入；跨卷 EXDEV 退化为复制合并，此时 node_modules 跳过）
         if fs::rename(legacy, target).is_ok() {
+            // 搬入的 node_modules 里 `.modules.yaml` 记录的绝对路径还指向旧位置，
+            // 清除它让 pnpm 下次 install/add 以新位置重建（见 purge 注释）。
+            purge_carried_pnpm_metadata(target);
             return Ok(());
         }
         log::debug!(
@@ -93,6 +102,8 @@ fn migrate_impl(legacy: &Path, target: &Path) -> Result<(), String> {
     }
     // 场景 B（或跨卷回退）：递归合并，新数据优先
     merge_tree(legacy, target)?;
+    // merge 也可能把 node_modules 无损搬入（目标缺失时），同样清除 pnpm 元数据
+    purge_carried_pnpm_metadata(target);
     fs::remove_dir_all(legacy).map_err(|e| {
         format!(
             "remove legacy {} after merge failed: {e}",
@@ -106,7 +117,8 @@ fn migrate_impl(legacy: &Path, target: &Path) -> Result<(), String> {
 /// - 两边都有的文件按 mtime 比较，目标不旧于源则保留目标（新数据优先）；
 /// - `node_modules` 目录：目标缺失时尝试无损 `rename` 搬入（pnpm 硬链接/
 ///   junction 移动无损坏风险，且不丢依赖）；目标已有或跨卷 rename 失败时
-///   跳过（依赖可再生，复制硬链接树会损坏）。
+///   跳过（依赖可再生，复制硬链接树会损坏）。搬入的 node_modules 由调用方
+///   在合并完成后统一清除其中的 pnpm 元数据（见 `purge_carried_pnpm_metadata`）。
 fn merge_tree(src: &Path, dst: &Path) -> Result<(), String> {
     fs::create_dir_all(dst).map_err(|e| format!("create {} failed: {e}", dst.display()))?;
     for entry in fs::read_dir(src)
@@ -154,6 +166,106 @@ fn src_newer(src: &Path, dst: &Path) -> bool {
     }
 }
 
+/// 清除迁移搬入的 pnpm 安装元数据（`node_modules/.modules.yaml`）。
+///
+/// 旧版安装时 `.modules.yaml` 记录的 `storeDir` / `virtualStoreDir` 是基于旧
+/// `$DSH_HOME`（AppData）的路径；整树搬入新位置后这些路径即失配，任何 pnpm
+/// 操作都会在 checkCompatibility 阶段抛 `ERR_PNPM_UNEXPECTED_VIRTUAL_STORE`
+/// （issue #103）。该文件是纯元数据，物理链接（top 级 junction → `.pnpm`、
+/// `.pnpm` 的 junction → 未变化的 store）随整树搬移仍有效，删掉后 pnpm 跳过
+/// 兼容性校验，下次 `install`/`add` 自动以新位置重建 —— 比整体删除 node_modules
+/// （会破坏已安装状态展示、触发全量重链）更轻。
+///
+/// 递归遍历目录：只处理名为 `node_modules` 的目录（查其下 `.modules.yaml`，不
+/// 深入 node_modules 内部的海量子目录）。best-effort，删除失败仅告警。
+fn purge_carried_pnpm_metadata(root: &Path) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Ok(ft) = entry.file_type() else {
+            continue;
+        };
+        if !ft.is_dir() {
+            continue;
+        }
+        let path = entry.path();
+        if entry.file_name() == "node_modules" {
+            let modules_yaml = path.join(".modules.yaml");
+            if modules_yaml.is_file() {
+                match fs::remove_file(&modules_yaml) {
+                    Ok(()) => log::info!(
+                        "purged carried pnpm modules metadata: {}",
+                        modules_yaml.display()
+                    ),
+                    Err(e) => log::warn!("purge {} failed: {e}", modules_yaml.display()),
+                }
+            }
+            // 不再深入 node_modules（子目录海量，且其中没有需要处理的元数据）
+        } else {
+            purge_carried_pnpm_metadata(&path);
+        }
+    }
+}
+
+/// 启动自愈：清理指向旧位置的 pnpm 安装元数据，兜底已用旧版完成迁移的用户。
+///
+/// 迁移本身在搬入时会清除 `.modules.yaml`（见 `purge_carried_pnpm_metadata`），
+/// 但 `dsh_home_migrated` 已置位的旧迁移不会重跑，其 `profiles/*/node_modules`
+/// 里的 `.modules.yaml` 仍记录旧 AppData 绝对路径，导致插件更新/安装失败。
+/// 本函数每次启动扫描当前 `$DSH_HOME/profiles/*`：当记录的 `virtualStoreDir` /
+/// `storeDir` 是「绝对路径、不在当前 `$DSH_HOME` 之下、且磁盘上已不存在」
+/// （指向已被迁移删除的旧树）时，删除该 `.modules.yaml`，下次 pnpm 操作即恢复
+/// （相对路径与正常绝对路径不受影响）。幂等、best-effort，仅告警不阻断启动。
+pub fn heal_stale_pnpm_metadata(dsh_home: &Path) -> Result<(), String> {
+    let profiles = dsh_home.join("profiles");
+    let Ok(entries) = fs::read_dir(&profiles) else {
+        return Ok(()); // 全新安装 / 无 profiles 目录 → 无可修对象
+    };
+    for entry in entries.flatten() {
+        if entry.path().is_dir() {
+            purge_if_stale_modules_metadata(&entry.path().join("node_modules"), dsh_home);
+        }
+    }
+    Ok(())
+}
+
+/// 单个 profile 的 node_modules：`.modules.yaml` 记录的绝对路径同时满足
+/// 「不在当前 DSH_HOME 下」且「磁盘上已不存在」→ 判定为指向旧树的失效元数据，
+/// 删除该模块文件让 pnpm 重建。
+fn purge_if_stale_modules_metadata(node_modules: &Path, dsh_home: &Path) {
+    let modules_yaml = node_modules.join(".modules.yaml");
+    if !modules_yaml.is_file() {
+        return;
+    }
+    let Ok(content) = fs::read_to_string(&modules_yaml) else {
+        return;
+    };
+    let Ok(doc): Result<serde_yaml::Value, _> = serde_yaml::from_str(&content) else {
+        return;
+    };
+    let stale = doc.as_mapping().is_some_and(|mapping| {
+        ["virtualStoreDir", "storeDir"].iter().any(|key| {
+            mapping
+                .get(&serde_yaml::Value::String((*key).into()))
+                .and_then(serde_yaml::Value::as_str)
+                .is_some_and(|value| {
+                    let p = Path::new(value);
+                    p.is_absolute() && !p.starts_with(dsh_home) && !p.exists()
+                })
+        })
+    });
+    if stale {
+        match fs::remove_file(&modules_yaml) {
+            Ok(()) => log::info!(
+                "purged stale pnpm modules metadata (old DSH_HOME paths): {}",
+                modules_yaml.display()
+            ),
+            Err(e) => log::warn!("purge {} failed: {e}", modules_yaml.display()),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -196,6 +308,11 @@ mod tests {
         write(&legacy.join("sessions/s1/data.json"), "{}");
         write(&legacy.join("profiles/web/package.json"), "{\"name\":\"web\"}");
         write(&legacy.join("profiles/web/node_modules/x/index.js"), "// x");
+        // 旧版 pnpm 元数据记录了旧位置的绝对路径 → 迁移后必须清除（issue #103）
+        write(
+            &legacy.join("profiles/web/node_modules/.modules.yaml"),
+            "lockfileVersion: '9.0'\nstoreDir: C:\\old\\pnpm\\store\nvirtualStoreDir: C:\\legacy\\data\\dsh\\profiles\\web\\node_modules\\.pnpm\n",
+        );
 
         migrate_impl(&legacy, &target).unwrap();
 
@@ -207,6 +324,11 @@ mod tests {
         assert!(
             target.join("profiles/web/node_modules/x/index.js").is_file(),
             "rename must carry node_modules over losslessly"
+        );
+        // 但 pnpm 安装元数据必须清除，否则任何 pnpm 操作都会因旧路径抛错
+        assert!(
+            !target.join("profiles/web/node_modules/.modules.yaml").exists(),
+            "carried pnpm .modules.yaml must be purged"
         );
     }
 
@@ -275,6 +397,7 @@ mod tests {
         let target = temp_dir("b-nm-target");
 
         write(&legacy.join("profiles/web/node_modules/x/index.js"), "// x");
+        write(&legacy.join("profiles/web/node_modules/.modules.yaml"), "virtualStoreDir: C:\\legacy\\node_modules\\.pnpm\n");
         write(&legacy.join("profiles/web/package.json"), "{}");
 
         migrate_impl(&legacy, &target).unwrap();
@@ -282,6 +405,10 @@ mod tests {
         assert!(
             target.join("profiles/web/node_modules/x/index.js").is_file(),
             "legacy node_modules is carried over when target has none"
+        );
+        assert!(
+            !target.join("profiles/web/node_modules/.modules.yaml").exists(),
+            "carried pnpm metadata must be purged after merge too"
         );
     }
 
@@ -316,5 +443,85 @@ mod tests {
         // 第二次：legacy 已空，无新增内容
         merge_tree(&legacy, &target).unwrap();
         assert_eq!(fs::read_to_string(target.join("a.txt")).unwrap(), "1");
+    }
+
+    // ------------------------------------------------------------------
+    // 启动自愈：清理指向旧位置的 pnpm 元数据（老迁移残留，issue #103）
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn heal_purges_stale_absolute_virtual_store_paths() {
+        let home = temp_dir("heal-home");
+        let node_modules = home.join("profiles/web/node_modules");
+        // 模拟旧迁移后的状态：`.modules.yaml` 记录的旧绝对路径已不存在
+        // （指向已被迁移删除的旧 AppData 树；用 temp 下不存在的路径构造，
+        //  保证在任何平台（Windows/Unix）都是绝对路径且磁盘上不存在）。
+        let legacy_home = temp_dir("heal-legacy-home");
+        let legacy_vsd = legacy_home.join("profiles/web/node_modules/.pnpm");
+        write(
+            &node_modules.join(".modules.yaml"),
+            &format!(
+                "lockfileVersion: '9.0'\nstoreDir: {}\nvirtualStoreDir: {}\n",
+                legacy_home.join("pnpm/store/v10").display(),
+                legacy_vsd.display()
+            ),
+        );
+        // 真实虚拟商店目录在当前 home 下存在（物理链接有效，仅元数据失效）
+        fs::create_dir_all(home.join("profiles/web/node_modules/.pnpm")).unwrap();
+
+        heal_stale_pnpm_metadata(&home).unwrap();
+
+        assert!(
+            !node_modules.join(".modules.yaml").exists(),
+            "stale pnpm metadata pointing at removed old DSH_HOME must be purged"
+        );
+    }
+
+    #[test]
+    fn heal_keeps_consistent_or_relative_modules_metadata() {
+        let home = temp_dir("heal-keep");
+        let node_modules = home.join("profiles/web/node_modules");
+        fs::create_dir_all(&node_modules).unwrap();
+        // 正常状态：virtualStoreDir 相对、storeDir 指向仍存在的 store → 保留
+        let store = temp_dir("heal-keep-store");
+        write(
+            &node_modules.join(".modules.yaml"),
+            &format!(
+                "lockfileVersion: '9.0'\nstoreDir: {}\nvirtualStoreDir: node_modules/.pnpm\n",
+                store.display()
+            ),
+        );
+
+        heal_stale_pnpm_metadata(&home).unwrap();
+        assert!(
+            node_modules.join(".modules.yaml").is_file(),
+            "valid modules metadata must be kept"
+        );
+    }
+
+    #[test]
+    fn heal_keeps_absolute_paths_living_under_current_home() {
+        let home = temp_dir("heal-under-home");
+        let node_modules = home.join("profiles/web/node_modules");
+        let vsd = home.join("profiles/web/node_modules/.pnpm");
+        fs::create_dir_all(&vsd).unwrap();
+        write(
+            &node_modules.join(".modules.yaml"),
+            &format!("lockfileVersion: '9.0'\nvirtualStoreDir: {}\n", vsd.display()),
+        );
+
+        heal_stale_pnpm_metadata(&home).unwrap();
+        assert!(
+            node_modules.join(".modules.yaml").is_file(),
+            "absolute path under current DSH_HOME is consistent, must be kept"
+        );
+    }
+
+    #[test]
+    fn heal_missing_profiles_dir_is_noop() {
+        let home = temp_dir("heal-empty");
+        heal_stale_pnpm_metadata(&home).unwrap();
+        // 无 profiles 目录 → 无异常、不产生任何文件
+        assert!(!home.join("profiles").exists());
     }
 }
