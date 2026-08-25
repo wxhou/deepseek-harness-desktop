@@ -205,8 +205,30 @@ fn read_plugin_meta(dir: &Path) -> Option<PluginMeta> {
     Some(meta)
 }
 
-/// 当前档案配置的根插件：第三方依赖且在 `dsh.profile.bundles` 中（只有 bundles
-/// 才会随启动加载，才可能引起启动失败）。
+/// 从档案清单提取启动时会加载的第三方根插件。
+///
+/// 不能要求插件同时存在于 `dependencies`：卸载中断或旧版 CLI 可能只删掉依赖，
+/// 却把 bundle 留在清单中；这正会触发 `cannot resolve profile bundle`，也正是恢复
+/// 流程需要识别并清理的损坏状态。
+fn configured_root_bundles(manifest: &serde_json::Value) -> Vec<String> {
+    manifest
+        .get("dsh")
+        .and_then(|d| d.get("profile"))
+        .and_then(|p| p.get("bundles"))
+        .and_then(|b| b.as_array())
+        .map(|bundles| {
+            bundles
+                .iter()
+                .filter_map(|bundle| bundle.as_str())
+                .filter(|bundle| is_actionable_plugin_ref(bundle))
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// 当前档案配置的根插件：以 `dsh.profile.bundles` 为准，因为只有 bundles 会随
+/// 启动加载并导致 profile bundle 解析失败。
 fn configured_roots(app_handle: &AppHandle) -> Vec<String> {
     let dir = profile_dir(app_handle);
     let content = match fs::read_to_string(dir.join("package.json")) {
@@ -217,26 +239,7 @@ fn configured_roots(app_handle: &AppHandle) -> Vec<String> {
         Ok(v) => v,
         Err(_) => return Vec::new(),
     };
-    let bundles: HashSet<String> = v
-        .get("dsh")
-        .and_then(|d| d.get("profile"))
-        .and_then(|p| p.get("bundles"))
-        .and_then(|b| b.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|x| x.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
-    let deps: Vec<String> = v
-        .get("dependencies")
-        .and_then(|d| d.as_object())
-        .map(|o| o.keys().cloned().collect())
-        .unwrap_or_default();
-    deps.iter()
-        .filter(|d| bundles.contains(*d) && is_actionable_plugin_ref(d))
-        .cloned()
-        .collect()
+    configured_root_bundles(&v)
 }
 
 /// 判断某个根 bundle 是否「拥有」被报告的子包：其依赖里直接声明了该子包，或其
@@ -666,6 +669,29 @@ mod tests {
         assert_eq!(
             manifest["dsh"]["profile"]["bundles"].as_array().unwrap().len(),
             1
+        );
+    }
+
+    #[test]
+    fn configured_roots_include_bundle_left_after_dependency_removal() {
+        let manifest = serde_json::json!({
+            "name": "dsh-profile-web",
+            "private": true,
+            "dependencies": {},
+            "dsh": {
+                "profile": {
+                    "bundles": [
+                        "@deepseek-ai/dsh-base",
+                        "@deepseek-ai/dsh-web-app",
+                        "@linxin666/dsh-web-ui-all"
+                    ]
+                }
+            }
+        });
+
+        assert_eq!(
+            configured_root_bundles(&manifest),
+            vec!["@linxin666/dsh-web-ui-all"]
         );
     }
 
