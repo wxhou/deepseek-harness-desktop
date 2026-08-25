@@ -80,6 +80,10 @@ brew install dsh-tauri-desk/desktop/deepseek-harness
 
 > **Linux Wayland 注意（PikaOS / GNOME Wayland / Ubuntu 22.04+）：** AppImage 在 Wayland 下可能因 WebKitGTK 黑屏/崩溃，应用已自动处理常见情形。 <details><summary>若仍黑屏/崩溃：</summary><br>**改用 `.deb`**（已验证 PikaOS 4 Wayland），或手动 `WEBKIT_DISABLE_COMPOSITING_MODE=1 WEBKIT_DISABLE_DMABUF_RENDERER=1 GDK_BACKEND=x11 ./AppImage`。图标不显示时，将应用内 `hicolor` 图标复制到 `~/.local/share/icons` 并运行 `update-desktop-database`。<br></details>
 
+## 交流
+
+<img width="360" height="566" alt="image" src="https://github.com/user-attachments/assets/598308b5-681d-4514-a8d7-a36810fa8636" />
+
 
 ## 开发
 
