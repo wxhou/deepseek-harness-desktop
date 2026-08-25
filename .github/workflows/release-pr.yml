@@ -20,16 +20,25 @@ jobs:
       contents: write # create the tag, release, and read the repo
       id-token: write # npm OIDC trusted publishing
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           # Check out the merge commit so package.json has the bumped version
           ref: ${{ github.event.pull_request.merge_commit_sha }}
           fetch-depth: 0
 
-      - uses: actions/setup-node@v5
+      # 必须先装 pnpm 再 setup-node：package.json 的 packageManager 声明了
+      # pnpm@10.x，setup-node 的自动缓存会去找 pnpm 可执行文件，缺它就会报
+      # "Unable to locate executable file: pnpm"（与 ci.yml / release.yml 保持一致）。
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: '22'
           registry-url: https://registry.npmjs.org
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
 
       - name: Read version
         id: version
