@@ -72,13 +72,16 @@ pub async fn install(app_handle: &AppHandle, ids: &[String]) -> Result<(), Strin
         // #3948 / #7243 / #13276）：公开仓库一旦落进 git+ssh，在没有 SSH 配置
         // 的桌面机上必然 `Host key verification failed` / `Permission denied (publickey)`。
         //
-        // 最后经 shell_quote_spec 给含空格的 spec 加内嵌双引号：dsh CLI 以
-        // `shell:true` 把参数按空格拼接（Node 不引号转义），内置插件指向应用
-        // 安装目录（如 `G:\Deepseek Harness Desktop\...`，路径常含空格），拼进
-        // shell 后会被切碎成多个 spec，pnpm 报 `ERR_PNPM_SPEC_NOT_SUPPORTED`，
-        // 插件装不上、启动自愈每次重装（死循环）。引号让 shell 把整条 spec 视为
-        // 单一 token；pnpm 解析后自行剥离引号，落盘值仍是不带引号的 `link:<路径>`，
-        // 与内核对账的 `expected`（bundled_dep_spec）一致。
+        // 最后经 shell_quote_spec 给含空格的 spec 加内嵌双引号（**仅 Windows**）：
+        // dsh CLI 只在 win32 用 `shell:true` 启动 pnpm、把参数按空格拼接（Node
+        // 不引号转义，DEP0190），内置插件指向应用安装目录（如
+        // `G:\Deepseek Harness Desktop\...`，路径常含空格），拼进 shell 后会被
+        // 切碎成多个 spec，pnpm 报 `ERR_PNPM_SPEC_NOT_SUPPORTED`，插件装不上、
+        // 启动自愈每次重装（死循环）。引号让 cmd 把整条 spec 视为单一 token；
+        // pnpm 解析后自行剥离引号，落盘值仍是不带引号的 `link:<路径>`，与内核
+        // 对账的 `expected`（bundled_dep_spec）一致。macOS/Linux 是直接
+        // `spawnSync`（无 shell），spec 作为单个 argv 传递、空格天然保留，
+        // 引号只会被当作包名字符导致安装失败（见 [`shell_quote_spec`]）。
         let raw = normalize_git_spec(&preset_spec_for_install(preset, bundled_dir_of(app_handle, preset))?);
         specs.push(shell_quote_spec(&raw));
     }
@@ -979,23 +982,32 @@ fn normalize_git_spec(spec: &str) -> String {
 
 /// 给含空白字符的依赖 spec 加内嵌双引号，使其在 shell 拼接后仍保持单一 token。
 ///
-/// `dsh plugin add` 在 JS 里用 `spawnSync("pnpm", args, {shell:true})` 把参数按
-/// 空格直接拼接传给 shell（Node 对 `shell:true` 不引号转义，仅拼接）。内置插件
-/// 的依赖是 `link:<应用安装目录>`，而 Windows 安装目录常含空格（如
-/// `G:\Deepseek Harness Desktop\resources\preset-plugins\dsh-tauri`），拼进 shell
-/// 后会被切碎成多个 spec，pnpm 报 `ERR_PNPM_SPEC_NOT_SUPPORTED` / 装成错误依赖，
-/// 导致启动自愈每轮都重装（死循环）。包一层双引号让 cmd / sh 把整条 spec 视为
-/// 一个参数；pnpm 解析后自行剥离引号，落盘 `package.json` 的值仍是不带引号的
-/// 规范 `link:<路径>`（与 [`super::preset::bundled_dep_spec`] 的内核对账一致）。
+/// **仅 Windows 需要引号。** `dsh plugin add` 在 JS 里用
+/// `spawnSync("pnpm", args, { shell: process.platform === "win32" })` 启动 pnpm：
+/// - Windows：`shell:true` 时 Node 只把参数按空格拼接、不做引号转义（官方文档
+///   DEP0190：arguments are not escaped, only concatenated）。内置插件的依赖是
+///   `link:<应用安装目录>`，而 Windows 安装目录常含空格（如
+///   `G:\Deepseek Harness Desktop\resources\preset-plugins\dsh-tauri`），拼进
+///   shell 后会被切碎成多个 spec，pnpm 报 `ERR_PNPM_SPEC_NOT_SUPPORTED` / 装成
+///   错误依赖，导致启动自愈每轮都重装（死循环）。包一层双引号让 cmd 把整条
+///   spec 视为一个参数；pnpm 解析后自行剥离引号，落盘 `package.json` 的值仍是
+///   不带引号的规范 `link:<路径>`（与 [`super::preset::bundled_dep_spec`] 的
+///   内核对账一致）。
+/// - macOS / Linux：`shell:false`，pnpm 以 argv 数组直接启动、空格天然保留，
+///   **加引号反而把字面 `"` 当成包名的一部分传给 pnpm → 非法 spec → exit 1**。
+///   这是 issue #104 的根因：内置插件指向 `/Applications/Deepseek Harness
+///   Desktop.app/...`（含空格），每次启动自愈重装都失败、服务永远缺该插件。
 ///
-/// 仅在 spec 含空白时才包引号——普通 npm 包名 / `git+https://...` 无空格，原样
-/// 透传，避免无谓改动。
+/// 因此只在 `cfg!(windows)` 且 spec 含空白时才包引号——普通 npm 包名 /
+/// `git+https://...` 无空格，原样透传，避免无谓改动。
 fn shell_quote_spec(spec: &str) -> String {
-    if spec.chars().any(|c| c == ' ' || c == '\t') {
-        format!("\"{spec}\"")
-    } else {
-        spec.to_string()
+    #[cfg(windows)]
+    {
+        if spec.chars().any(|c| c == ' ' || c == '\t') {
+            return format!("\"{spec}\"");
+        }
     }
+    spec.to_string()
 }
 
 /// 从 pnpm 失败输出里识别 git 传输层错误（区别于 allowBuilds 构建门禁），命中时
@@ -1309,18 +1321,33 @@ allowBuilds:
         );
     }
 
-    // ---- spec 引号化（内置插件 link: 路径含空格，绕开 dsh CLI shell 拼接切分）----
+    // ---- spec 引号化（仅 Windows：dsh CLI 只在 win32 用 shell 拼接参数）----
 
+    #[cfg(windows)]
     #[test]
     fn shell_quote_quotes_spec_containing_spaces() {
         // 安装目录含空格（如 G:\Deepseek Harness Desktop）：整条 spec 加双引号，
-        // 使 dsh CLI 的 shell:true 拼接后仍被 shell 视为单一 token
+        // 使 dsh CLI 的 shell:true 拼接后仍被 shell 视为单一 token（DEP0190：
+        // Node 对 shell:true 只拼接不转义）
         assert_eq!(
             shell_quote_spec("link:G:/Deepseek Harness Desktop/resources/preset-plugins/dsh-tauri"),
             "\"link:G:/Deepseek Harness Desktop/resources/preset-plugins/dsh-tauri\""
         );
         // 制表符同样触发
         assert_eq!(shell_quote_spec("link:C:/x\ty"), "\"link:C:/x\ty\"");
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn shell_quote_leaves_space_path_untouched_on_non_windows() {
+        // 回归（issue #104）：macOS/Linux 上 dsh CLI 直接 spawnSync（shell:false），
+        // spec 作为一个 argv 传递、空格天然保留，绝不能加引号——字面 `"` 会成为
+        // 包名的一部分，pnpm 报非法 spec → exit 1 → 内置插件每次启动重装都失败。
+        assert_eq!(
+            shell_quote_spec("link:/Applications/Deepseek Harness Desktop.app/Contents/Resources/resources/preset-plugins/dsh-tauri-ui"),
+            "link:/Applications/Deepseek Harness Desktop.app/Contents/Resources/resources/preset-plugins/dsh-tauri-ui"
+        );
+        assert_eq!(shell_quote_spec("link:/Users/me/my plugins/dsh-tauri"), "link:/Users/me/my plugins/dsh-tauri");
     }
 
     #[test]
@@ -1338,6 +1365,7 @@ allowBuilds:
         );
     }
 
+    #[cfg(windows)]
     #[test]
     fn shell_quote_preserves_link_prefix_semantics() {
         // 引号只包 path 部分也不影响 pnpm 解析（落盘值仍为不带引号的 link: 规范形）
