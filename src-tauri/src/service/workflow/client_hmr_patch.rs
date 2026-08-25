@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use crate::config;
 use crate::service::core::{active_source, local_core_package_dir, CoreSource};
 
+// HARDCODE：以下锚点绑定内置 DSH 0.1.1-rc.2 的 client-HMR bundle；仅 debug 生效。
 const PATCH_MARKER: &str = "dsh-tauri-desktop: debug client plugin reload fallback";
 const ORIGINAL: &str = r#"case "rebuilt":
 						queue = queue.then(() => reload(frame.id)).catch((error) => {

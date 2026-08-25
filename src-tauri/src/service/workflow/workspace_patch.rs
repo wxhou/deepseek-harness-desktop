@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use crate::config;
 use crate::service::core::{active_source, local_core_package_dir, CoreSource};
 
+// HARDCODE：以下锚点绑定内置 DSH 0.1.1-rc.2 的压缩后源码；锚点变化时安全跳过并告警。
 const PATCH_MARKER: &str = "dsh-tauri-worktree: relaxed explicit workspace membership";
 const GETTER_ORIGINAL: &str =
     "return this.record.sessionIds.filter((id) => this.host.sessionPath(id) === this.record.path);";
