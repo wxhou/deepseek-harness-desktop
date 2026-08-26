@@ -27,6 +27,19 @@ use crate::desktop::window::on_page_load;
 use crate::desktop::window::{on_download, on_new_window};
 use crate::utils::show_main_window;
 
+/// WebView2 原生拖拽区域所需的参数。
+///
+/// `data-tauri-drag-region` 的兼容脚本只处理鼠标事件；WebView2 的原生
+/// `app-region: drag` 才能让触摸输入进入窗口非客户区拖拽。ElasticOverscroll
+/// 会抢走触摸手势，因此必须同时禁用。Wry 的默认安全功能也要显式保留。
+#[cfg(windows)]
+const WINDOWS_DRAG_BROWSER_ARGS: &str = "--enable-features=msWebView2EnableDraggableRegions --disable-features=ElasticOverscroll,msWebOOUI,msPdfOOUI,msSmartScreenProtection";
+
+#[cfg(windows)]
+fn windows_drag_browser_args() -> &'static str {
+    WINDOWS_DRAG_BROWSER_ARGS
+}
+
 /// setup app
 pub fn setup(app_handle: tauri::AppHandle) {
     // 启动前清扫上次崩溃残留的孤儿 Harness（端口/PID 双重确认，见
@@ -325,7 +338,10 @@ pub fn build_main_window(app: &tauri::AppHandle<Wry>) -> tauri::Result<tauri::We
     // Windows/WebView2 在 build() 尚未返回时就可能绘制窗口。先隐藏创建，
     // 等保存的几何恢复完成再显示，避免启动时先闪出默认尺寸再跳到历史尺寸。
     #[cfg(windows)]
-    let webview_builder = webview_builder.visible(false);
+    let webview_builder = webview_builder
+        .visible(false)
+        // WebView2 原生非客户区可直接接收触摸输入；同时禁用会抢占手势的弹性滚动。
+        .additional_browser_args(windows_drag_browser_args());
 
     // macOS 保留原生交通灯：绿色按钮由 AppKit 进入独立 Space 的原生全屏，
     // 同时用 Overlay 让 44px 壳层导航栏继续与窗口 chrome 融合。其他平台
@@ -414,6 +430,19 @@ pub fn build_main_window(app: &tauri::AppHandle<Wry>) -> tauri::Result<tauri::We
     }
 
     Ok(webview_window)
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::windows_drag_browser_args;
+
+    #[test]
+    fn windows_drag_args_enable_touch_drag_and_disable_overscroll() {
+        let args = windows_drag_browser_args();
+        assert!(args.contains("--enable-features=msWebView2EnableDraggableRegions"));
+        assert!(args.contains("--disable-features=ElasticOverscroll"));
+        assert!(args.contains("msWebOOUI,msPdfOOUI,msSmartScreenProtection"));
+    }
 }
 
 // configure invoke handler
