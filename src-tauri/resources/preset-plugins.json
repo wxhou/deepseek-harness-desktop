@@ -38,6 +38,15 @@
     "recommended": true
   },
   {
+    "id": "dsh-tauri-panel",
+    "spec": "dsh-tauri-panel@0.1.1",
+    "internal": true,
+    "name": "DSH Tauri Panel",
+    "description": "Upper panel UI for the desktop sidebar: compact logo row (32px), a panel area holding the New Session menu item plus third-party panel items (sidebar.panel.action protocol slot).",
+    "repoUrl": "https://github.com/dsh-tauri-desk/dsh-tauri-panel",
+    "recommended": true
+  },
+  {
     "id": "dshmarket",
     "spec": "dshmarket",
     "name": "DSH Market",
