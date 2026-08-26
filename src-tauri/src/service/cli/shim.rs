@@ -372,6 +372,11 @@ set "SYSTEM_GIT_WORKS="
 for /f "delims=" %%g in ('git --exec-path 2^>nul') do if exist "%%g\git-remote-https.exe" set "SYSTEM_GIT_WORKS=1"
 if not defined SYSTEM_GIT_WORKS if exist "%APP_DIR%\dependencies\git\cmd\git.exe" set "PATH=%APP_DIR%\dependencies\git\cmd;%PATH%"
 
+rem Use the absolute user pnpm selected and validated by the desktop app.
+if defined DSH_PNPM (
+  if exist "%DSH_PNPM%" goto :use_selected
+)
+
 rem App-internal installs (DSH_PREFER_BUNDLED_PNPM=1) use the bundled pnpm,
 rem falling back to the user's only when the bundled one is missing.
 if "%DSH_PREFER_BUNDLED_PNPM%"=="1" (
@@ -396,10 +401,17 @@ for /f "delims=" %%p in ('where pnpm 2^>nul') do (
     )
   )
 )
-if defined USER_PNPM (
-  call "%USER_PNPM%" %*
-  exit /b %ERRORLEVEL%
-)
+if defined USER_PNPM goto :use_user
+
+goto :after_user
+
+:use_selected
+call "%DSH_PNPM%" %*
+exit /b %ERRORLEVEL%
+
+:use_user
+call "%USER_PNPM%" %*
+exit /b %ERRORLEVEL%
 
 :after_user
 {node_resolve}
@@ -779,6 +791,52 @@ mod tests {
         let env_at = content.find("DSH_PREFER_BUNDLED_PNPM").unwrap();
         let user_at = content.find("where pnpm").unwrap();
         assert!(env_at < user_at);
+    }
+
+    /// issue #130：真实执行生成的 cmd shim，确保用户 pnpm 的失败码不会因 cmd
+    /// 括号块预展开 `%ERRORLEVEL%` 而被吞成 0。
+    #[cfg(windows)]
+    #[test]
+    fn pnpm_cmd_shim_propagates_user_exit_code_in_real_cmd() {
+        let dir = temp_dir("pnpm-exit-code");
+        let shim_dir = dir.join("desktop-bin");
+        let user_dir = dir.join("user-bin");
+        std::fs::create_dir_all(&shim_dir).unwrap();
+        std::fs::create_dir_all(&user_dir).unwrap();
+        let shim = shim_dir.join("pnpm.cmd");
+        std::fs::write(&shim, build_pnpm_cmd_shim(&dir.join("app"))).unwrap();
+        std::fs::write(user_dir.join("pnpm.cmd"), "@echo off\r\necho REAL_USER_PNPM\r\nexit /b 37\r\n").unwrap();
+        let system_root = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
+        let system32 = PathBuf::from(&system_root).join("System32");
+        let path = std::env::join_paths([&shim_dir, &user_dir, &system32]).unwrap();
+        let output = std::process::Command::new(system32.join("cmd.exe"))
+            .args(["/d", "/c"]).arg(&shim).arg("--version")
+            .env("PATH", path).env("SystemRoot", system_root).output().unwrap();
+        assert_eq!(output.status.code(), Some(37));
+        assert!(String::from_utf8_lossy(&output.stdout).contains("REAL_USER_PNPM"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// issue #121：选定 pnpm 即使不在子进程 PATH 中，也必须由 shim 执行。
+    #[cfg(windows)]
+    #[test]
+    fn pnpm_cmd_shim_uses_selected_pnpm_with_restricted_path() {
+        let dir = temp_dir("pnpm-selected");
+        let selected = dir.join("selected-pnpm.cmd");
+        std::fs::write(&selected, "@echo off\r\necho SELECTED_PNPM %*\r\nexit /b 0\r\n").unwrap();
+        let selected = dunce::canonicalize(&selected).unwrap();
+        assert!(!selected.to_string_lossy().starts_with(r"\\?\"));
+        let shim = dir.join("pnpm.cmd");
+        std::fs::write(&shim, build_pnpm_cmd_shim(&dir.join("app"))).unwrap();
+        let system_root = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
+        let system32 = PathBuf::from(&system_root).join("System32");
+        let output = std::process::Command::new(system32.join("cmd.exe"))
+            .args(["/d", "/c"]).arg(&shim).arg("probe-121")
+            .env("PATH", &system32).env("SystemRoot", system_root)
+            .env("DSH_PNPM", &selected).output().unwrap();
+        assert!(output.status.success());
+        assert!(String::from_utf8_lossy(&output.stdout).contains("SELECTED_PNPM probe-121"));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

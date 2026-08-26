@@ -110,6 +110,9 @@ pub async fn install(app_handle: &AppHandle, ids: &[String]) -> Result<(), Strin
 
     // 选定/补齐安装用的 pnpm：返回是否应强制使用捆绑版（版本感知，见 ensure_pnpm）
     let prefer_bundled_pnpm = ensure_pnpm(app_handle, &window).await?;
+    // 首次安装可能早于服务启动；提前写入非交互清理配置，避免 pnpm 在无 TTY
+    // 环境以 ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY 中止（issue #130）。
+    super::ensure_profile_npmrc(app_handle)?;
 
     // 安装前停止运行中的服务，避免资源冲突
     if workflow::has_owned_process() {
@@ -323,7 +326,7 @@ pub(crate) fn build_plugin_envs(app_handle: &AppHandle, prefer_bundled_pnpm: boo
     // 相对路径会被解析到错误位置——shim 经 DSH_NODE / PATH 都找不到 node
     // （issue #121 的 "Node.js runtime not found"）。已存在（预检通过）的
     // node 可安全 canonicalize；失败时回退原值。
-    let node_abs = std::fs::canonicalize(&node).unwrap_or_else(|_| node.clone());
+    let node_abs = dunce::canonicalize(&node).unwrap_or_else(|_| node.clone());
     let bin_dir = cli::get_bin_dir(app_handle);
     let mut envs = HashMap::from([
         (
@@ -347,6 +350,19 @@ pub(crate) fn build_plugin_envs(app_handle: &AppHandle, prefer_bundled_pnpm: boo
     // autoInstallPeers 语义与 workspace-root gate 破坏插件安装（见 ensure_pnpm）
     if prefer_bundled_pnpm {
         envs.insert("DSH_PREFER_BUNDLED_PNPM".to_string(), "1".to_string());
+    } else if let Some(pnpm) = cli::find_user_pnpm(app_handle) {
+        // 应用预检选到的用户 pnpm 可能来自相对 PATH / junction；显式注入其绝对
+        // 路径，避免 dsh 子进程在不同 PATH/CWD 下重新发现失败（issue #121）。
+        // 防御性排除应用自身 shim，避免旧 PATH / 大小写差异导致递归调用。
+        // `cmd.exe` 无法 `call` 带 `\\?\` 前缀的 .cmd；dunce 同时剥离该前缀。
+        let pnpm_abs = dunce::canonicalize(&pnpm).unwrap_or(pnpm);
+        let shim_dir = dunce::canonicalize(&bin_dir).unwrap_or_else(|_| bin_dir.clone());
+        if pnpm_abs.parent() != Some(shim_dir.as_path()) {
+            envs.insert(
+                "DSH_PNPM".to_string(),
+                pnpm_abs.to_string_lossy().into_owned(),
+            );
+        }
     }
 
     let mut paths = vec![bin_dir];
@@ -515,6 +531,8 @@ async fn run_single_plugin_command(
     }
 
     let prefer_bundled_pnpm = ensure_pnpm(app_handle, &window).await?;
+    // `.npmrc` 可能在服务启动后被删除；升级/卸载同样可能触发 pnpm 非交互清理。
+    super::ensure_profile_npmrc(app_handle)?;
 
     // 插件操作会改写 profile，先停止运行中的服务（与安装一致）
     if workflow::has_owned_process() {
