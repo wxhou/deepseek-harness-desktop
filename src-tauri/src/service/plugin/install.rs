@@ -166,15 +166,17 @@ pub async fn install(app_handle: &AppHandle, ids: &[String]) -> Result<(), Strin
         // 区分 git 传输层失败与 allowBuilds 构建门禁：前者是 pnpm 走了 git+ssh
         // （用户环境无 SSH 配置），后者才是补充白名单可自愈的。传输层错误给出
         // 可读指引，避免用户被 dsh 那条 allowBuilds 提示误导。
-        let network_error = network_error_hint(&last_output)
+        let network_error = network_error_hint(&last_output).is_some()
             || (exit_code == 3 && last_output.trim().is_empty());
         let hint = git_transport_hint(&last_output);
         let network_hint = network_error.then_some(
             "NETWORK_ERROR: plugin registry request failed; check network or proxy settings and retry.",
         );
-        let message = network_hint
-            .or(hint)
-            .unwrap_or_else(|| pick_error_message(&last_output, None));
+        let message = if network_error {
+            network_hint.unwrap_or_default().to_string()
+        } else {
+            pick_error_message(&last_output, hint)
+        };
         // 批量安装失败时给本次选中的每个插件记一条错误（前端据此展示异常标记，
         // 可针对单个插件重试更新/卸载）
         for id in ids {
@@ -590,7 +592,7 @@ async fn run_single_plugin_command(
 
     if exit_code != 0 {
         log::error!("dsh plugin {action} failed for {id} with exit code {exit_code}");
-        let network_error = network_error_hint(&output)
+        let network_error = network_error_hint(&output).is_some()
             || (exit_code == 3 && output.trim().is_empty());
         let message = if network_error {
             "NETWORK_ERROR: plugin registry request failed; check network or proxy settings and retry."
@@ -1319,7 +1321,7 @@ pub(crate) fn harness_prefer_bundled_pnpm(app_handle: &AppHandle) -> bool {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
-    use super::{append_command_output, apply_allow_build_keys, collapse_allow_builds_duplicates, dep_path_to_name, extract_allow_line_key, extract_only_builds_git_name, git_transport_hint, network_error_hint, normalize_git_spec, parse_allowlist_keys, parse_store_major_from_modules_yaml, preset_spec_for_install, shell_quote_spec, silent_install_failure_detail, PreinstallPluginInfo};
+    use super::{append_command_output, apply_allow_build_keys, collapse_allow_builds_duplicates, dep_path_to_name, extract_allow_line_key, extract_only_builds_git_name, git_transport_hint, normalize_git_spec, parse_allowlist_keys, parse_store_major_from_modules_yaml, preset_spec_for_install, shell_quote_spec, silent_install_failure_detail, PreinstallPluginInfo};
 
     /// 构造预设条目的测试助手（internal 由各用例显式指定）
     fn preset(id: &str, spec: &str, internal: bool) -> PreinstallPluginInfo {
