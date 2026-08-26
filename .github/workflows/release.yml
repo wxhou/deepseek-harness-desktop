@@ -6,7 +6,7 @@ on:
   # git push origin v0.1.0
   push:
     tags:
-      - "v*"
+      - 'v*'
   # 合并 release/* PR 时创建 tag 并继续正式发布
   pull_request:
     types: [closed]
@@ -125,7 +125,7 @@ jobs:
           # 库而在 22.04 上装不上/跑不起来(issue #41)。
           - id: linux
             platform: ubuntu-22.04
-            args: ""
+            args: ''
 
     runs-on: ${{ matrix.platform }}
     # 兜底：apt/网络偶发卡死时避免占用 runner 到 GitHub 默认的 6 小时上限
@@ -161,7 +161,7 @@ jobs:
         if: steps.check.outputs.should_run == 'true'
         uses: actions/setup-node@v7
         with:
-          node-version: "22"
+          node-version: '22'
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
 
@@ -254,7 +254,7 @@ jobs:
           APPLE_TEAM_ID: ${{ matrix.platform == 'macos-latest' && secrets.APPLE_TEAM_ID || '' }}
         with:
           tagName: ${{ needs.prepare.outputs.tag }}
-          releaseName: "DeepSeek Harness Desktop ${{ needs.prepare.outputs.tag }}"
+          releaseName: 'DeepSeek Harness Desktop ${{ needs.prepare.outputs.tag }}'
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: true
@@ -274,7 +274,7 @@ jobs:
           APPLE_TEAM_ID: ${{ matrix.platform == 'macos-latest' && secrets.APPLE_TEAM_ID || '' }}
         with:
           tagName: ${{ format('test-{0}-{1}', github.ref_name, github.run_number) }}
-          releaseName: "DeepSeek Harness Desktop 手动测试版 (构建 #${{ github.run_number }})"
+          releaseName: 'DeepSeek Harness Desktop 手动测试版 (构建 #${{ github.run_number }})'
           releaseBody: |
             DeepSeek Harness Desktop 手动触发的单平台/全平台测试构建。
             触发分支: `${{ github.ref_name }}`
