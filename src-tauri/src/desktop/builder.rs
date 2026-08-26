@@ -9,14 +9,11 @@ use tauri::{
     ipc::Invoke,
     menu::{Menu, MenuEvent, MenuItem},
     tray::{MouseButton, TrayIconBuilder, TrayIconEvent},
-    Emitter, Runtime, WebviewUrl, WebviewWindowBuilder, Wry,
+    Emitter, Manager, Runtime, WebviewUrl, WebviewWindowBuilder, Wry,
 };
 
 #[cfg(target_os = "macos")]
-use tauri::{
-    menu::{PredefinedMenuItem, Submenu},
-    Manager,
-};
+use tauri::menu::{PredefinedMenuItem, Submenu};
 
 #[cfg(target_os = "macos")]
 static MACOS_FULLSCREEN_MENU_ITEM: OnceLock<Mutex<Option<PredefinedMenuItem<Wry>>>> =
@@ -340,6 +337,20 @@ pub fn build_main_window(app: &tauri::AppHandle<Wry>) -> tauri::Result<tauri::We
     #[cfg(windows)]
     let webview_builder = webview_builder
         .visible(false)
+        // 开发版使用独立 WebView2 数据目录，避免已有 release 实例、热重启残留
+        // 或其他同标识实例占用同一 User Data 管道，触发 HRESULT 0x8007139F。
+        .data_directory({
+            let mut directory = app
+                .path()
+                .app_local_data_dir()
+                .expect("Failed to resolve app local data directory");
+            directory.push(if cfg!(debug_assertions) {
+                "EBWebView-dev"
+            } else {
+                "EBWebView"
+            });
+            directory
+        })
         // WebView2 原生非客户区可直接接收触摸输入；同时禁用会抢占手势的弹性滚动。
         .additional_browser_args(windows_drag_browser_args());
 
