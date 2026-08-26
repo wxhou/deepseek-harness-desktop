@@ -153,7 +153,7 @@ export function ConfigPlugin() {
             <Empty>{t('plugins.empty')}</Empty>
           )}
         >
-          <div className="space-y-3 flex-wrap gap-2">
+          <div className="flex flex-col gap-4">
             {plugins.sort(a => a.internal ? -1 : 1).map(plugin => (
               <Item
                 key={plugin.id}
@@ -219,9 +219,10 @@ export function ConfigPlugin() {
                         <span className="flex items-center gap-1">
                           <If cond={busy?.id === plugin.id && busy.action === 'update'} then={<Spinner size="sm" color="current" />} />
                           {t('plugins.upgrade')}
-                          <If cond={plugin.latestVersion != null && plugin.error == null}>
+                          {/* TODO: hash 会超出长度 */}
+                          {/* <If cond={plugin.latestVersion != null && plugin.error == null}>
                             <span className="font-mono text-[10px] opacity-80">{plugin.latestVersion}</span>
-                          </If>
+                          </If> */}
                         </span>
                       </Chip>
                     </If>

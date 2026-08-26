@@ -183,7 +183,7 @@ export function ConfigCore() {
 
       {/* 加载 / 失败 / 列表 */}
       <PanelState loading={loading} error={error}>
-        <div className="space-y-3 flex-wrap gap-2">
+        <div className="flex flex-col gap-4">
           {rows.map(core => (
             <Item
               key={core.id}
