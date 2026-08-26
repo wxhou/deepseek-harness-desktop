@@ -1,12 +1,15 @@
 name: Build & Release
 
 on:
-  # 正式发布：推送 v* tag 触发（先由 changelogithub 生成 changelog 并创建 release，再并行打包上传产物）
+  # 正式发布：推送 v* tag，或合并同仓库的 release/* PR；同一工作流创建 Release 并打包
   # git tag -a v0.1.0 -m "release: DeepSeek Harness Desktop v0.1.0"
   # git push origin v0.1.0
   push:
     tags:
-      - 'v*'
+      - "v*"
+  # 合并 release/* PR 时创建 tag 并继续正式发布
+  pull_request:
+    types: [closed]
   # 手动触发：支持单平台、多平台测试打包（草稿 + 预发布，不打扰正式用户）
   workflow_dispatch:
     inputs:
@@ -26,57 +29,80 @@ permissions:
   contents: write
 
 jobs:
-  # 正式发布专用：根据 commit/PR 生成 changelog 并创建 release。
-  # 需要完整 git 历史（fetch-depth: 0），避免 changelog 生成器拿不到提交记录。
-  changelog:
-    name: Generate Changelog
-    if: github.event_name == 'push'
+  prepare:
+    name: Prepare Release
+    if: >-
+      github.event_name == 'push' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' && github.event.pull_request.merged == true &&
+       github.event.pull_request.head.repo.full_name == github.repository &&
+       startsWith(github.event.pull_request.head.ref, 'release/'))
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      should_release: ${{ steps.meta.outputs.should_release }}
     steps:
-      - name: Checkout repository
+      - name: Checkout release commit
         uses: actions/checkout@v7
         with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.merge_commit_sha || github.sha }}
           fetch-depth: 0
 
-      - name: Install pnpm
-        uses: pnpm/action-setup@v6
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v7
-        with:
-          node-version: '22'
-          cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
-
-      - name: Generate GitHub Changelog
-        id: changelogithub
-        run: pnpx changelogithub
-        continue-on-error: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Append Artifacts section to release
-        if: steps.changelogithub.outcome == 'success'
+      - name: Read release metadata
+        id: meta
+        shell: bash
         run: |
-          gh release view ${{ github.ref_name }} --json body -q .body > release_notes.md
-          cat >> release_notes.md << 'EOF'
+          if [ "${{ github.event_name }}" = "push" ]; then
+            tag="$GITHUB_REF_NAME"; should_release=true
+          elif [ "${{ github.event_name }}" = "pull_request" ]; then
+            tag="v$(node -p "require('./package.json').version")"; should_release=true
+          else
+            tag=""; should_release=false
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "should_release=$should_release" >> "$GITHUB_OUTPUT"
 
-             ### 📦 Artifacts
-             - **macOS (Apple Silicon)**: 下载 `aarch64.dmg`
-             - **macOS (Intel)**: 下载 `x64.dmg`
-             - **Windows**: 下载 `.exe`
-             - **Linux (x64)**: 下载 `.AppImage` 或 `.deb`（基于 Ubuntu 22.04 构建，兼容 22.04 及更新版本）
-          EOF
-          gh release edit ${{ github.ref_name }} --notes-file release_notes.md
+      - name: Create release tag
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v8
+        env:
+          RELEASE_TAG: ${{ steps.meta.outputs.tag }}
+          RELEASE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+        with:
+          script: |
+            const ref = `tags/${process.env.RELEASE_TAG}`
+            try {
+              await github.rest.git.getRef({owner: context.repo.owner, repo: context.repo.repo, ref})
+              await github.rest.git.updateRef({owner: context.repo.owner, repo: context.repo.repo, ref, sha: process.env.RELEASE_SHA, force: true})
+            } catch (error) {
+              if (error.status !== 404) throw error
+              await github.rest.git.createRef({owner: context.repo.owner, repo: context.repo.repo, ref: `refs/${ref}`, sha: process.env.RELEASE_SHA})
+            }
+
+      - name: Create GitHub Release
+        if: steps.meta.outputs.should_release == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --title "DeepSeek Harness Desktop $RELEASE_TAG" --generate-notes
+          fi
+          gh release view "$RELEASE_TAG" --json body -q .body > release_notes.md
+          cat >> release_notes.md << 'EOF'
+
+          ### ��� Artifacts
+          - **macOS (Apple Silicon)**: 下载 `aarch64.dmg`
+          - **macOS (Intel)**: 下载 `x64.dmg`
+          - **Windows**: 下载 `.exe`
+          - **Linux (x64)**: 下载 `.AppImage` 或 `.deb`（基于 Ubuntu 22.04 构建，兼容 22.04 及更新版本）
+          EOF
+          gh release edit "$RELEASE_TAG" --notes-file release_notes.md
 
   publish:
-    # tag 触发时等待 changelog 生成完成再打包；手动触发时跳过 changelog 直接测试打包
-    needs: changelog
-    if: github.event_name == 'workflow_dispatch' || needs.changelog.result == 'success'
+    # 正式发布由 prepare 创建 tag/Release 后打包；手动触发时进行测试打包
+    needs: prepare
+    if: github.event_name == 'workflow_dispatch' || (needs.prepare.result == 'success' && needs.prepare.outputs.should_release == 'true')
     strategy:
       fail-fast: false
       matrix:
@@ -99,7 +125,7 @@ jobs:
           # 库而在 22.04 上装不上/跑不起来(issue #41)。
           - id: linux
             platform: ubuntu-22.04
-            args: ''
+            args: ""
 
     runs-on: ${{ matrix.platform }}
     # 兜底：apt/网络偶发卡死时避免占用 runner 到 GitHub 默认的 6 小时上限
@@ -111,7 +137,7 @@ jobs:
         shell: bash
         run: |
           # Tag 触发全部构建；手动触发时仅构建与 platform_filter 匹配的平台
-          if [ "${{ github.event_name }}" = "push" ] || \
+          if [ "${{ github.event_name }}" != "workflow_dispatch" ] || \
              [ "${{ github.event.inputs.platform_filter }}" = "all" ] || \
              [ "${{ github.event.inputs.platform_filter }}" = "${{ matrix.id }}" ]; then
             echo "should_run=true" >> $GITHUB_OUTPUT
@@ -135,7 +161,7 @@ jobs:
         if: steps.check.outputs.should_run == 'true'
         uses: actions/setup-node@v7
         with:
-          node-version: '22'
+          node-version: "22"
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
 
@@ -211,10 +237,10 @@ jobs:
           node -e "require('fs').writeFileSync('release-msi-version.tmp.json', JSON.stringify({ bundle: { windows: { wix: { version: process.argv[1] } } } }))" "$APP_VERSION"
           echo "MSI (WiX) version override -> $APP_VERSION"
 
-      # 正式发布：release 已由 changelog 任务创建，这里只上传产物。
+      # 正式发布：Release 已由 prepare 任务创建，这里只上传产物。
       # 注意：不要传 releaseBody —— tauri-action 会用它覆盖已有 release 的正文。
       - name: Build and Release (For Tags)
-        if: steps.check.outputs.should_run == 'true' && github.event_name == 'push'
+        if: steps.check.outputs.should_run == 'true' && github.event_name != 'workflow_dispatch'
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -227,8 +253,8 @@ jobs:
           APPLE_PASSWORD: ${{ matrix.platform == 'macos-latest' && secrets.APPLE_PASSWORD || '' }}
           APPLE_TEAM_ID: ${{ matrix.platform == 'macos-latest' && secrets.APPLE_TEAM_ID || '' }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: 'DeepSeek Harness Desktop ${{ github.ref_name }}'
+          tagName: ${{ needs.prepare.outputs.tag }}
+          releaseName: "DeepSeek Harness Desktop ${{ needs.prepare.outputs.tag }}"
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: true
@@ -248,7 +274,7 @@ jobs:
           APPLE_TEAM_ID: ${{ matrix.platform == 'macos-latest' && secrets.APPLE_TEAM_ID || '' }}
         with:
           tagName: ${{ format('test-{0}-{1}', github.ref_name, github.run_number) }}
-          releaseName: 'DeepSeek Harness Desktop 手动测试版 (构建 #${{ github.run_number }})'
+          releaseName: "DeepSeek Harness Desktop 手动测试版 (构建 #${{ github.run_number }})"
           releaseBody: |
             DeepSeek Harness Desktop 手动触发的单平台/全平台测试构建。
             触发分支: `${{ github.ref_name }}`
