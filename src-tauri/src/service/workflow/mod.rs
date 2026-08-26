@@ -869,6 +869,18 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
         }
     }
 
+    // GUI 进程可能启动在 pnpm 安装之前，继承的 PATH 因而没有 npm 全局目录。
+    // 直接注入探测到的绝对路径，避免 dsh-market 的 pnpm --version 落到自身 shim
+    // 后又因 PATH 看不到真正的 pnpm（issue #139）。
+    if let Some(user_pnpm) = crate::service::cli::find_user_pnpm(&app_handle) {
+        let pnpm_abs = dunce::canonicalize(&user_pnpm).unwrap_or(user_pnpm);
+        let shim_dir = dunce::canonicalize(crate::service::cli::get_bin_dir(&app_handle))
+            .unwrap_or_else(|_| crate::service::cli::get_bin_dir(&app_handle));
+        if pnpm_abs.parent() != Some(shim_dir.as_path()) {
+            envs.insert("DSH_PNPM".to_string(), pnpm_abs.to_string_lossy().into_owned());
+        }
+    }
+
     // 让市场子进程的 pnpm 与桌面端同一套受控策略（store 主版本感知、避免落到系统
     // homebrew pnpm）。与插件安装路径的 ensure_pnpm 版本感知一致，但启动阶段绝不
     // 触发下载；捆绑版未安装或与 store 不匹配时不注入（交由用户 pnpm）。
