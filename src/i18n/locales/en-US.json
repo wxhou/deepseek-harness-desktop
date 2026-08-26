@@ -25,6 +25,7 @@
   "preinstall.cancelling": "Cancelling...",
   "preinstall.open_repo": "Open repository of {{name}}",
   "preinstall.failed": "Installation failed",
+  "preinstall.network_error": "Network connection failed. Check your network or proxy settings and try again.",
   "preinstall.load_failed": "Failed to load preinstall plugin list",
   "preinstall.empty": "No preinstalled plugins available.",
   "preinstall.settings_title": "Recommended Plugins",
