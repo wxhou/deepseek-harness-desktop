@@ -28,9 +28,9 @@ use crate::utils::show_main_window;
 ///
 /// `data-tauri-drag-region` 的兼容脚本只处理鼠标事件；WebView2 的原生
 /// `app-region: drag` 才能让触摸输入进入窗口非客户区拖拽。ElasticOverscroll
-/// 会抢走触摸手势，因此必须同时禁用。Wry 的默认安全功能也要显式保留。
+/// 会抢走触摸手势，因此必须同时禁用。Wry 的默认安全功能保持启用。
 #[cfg(windows)]
-const WINDOWS_DRAG_BROWSER_ARGS: &str = "--enable-features=msWebView2EnableDraggableRegions --disable-features=ElasticOverscroll,msWebOOUI,msPdfOOUI,msSmartScreenProtection";
+const WINDOWS_DRAG_BROWSER_ARGS: &str = "--enable-features=msWebView2EnableDraggableRegions --disable-features=ElasticOverscroll,msWebOOUI,msPdfOOUI";
 
 #[cfg(windows)]
 fn windows_drag_browser_args() -> &'static str {
@@ -254,7 +254,8 @@ pub fn install_macos_menu(app: &tauri::AppHandle<Wry>) -> tauri::Result<()> {
     let cut = PredefinedMenuItem::cut(app, Some(&crate::config::i18n::t("menu.cut")))?;
     let copy = PredefinedMenuItem::copy(app, Some(&crate::config::i18n::t("menu.copy")))?;
     let paste = PredefinedMenuItem::paste(app, Some(&crate::config::i18n::t("menu.paste")))?;
-    let select_all = PredefinedMenuItem::select_all(app, Some(&crate::config::i18n::t("menu.select_all")))?;
+    let select_all =
+        PredefinedMenuItem::select_all(app, Some(&crate::config::i18n::t("menu.select_all")))?;
     let edit_separator_after_redo = PredefinedMenuItem::separator(app)?;
     let edit_separator_before_select_all = PredefinedMenuItem::separator(app)?;
     let edit_menu = Submenu::with_id_and_items(
@@ -465,7 +466,27 @@ mod tests {
         let args = windows_drag_browser_args();
         assert!(args.contains("--enable-features=msWebView2EnableDraggableRegions"));
         assert!(args.contains("--disable-features=ElasticOverscroll"));
-        assert!(args.contains("msWebOOUI,msPdfOOUI,msSmartScreenProtection"));
+        assert!(args.contains("msWebOOUI,msPdfOOUI"));
+        let smart_screen = ["ms", "SmartScreen", "Protection"].concat();
+        assert!(!args.contains(smart_screen.as_str()));
+    }
+}
+
+#[cfg(test)]
+mod security_tests {
+    #[test]
+    fn remote_capability_does_not_cover_wildcard_loopback() {
+        let capability = include_str!("../../capabilities/default.json");
+        assert!(!capability.contains("\"remote\""));
+        let wildcard_loopback = ["http://127.0.0.1:", "*"].concat();
+        assert!(!capability.contains(wildcard_loopback.as_str()));
+    }
+
+    #[test]
+    fn webview_security_features_are_not_disabled() {
+        let source = include_str!("builder.rs");
+        let smart_screen = ["ms", "SmartScreen", "Protection"].concat();
+        assert!(!source.contains(smart_screen.as_str()));
     }
 }
 
