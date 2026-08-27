@@ -17,11 +17,13 @@ pub enum ZoomAction {
     Reset,
 }
 
+/// 获取进程级缩放操作锁，防止并发快捷键交错读写而丢失缩放步进。
 fn zoom_operation_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+/// 在同一锁内执行完整缩放事务，使 WebView 状态与持久化配置始终一致。
 fn serialize_zoom_operation<T>(operation: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
     let _guard = zoom_operation_lock()
         .lock()
