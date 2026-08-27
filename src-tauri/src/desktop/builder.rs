@@ -403,8 +403,8 @@ pub fn build_main_window(app: &tauri::AppHandle<Wry>) -> tauri::Result<tauri::We
     });
 
     // 非 Windows（macOS/Linux）没有 WebView2 的 FrameCreated/ContentLoading 流程，
-    // 直接用 Tauri 的 initialization_script_for_all_frames 把兼容桥、通知桥、导航桥
-    // 与样式桥注入所有 frame（脚本均带 window.__dsh_*_bridge__ 幂等守卫，重复注入安全）。
+    // 直接用 Tauri 的 initialization_script_for_all_frames 把兼容桥、通知桥、导航桥、
+    // 样式桥与缩放快捷键桥注入所有 frame（脚本均带幂等守卫，重复注入安全）。
     #[cfg(not(windows))]
     let webview_builder = webview_builder
         .initialization_script_for_all_frames(crate::desktop::compat::ABORT_SIGNAL_ANY_SHIM_JS)
@@ -412,9 +412,16 @@ pub fn build_main_window(app: &tauri::AppHandle<Wry>) -> tauri::Result<tauri::We
         .initialization_script_for_all_frames(crate::desktop::nav::NAV_SHIM_JS)
         .initialization_script_for_all_frames(crate::desktop::style::IFRAME_STYLES_JS)
         .initialization_script_for_all_frames(crate::desktop::paste::PASTE_SHIM_JS)
-        .initialization_script_for_all_frames(crate::desktop::plugin_boot::PLUGIN_BOOT_RELOAD_JS);
+        .initialization_script_for_all_frames(crate::desktop::plugin_boot::PLUGIN_BOOT_RELOAD_JS)
+        .initialization_script_for_all_frames(crate::desktop::zoom::ZOOM_SHORTCUT_BRIDGE_JS);
 
     let webview_window = webview_builder.build()?;
+    let zoom_factor = crate::config::get_store_dat_setting(app).zoom_factor;
+    if zoom_factor != crate::config::default_zoom_factor() {
+        if let Err(error) = crate::desktop::zoom::apply_native_zoom(&webview_window, zoom_factor) {
+            log::warn!("[zoom] startup zoom was not applied: {error}");
+        }
+    }
 
     // 恢复上次的窗口大小/位置/最大化状态（无历史时保持 builder 默认的 1280×840，
     // 由 Tauri 自动居中；见 config::window_state）。
@@ -493,6 +500,8 @@ pub fn handler() -> impl Fn(Invoke<Wry>) -> bool + Send + Sync + 'static {
         crate::bridge::runtime_ready,
         crate::bridge::get_app_config,
         crate::bridge::update_app_config,
+        crate::bridge::set_webview_zoom,
+        crate::bridge::adjust_webview_zoom,
         crate::bridge::get_cli_link_status,
         crate::bridge::open_in_browser,
         crate::bridge::copy_service_url,
