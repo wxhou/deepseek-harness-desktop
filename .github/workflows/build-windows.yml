@@ -35,12 +35,17 @@ jobs:
     name: Build (windows)
     runs-on: windows-latest
     timeout-minutes: 60
+    # 三个平台共享同一 Release 和 latest.json，必须避免 tauri-action 并发写入。
+    concurrency:
+      group: release-assets-${{ inputs.release_tag || format('test-{0}-{1}', inputs.source_name, github.run_number) }}
+      cancel-in-progress: false
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
           ref: ${{ inputs.source_ref }}
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Setup Node.js and pnpm
         uses: ./.github/actions/setup-node-pnpm

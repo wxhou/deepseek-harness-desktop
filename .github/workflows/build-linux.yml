@@ -36,12 +36,17 @@ jobs:
     # 22.04 的 glibc/WebKitGTK 产物兼容 Ubuntu 22.04 及更新版本。
     runs-on: ubuntu-22.04
     timeout-minutes: 60
+    # 三个平台共享同一 Release 和 latest.json，必须避免 tauri-action 并发写入。
+    concurrency:
+      group: release-assets-${{ inputs.release_tag || format('test-{0}-{1}', inputs.source_name, github.run_number) }}
+      cancel-in-progress: false
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
           ref: ${{ inputs.source_ref }}
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Setup Node.js and pnpm
         uses: ./.github/actions/setup-node-pnpm
@@ -80,20 +85,19 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          TAURI_BUNDLE_TARGETS: appimage,deb
         with:
           tagName: ${{ inputs.release_tag }}
           releaseName: 'DeepSeek Harness Desktop ${{ inputs.release_tag }}'
           releaseDraft: false
           prerelease: ${{ inputs.prerelease }}
           includeUpdaterJson: true
+          args: --bundles appimage,deb
 
       - name: Build and Create Test Release
         if: inputs.test_release
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_BUNDLE_TARGETS: appimage,deb
         with:
           tagName: ${{ format('test-{0}-{1}', inputs.source_name, github.run_number) }}
           releaseName: 'DeepSeek Harness Desktop 手动测试版 (构建 #${{ github.run_number }})'
@@ -102,6 +106,7 @@ jobs:
             触发来源: `${{ inputs.source_name }}`
             打包平台: `linux`
           prerelease: true
+          args: --bundles appimage,deb
 
       - name: Upload Artifacts (Manual Trigger)
         if: inputs.test_release

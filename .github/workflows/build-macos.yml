@@ -59,6 +59,10 @@ jobs:
             rust-target: x86_64-apple-darwin
     runs-on: macos-latest
     timeout-minutes: 60
+    # matrix 架构及其他平台共享同一 Release 和 latest.json，串行执行写入步骤。
+    concurrency:
+      group: release-assets-${{ inputs.release_tag || format('test-{0}-{1}', inputs.source_name, github.run_number) }}
+      cancel-in-progress: false
     steps:
       - name: Filter target architecture
         id: check
@@ -80,6 +84,7 @@ jobs:
         with:
           ref: ${{ inputs.source_ref }}
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Setup Node.js and pnpm
         if: steps.check.outputs.should_run == 'true'
@@ -173,5 +178,6 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: deepseek-harness-desktop-${{ matrix.id }}
-          path: src-tauri/target/release/bundle/dmg/*.dmg
+          path: src-tauri/target/${{ matrix.rust-target }}/release/bundle/dmg/*.dmg
+          if-no-files-found: error
           retention-days: 7
