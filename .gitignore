@@ -14,3 +14,5 @@ src-tauri/resources/preset-plugins/
 release-msi-version.tmp.json
 skills
 .serena
+source/
+.gitmodules
