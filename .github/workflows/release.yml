@@ -91,7 +91,7 @@ jobs:
           gh release view "$RELEASE_TAG" --json body -q .body > release_notes.md
           cat >> release_notes.md << 'EOF'
 
-          ### ��� Artifacts
+          ### Artifacts
           - **macOS (Apple Silicon)**: 下载 `aarch64.dmg`
           - **macOS (Intel)**: 下载 `x64.dmg`
           - **Windows**: 下载 `.exe`
