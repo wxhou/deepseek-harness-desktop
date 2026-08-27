@@ -18,6 +18,8 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
+#[cfg(windows)]
+use std::os::windows::fs::FileTypeExt;
 use std::path::Path;
 use tauri::AppHandle;
 
@@ -548,6 +550,19 @@ fn remove_plugin_from_manifest(manifest: &mut serde_json::Value, id: &str) -> bo
     modified
 }
 
+/// 删除插件入口：符号链接或 junction 只删除入口本身，普通目录递归删除。
+fn remove_plugin_entry(entry: &Path) -> std::io::Result<()> {
+    let file_type = fs::symlink_metadata(entry)?.file_type();
+    #[cfg(windows)]
+    if file_type.is_symlink_dir() {
+        return fs::remove_dir(entry);
+    }
+    if file_type.is_symlink() {
+        return fs::remove_file(entry);
+    }
+    fs::remove_dir_all(entry)
+}
+
 /// 删除 `node_modules/<id>`；scoped 目录删除后若 scope 空则一并清理。
 fn remove_plugin_dir(profile: &Path, id: &str) {
     let node_modules = profile.join("node_modules");
@@ -558,20 +573,33 @@ fn remove_plugin_dir(profile: &Path, id: &str) {
         );
         return;
     };
-    let dir = node_modules_root.join(id);
-    if !dir.exists() {
-        return;
-    }
-    let Ok(dir) = fs_guard::ensure_within(&dir, &node_modules_root) else {
-        log::warn!(
-            "refusing to remove plugin outside node_modules: {}",
-            dir.display()
-        );
+    let entry = node_modules.join(id);
+    let Ok(entry_metadata) = fs::symlink_metadata(&entry) else {
         return;
     };
-    if let Err(e) = fs::remove_dir_all(&dir) {
+    let entry_is_dangling_symlink = entry_metadata.file_type().is_symlink() && !entry.exists();
+    if entry_is_dangling_symlink {
+        // 悬空链接无法规范化目标，只验证父目录，确保删除的仍是 node_modules 内入口。
+        let Some(parent) = entry.parent() else {
+            return;
+        };
+        if let Err(e) = fs_guard::ensure_within(parent, &node_modules_root) {
+            log::warn!(
+                "refusing to remove dangling plugin symlink outside node_modules: {} ({e})",
+                entry.display()
+            );
+            return;
+        }
+    } else if let Err(e) = fs_guard::ensure_within(&entry, &node_modules_root) {
+        log::warn!(
+            "refusing to remove plugin outside node_modules: {} ({e})",
+            entry.display()
+        );
+        return;
+    }
+    if let Err(e) = remove_plugin_entry(&entry) {
         if e.kind() != std::io::ErrorKind::NotFound {
-            log::warn!("failed to remove plugin dir {}: {e}", dir.display());
+            log::warn!("failed to remove plugin dir {}: {e}", entry.display());
         }
     }
     if let Some(scope) = id
@@ -579,15 +607,15 @@ fn remove_plugin_dir(profile: &Path, id: &str) {
         .then(|| id.split('/').next().unwrap_or_default())
     {
         if !scope.is_empty() && scope != id {
-            let scope_dir = node_modules_root.join(scope);
-            if scope_dir.is_dir()
-                && scope_dir
+            let scope_entry = node_modules.join(scope);
+            if scope_entry.is_dir()
+                && scope_entry
                     .read_dir()
                     .map(|mut d| d.next().is_none())
                     .unwrap_or(false)
             {
-                if let Ok(scope_dir) = fs_guard::ensure_within(&scope_dir, &node_modules_root) {
-                    let _ = fs::remove_dir_all(scope_dir);
+                if fs_guard::ensure_within(&scope_entry, &node_modules_root).is_ok() {
+                    let _ = remove_plugin_entry(&scope_entry);
                 }
             }
         }
@@ -735,6 +763,51 @@ mod tests {
         remove_plugin_dir(&profile, "dsh-example");
 
         assert!(!plugin.exists(), "valid plugin directory should be removed");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remove_plugin_dir_removes_symlink_without_target() {
+        let root = std::env::temp_dir().join(format!(
+            "dsh-plugin-recovery-pnpm-symlink-{}",
+            std::process::id()
+        ));
+        let profile = root.join("profile");
+        let link = profile.join("node_modules/dsh-example");
+        let target = profile.join("node_modules/.pnpm/dsh-example@1/node_modules/dsh-example");
+        std::fs::create_dir_all(&target).unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        remove_plugin_dir(&profile, "dsh-example");
+
+        assert!(target.exists(), "pnpm canonical target must remain");
+        assert!(
+            std::fs::symlink_metadata(&link).is_err(),
+            "only the package symlink entry should be removed"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remove_plugin_dir_removes_dangling_symlink() {
+        let root = std::env::temp_dir().join(format!(
+            "dsh-plugin-recovery-dangling-symlink-{}",
+            std::process::id()
+        ));
+        let profile = root.join("profile");
+        let link = profile.join("node_modules/dsh-example");
+        let missing_target = profile.join("node_modules/.pnpm/missing/dsh-example");
+        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&missing_target, &link).unwrap();
+
+        remove_plugin_dir(&profile, "dsh-example");
+
+        assert!(
+            std::fs::symlink_metadata(&link).is_err(),
+            "dangling plugin symlink entry should be removed"
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 
