@@ -42,7 +42,7 @@
 字段说明：
 
 - `id` — 预设唯一 id（仓库跳转 / 查找键；也是未显式声明 `package` 时的默认包名，用于“已安装”检测）。清单内 id 必须唯一（由 `preset_json_ids_are_unique` 单测保证）。
-- `spec` — 来源。要么 `github:owner/repo`（源码形态），要么裸 npm 包名 `name[@version]`（已发布产物形态，跳过构建）。这是 `prebuild.ts` 喂给 git/pnpm 的值。
+- `spec` — 来源。要么 `github:owner/repo`（源码形态），要么 npm 包规格 `name[@version]`（已发布产物形态，跳过构建）。省略 `@version` 时会在构建期解析 registry 中的最新正式版本，避免仅为升级插件而修改清单版本号。这是 `prebuild.ts` 喂给 git/pnpm 的值。
 - `name`、`description`、`repoUrl` — 展示元数据；`repoUrl` 供界面“仓库跳转”链接使用。
 - `package` — 可选。当真实 npm 包名与 `id` 不一致（常见于 scoped 包 `@scope/name`）时在这里声明；用于“已安装”检测与自愈对账。缺省回落 `id`。
 - chip 标记 `recommended` / `fix` / `defaultChecked` — 对内置插件无意义（它们不进清单），保留也无妨。
