@@ -23,6 +23,7 @@ use tauri::AppHandle;
 
 use super::errors;
 use super::installed::profile_dir;
+use crate::service::fs_guard;
 
 /// 前端监听的事件名：需要弹出插件异常修复界面时推送。
 pub(crate) const RECOVERY_REQUIRED_EVENT: &str = "plugin-recovery-required";
@@ -46,18 +47,40 @@ fn is_package_name(s: &str) -> bool {
     if s.is_empty() || s.contains(':') || s.chars().any(|c| c.is_whitespace()) {
         return false;
     }
-    // 路径穿越防护：`.` 与 `..` 虽由字符集放行（包名允许点），但单独出现
-    // 或作为路径片段时会被 `Path::join` 解析为上级目录——必须显式拒绝。
-    if s == "." || s == ".." || s.starts_with("..") || s.ends_with('/') || s.ends_with("..") {
+
+    let (scope, name) = if let Some((scope, name)) = s.split_once('/') {
+        // scoped 包名必须恰好只有一层 scope/name，不能把多个路径片段带入 join。
+        if !s.starts_with('@') || name.is_empty() || name.contains('/') {
+            return false;
+        }
+        (Some(scope), name)
+    } else {
+        if s.starts_with('@') {
+            return false;
+        }
+        (None, s)
+    };
+
+    fn valid_component(component: &str, is_scope: bool) -> bool {
+        let component = if is_scope {
+            component.strip_prefix('@').unwrap_or(component)
+        } else {
+            component
+        };
+        !component.is_empty()
+            && component != "."
+            && component != ".."
+            && !component.starts_with("..")
+            && !component.ends_with("..")
+            && component
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_')
+    }
+
+    if scope.is_some_and(|scope| !valid_component(scope, true)) {
         return false;
     }
-    let body = s.strip_prefix('@').unwrap_or(s);
-    // scoped 必须带 `/`（@scope/name）
-    if s.starts_with('@') && !body.contains('/') {
-        return false;
-    }
-    body.chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' || c == '/')
+    valid_component(name, false)
 }
 
 /// 是否是可行动的第三方插件引用（排除核心包与 @deepseek-ai 官方包）。
@@ -526,7 +549,24 @@ fn remove_plugin_from_manifest(manifest: &mut serde_json::Value, id: &str) -> bo
 /// 删除 `node_modules/<id>`；scoped 目录删除后若 scope 空则一并清理。
 fn remove_plugin_dir(profile: &Path, id: &str) {
     let node_modules = profile.join("node_modules");
-    let dir = node_modules.join(id);
+    let Ok(node_modules_root) = fs_guard::ensure_within(&node_modules, profile) else {
+        log::warn!(
+            "refusing to remove plugin from node_modules outside profile: {}",
+            node_modules.display()
+        );
+        return;
+    };
+    let dir = node_modules_root.join(id);
+    if !dir.exists() {
+        return;
+    }
+    let Ok(dir) = fs_guard::ensure_within(&dir, &node_modules_root) else {
+        log::warn!(
+            "refusing to remove plugin outside node_modules: {}",
+            dir.display()
+        );
+        return;
+    };
     if let Err(e) = fs::remove_dir_all(&dir) {
         if e.kind() != std::io::ErrorKind::NotFound {
             log::warn!("failed to remove plugin dir {}: {e}", dir.display());
@@ -537,14 +577,16 @@ fn remove_plugin_dir(profile: &Path, id: &str) {
         .then(|| id.split('/').next().unwrap_or_default())
     {
         if !scope.is_empty() && scope != id {
-            let scope_dir = node_modules.join(scope);
+            let scope_dir = node_modules_root.join(scope);
             if scope_dir.is_dir()
                 && scope_dir
                     .read_dir()
                     .map(|mut d| d.next().is_none())
                     .unwrap_or(false)
             {
-                let _ = fs::remove_dir_all(&scope_dir);
+                if let Ok(scope_dir) = fs_guard::ensure_within(&scope_dir, &node_modules_root) {
+                    let _ = fs::remove_dir_all(scope_dir);
+                }
             }
         }
     }
@@ -643,10 +685,67 @@ mod tests {
         assert!(!is_package_name("has space"));
         assert!(!is_package_name("with:colon"));
         assert!(!is_package_name("@bare"));
+        assert!(!is_package_name("foo/../../target"));
+        assert!(!is_package_name("@scope/../../target"));
+        assert!(!is_package_name("@scope/pkg/extra"));
+        assert!(!is_package_name(r"foo\..\target"));
+        assert!(!is_package_name(r"@scope\pkg"));
+        assert!(!is_package_name("@scope/@pkg"));
+        assert!(!is_package_name("@scope/.."));
+        assert!(!is_package_name("@scope/."));
+        assert!(is_package_name("foo.bar"));
+        assert!(is_package_name("@scope/pkg.name"));
         assert!(!is_actionable_plugin_ref("@deepseek-ai/dsh-base"));
         // dshmarket 是第三方市场插件，可卸载（不应被当作核心保护包）
         assert!(is_actionable_plugin_ref("dshmarket"));
         assert!(is_actionable_plugin_ref("dsh-better-sidebar"));
+    }
+
+    #[test]
+    fn remove_plugin_dir_rejects_path_escape() {
+        let root = std::env::temp_dir().join(format!("dsh-plugin-recovery-{}", std::process::id()));
+        let profile = root.join("profile");
+        std::fs::create_dir_all(profile.join("node_modules/foo")).unwrap();
+        let outside = profile.join("target");
+        std::fs::create_dir_all(&outside).unwrap();
+
+        remove_plugin_dir(&profile, "foo/../../target");
+
+        assert!(outside.exists(), "path traversal target must remain");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn remove_plugin_dir_removes_valid_plugin() {
+        let root =
+            std::env::temp_dir().join(format!("dsh-plugin-recovery-valid-{}", std::process::id()));
+        let profile = root.join("profile");
+        let plugin = profile.join("node_modules/dsh-example");
+        std::fs::create_dir_all(&plugin).unwrap();
+        std::fs::write(plugin.join("index.js"), "module.exports = {};").unwrap();
+
+        remove_plugin_dir(&profile, "dsh-example");
+
+        assert!(!plugin.exists(), "valid plugin directory should be removed");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remove_plugin_dir_rejects_node_modules_symlink_escape() {
+        let root =
+            std::env::temp_dir().join(format!("dsh-plugin-recovery-link-{}", std::process::id()));
+        let profile = root.join("profile");
+        let outside = root.join("outside-node-modules");
+        let plugin = outside.join("dsh-example");
+        std::fs::create_dir_all(&profile).unwrap();
+        std::fs::create_dir_all(&plugin).unwrap();
+        std::os::unix::fs::symlink(&outside, profile.join("node_modules")).unwrap();
+
+        remove_plugin_dir(&profile, "dsh-example");
+
+        assert!(plugin.exists(), "plugin outside profile must remain");
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
