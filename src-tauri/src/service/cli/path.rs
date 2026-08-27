@@ -679,7 +679,7 @@ mod tests {
         make_executable(&first.join(name));
         make_executable(&second.join(name));
         let found = find_pnpm_in_dirs(&shim_dir, &[shim_dir.clone(), first.clone(), second]);
-        assert_eq!(found, Some(first.join(name)));
+        assert_eq!(found, Some(pnpm_env_path(&first.join(name))));
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -737,7 +737,10 @@ mod tests {
         let mut dirs = vec![inherited];
         append_unix_mise_dirs(&mut dirs, Some(&mise_data), None, None);
 
-        assert_eq!(find_pnpm_in_dirs(&desktop_bin, &dirs), Some(inherited_pnpm));
+        assert_eq!(
+            find_pnpm_in_dirs(&desktop_bin, &dirs),
+            Some(pnpm_env_path(&inherited_pnpm))
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -758,7 +761,10 @@ mod tests {
         let mut dirs = vec![inherited];
         append_unix_mise_dirs(&mut dirs, None, None, Some(&home));
 
-        assert_eq!(find_pnpm_in_dirs(&desktop_bin, &dirs), Some(pnpm));
+        assert_eq!(
+            find_pnpm_in_dirs(&desktop_bin, &dirs),
+            Some(pnpm_env_path(&pnpm))
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 
