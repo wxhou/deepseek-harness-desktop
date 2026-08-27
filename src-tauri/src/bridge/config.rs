@@ -6,6 +6,7 @@
 use crate::config;
 use crate::service::cli;
 use serde::Deserialize;
+use std::sync::{Mutex, OnceLock};
 use tauri::{AppHandle, Manager};
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -14,6 +15,18 @@ pub enum ZoomAction {
     Increase,
     Decrease,
     Reset,
+}
+
+fn zoom_operation_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn serialize_zoom_operation<T>(operation: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    let _guard = zoom_operation_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    operation()
 }
 
 fn apply_zoom_factor(app_handle: &AppHandle, zoom_factor: f64) -> Result<(), String> {
@@ -86,15 +99,17 @@ pub async fn update_app_config(
 /// 把设置面板选择的缩放比例立即应用到主 WebView 并持久化。
 #[tauri::command]
 pub fn set_webview_zoom(app_handle: AppHandle, zoom_factor: f64) -> Result<f64, String> {
-    persist_zoom_factor(&app_handle, zoom_factor)
+    serialize_zoom_operation(|| persist_zoom_factor(&app_handle, zoom_factor))
 }
 
 /// 调整主 WebView 缩放并立即持久化，供宿主和内嵌页面的快捷键共用。
 #[tauri::command]
 pub fn adjust_webview_zoom(app_handle: AppHandle, action: ZoomAction) -> Result<f64, String> {
-    let setting = config::get_store_dat_setting(&app_handle);
-    let zoom_factor = next_zoom_factor(setting.zoom_factor, action);
-    persist_zoom_factor(&app_handle, zoom_factor)
+    serialize_zoom_operation(|| {
+        let setting = config::get_store_dat_setting(&app_handle);
+        let zoom_factor = next_zoom_factor(setting.zoom_factor, action);
+        persist_zoom_factor(&app_handle, zoom_factor)
+    })
 }
 
 /// 命令行集成状态（shim 文件与 PATH 注册情况）
