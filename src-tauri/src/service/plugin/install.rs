@@ -370,17 +370,11 @@ pub(crate) fn build_plugin_envs(app_handle: &AppHandle, prefer_bundled_pnpm: boo
     if prefer_bundled_pnpm {
         envs.insert("DSH_PREFER_BUNDLED_PNPM".to_string(), "1".to_string());
     } else if let Some(pnpm) = cli::find_user_pnpm(app_handle) {
-        // 应用预检选到的用户 pnpm 可能来自相对 PATH / junction；显式注入其绝对
-        // 路径，避免 dsh 子进程在不同 PATH/CWD 下重新发现失败（issue #121）。
-        // 防御性排除应用自身 shim，避免旧 PATH / 大小写差异导致递归调用。
-        // `cmd.exe` 无法 `call` 带 `\\?\` 前缀的 .cmd；dunce 同时剥离该前缀。
-        let pnpm_abs = dunce::canonicalize(&pnpm).unwrap_or(pnpm);
-        let shim_dir = dunce::canonicalize(&bin_dir).unwrap_or_else(|_| bin_dir.clone());
-        if pnpm_abs.parent() != Some(shim_dir.as_path()) {
-            envs.insert(
-                "DSH_PNPM".to_string(),
-                pnpm_abs.to_string_lossy().into_owned(),
-            );
+        // 显式注入绝对路径，避免子进程在不同 PATH/CWD 下重新发现失败。
+        // Unix 保留 mise 依赖 argv[0] 的 shim 链接；Windows 仍解析连接点并剥离
+        // `\\?\`。同时防御性排除应用自身 shim，避免递归调用。
+        if let Some(pnpm_value) = cli::pnpm_env_value(&pnpm, &bin_dir) {
+            envs.insert("DSH_PNPM".to_string(), pnpm_value);
         }
     }
 
@@ -775,11 +769,16 @@ async fn ensure_pnpm(app_handle: &AppHandle, window: &WebviewWindow) -> Result<b
 /// 供 [`ensure_pnpm`] 选版与 [`super::verify`] 的修复选版共用（store 主版本匹配）。
 pub(crate) fn user_pnpm_major_version(app_handle: &AppHandle) -> Option<u32> {
     let pnpm = cli::find_user_pnpm(app_handle)?;
+    pnpm_major_version_at(&pnpm)
+}
+
+/// 探测精确 pnpm 可执行路径的主版本，供直接执行路径校验实际将运行的文件。
+pub(crate) fn pnpm_major_version_at(pnpm: &Path) -> Option<u32> {
     // 打包版是 GUI 进程（无控制台）：直接运行 pnpm（控制台子系统）会新建一个
     // 可见的黑色 cmd 窗口。`harness_prefer_bundled_pnpm` 在每次服务启动都会调本
     // 函数探测用户 pnpm，若不隐藏窗口则每次打开应用都会闪一个黑窗。此处与
     // `config::runtime::node_version_output` 的 CREATE_NO_WINDOW 处理保持一致。
-    let mut cmd = std::process::Command::new(&pnpm);
+    let mut cmd = std::process::Command::new(pnpm);
     cmd.arg("--version");
     #[cfg(windows)]
     {
@@ -1322,6 +1321,38 @@ pub(crate) fn harness_prefer_bundled_pnpm(app_handle: &AppHandle) -> bool {
 mod tests {
     use std::path::PathBuf;
     use super::{append_command_output, apply_allow_build_keys, collapse_allow_builds_duplicates, dep_path_to_name, extract_allow_line_key, extract_only_builds_git_name, git_transport_hint, normalize_git_spec, parse_allowlist_keys, parse_store_major_from_modules_yaml, preset_spec_for_install, shell_quote_spec, silent_install_failure_detail, PreinstallPluginInfo};
+    #[cfg(unix)]
+    use super::pnpm_major_version_at;
+
+    #[cfg(unix)]
+    #[test]
+    fn pnpm_major_version_at_probes_the_exact_selected_path() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "dsh-pnpm-major-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let selected = root.join("selected-pnpm");
+        let other = root.join("other-pnpm");
+        std::fs::write(&selected, "#!/bin/sh\nprintf '11.2.0\\n'\n").unwrap();
+        std::fs::write(&other, "#!/bin/sh\nprintf '10.9.0\\n'\n").unwrap();
+        for path in [&selected, &other] {
+            let mut permissions = std::fs::metadata(path).unwrap().permissions();
+            permissions.set_mode(0o700);
+            std::fs::set_permissions(path, permissions).unwrap();
+        }
+
+        assert_eq!(pnpm_major_version_at(&selected), Some(11));
+        assert_eq!(pnpm_major_version_at(&other), Some(10));
+        let _ = std::fs::remove_dir_all(root);
+    }
 
     /// 构造预设条目的测试助手（internal 由各用例显式指定）
     fn preset(id: &str, spec: &str, internal: bool) -> PreinstallPluginInfo {
