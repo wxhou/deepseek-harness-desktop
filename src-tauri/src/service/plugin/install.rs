@@ -1228,7 +1228,7 @@ fn normalize_git_spec(spec: &str) -> String {
 /// - Windows：`shell:true` 时 Node 只把参数按空格拼接、不做引号转义（官方文档
 ///   DEP0190：arguments are not escaped, only concatenated）。内置插件的依赖是
 ///   `link:<应用安装目录>`，而 Windows 安装目录常含空格（如
-///   `G:\Deepseek Harness Desktop\resources\preset-plugins\dsh-tauri`），拼进
+///   `G:\Deepseek Harness Desktop\resources\internal-plugins\dsh-tauri`），拼进
 ///   shell 后会被切碎成多个 spec，pnpm 报 `ERR_PNPM_SPEC_NOT_SUPPORTED` / 装成
 ///   错误依赖，导致启动自愈每轮都重装（死循环）。包一层双引号让 cmd 把整条
 ///   spec 视为一个参数；pnpm 解析后自行剥离引号，落盘 `package.json` 的值仍是
@@ -1405,10 +1405,10 @@ mod tests {
         // 内置插件：安装依赖为 link:<捆绑目录>（正斜杠规范形；pnpm 对
         // `file:D:/...` 的盘符绝对路径会按相对解析，必须用 `link:`）
         let p = preset("dsh-tauri", "dsh-tauri@0.2.0", true);
-        let dir = PathBuf::from("C:\\Apps\\dsh\\resources\\preset-plugins\\dsh-tauri");
+        let dir = PathBuf::from("C:\\Apps\\dsh\\resources\\internal-plugins\\dsh-tauri");
         assert_eq!(
             preset_spec_for_install(&p, Some(dir)).unwrap(),
-            "link:C:/Apps/dsh/resources/preset-plugins/dsh-tauri"
+            "link:C:/Apps/dsh/resources/internal-plugins/dsh-tauri"
         );
     }
 
@@ -1863,8 +1863,10 @@ onlyBuiltDependencies:
         // 使 dsh CLI 的 shell:true 拼接后仍被 shell 视为单一 token（DEP0190：
         // Node 对 shell:true 只拼接不转义）
         assert_eq!(
-            shell_quote_spec("link:G:/Deepseek Harness Desktop/resources/preset-plugins/dsh-tauri"),
-            "\"link:G:/Deepseek Harness Desktop/resources/preset-plugins/dsh-tauri\""
+            shell_quote_spec(
+                "link:G:/Deepseek Harness Desktop/resources/internal-plugins/dsh-tauri"
+            ),
+            "\"link:G:/Deepseek Harness Desktop/resources/internal-plugins/dsh-tauri\""
         );
         // 制表符同样触发
         assert_eq!(shell_quote_spec("link:C:/x\ty"), "\"link:C:/x\ty\"");
@@ -1877,8 +1879,8 @@ onlyBuiltDependencies:
         // spec 作为一个 argv 传递、空格天然保留，绝不能加引号——字面 `"` 会成为
         // 包名的一部分，pnpm 报非法 spec → exit 1 → 内置插件每次启动重装都失败。
         assert_eq!(
-            shell_quote_spec("link:/Applications/Deepseek Harness Desktop.app/Contents/Resources/resources/preset-plugins/dsh-tauri-ui"),
-            "link:/Applications/Deepseek Harness Desktop.app/Contents/Resources/resources/preset-plugins/dsh-tauri-ui"
+            shell_quote_spec("link:/Applications/Deepseek Harness Desktop.app/Contents/Resources/resources/internal-plugins/dsh-tauri-ui"),
+            "link:/Applications/Deepseek Harness Desktop.app/Contents/Resources/resources/internal-plugins/dsh-tauri-ui"
         );
         assert_eq!(
             shell_quote_spec("link:/Users/me/my plugins/dsh-tauri"),
@@ -1896,8 +1898,8 @@ onlyBuiltDependencies:
         );
         // 无空格的内置插件路径同样不被改动（保持与 internal.rs expected 一致）
         assert_eq!(
-            shell_quote_spec("link:C:/Apps/dsh/resources/preset-plugins/dsh-tauri"),
-            "link:C:/Apps/dsh/resources/preset-plugins/dsh-tauri"
+            shell_quote_spec("link:C:/Apps/dsh/resources/internal-plugins/dsh-tauri"),
+            "link:C:/Apps/dsh/resources/internal-plugins/dsh-tauri"
         );
     }
 
@@ -1905,8 +1907,9 @@ onlyBuiltDependencies:
     #[test]
     fn shell_quote_preserves_link_prefix_semantics() {
         // 引号只包 path 部分也不影响 pnpm 解析（落盘值仍为不带引号的 link: 规范形）
-        let quoted =
-            shell_quote_spec("link:G:/Deepseek Harness Desktop/resources/preset-plugins/dsh-tauri");
+        let quoted = shell_quote_spec(
+            "link:G:/Deepseek Harness Desktop/resources/internal-plugins/dsh-tauri",
+        );
         assert!(quoted.starts_with('"'));
         assert!(quoted.ends_with('"'));
         assert!(quoted.contains("Deepseek Harness Desktop"));
