@@ -65,7 +65,7 @@
 - [DSH Tauri UI](https://github.com/dsh-tauri-desk/dsh-tauri-ui) — 为 Tauri 2 外壳提供自定义设置侧边栏
 - [DSH Tauri Worktree](https://github.com/dsh-tauri-desk/dsh-tauri-worktree) — 为每个会话创建隔离的 Git Worktree，并支持检出到本地分支或归档放弃
 - [DSH Tauri Panel](https://github.com/dsh-tauri-desk/dsh-tauri-plugins/tree/main/packages/dsh-tauri-panel) — 侧栏外壳、面板协议
-- [DSH Tauri Panel Extension](https://github.com/dsh-tauri-desk/dsh-tauri-plugins/tree/main/packages/dsh-tauri-panel-extens- 更多即将引入的插件...
+- [DSH Tauri Panel Extension](https://github.com/dsh-tauri-desk/dsh-tauri-plugins/tree/main/packages/dsh-tauri-panel-extension) — 更多即将引入的插件...
 经安装 `dsh` ，则使用安装版本），随后直接进入 `http://127.0.0.1:3080` 的 Harness 界面；此后完全本地运行，无需联网。
 
 **系统要求：** Windows 10+ · macOS 10.15+ · Linux（AppImage / .deb）· 首次运行需要网络
