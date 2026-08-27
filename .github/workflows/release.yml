@@ -232,6 +232,8 @@ jobs:
       - name: Upload assets and publish release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # finalize 未 checkout，gh 无法从 .git 推断仓库，需显式指定。
+          GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && format('test-{0}-{1}', github.ref_name, github.run_number) || needs.prepare.outputs.tag }}
           PRERELEASE: ${{ github.event_name == 'workflow_dispatch' || needs.prepare.outputs.prerelease == 'true' }}
         run: |
