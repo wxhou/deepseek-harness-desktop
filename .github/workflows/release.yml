@@ -146,8 +146,8 @@ jobs:
           EOF
           gh release edit "$RELEASE_TAG" --notes-file release_notes.md
 
-  # 每个平台维护独立 reusable workflow；手动构建在 job 层过滤未选择的平台。
-  publish-macos:
+  # 三个平台只构建 Actions artifacts，互不写 GitHub Release，因此可以完全并行。
+  build-macos:
     name: Build macOS Artifacts
     needs: prepare
     if: >-
@@ -157,12 +157,8 @@ jobs:
        startsWith(inputs.platform_filter, 'macos-'))
     uses: ./.github/workflows/build-macos.yml
     with:
-      release_tag: ${{ needs.prepare.outputs.tag }}
-      prerelease: ${{ needs.prepare.outputs.prerelease == 'true' }}
-      test_release: ${{ github.event_name == 'workflow_dispatch' }}
       platform_filter: ${{ github.event_name == 'workflow_dispatch' && inputs.platform_filter || 'all' }}
       source_ref: ${{ needs.prepare.outputs.source_ref }}
-      source_name: ${{ github.ref_name }}
     secrets:
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
@@ -172,70 +168,78 @@ jobs:
       APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
-  publish-windows:
+  build-windows:
     name: Build Windows Artifacts
-    needs: [prepare, publish-macos]
-    # 平台串行发布，避免 tauri-action 并发更新同一 Release/latest.json；
-    # always() 允许手动只选 Windows 时跨过 skipped 的 macOS job。
+    needs: prepare
     if: >-
-      always() && needs.prepare.result == 'success' &&
-      (needs.publish-macos.result == 'success' || needs.publish-macos.result == 'skipped') &&
+      needs.prepare.result == 'success' &&
       (github.event_name != 'workflow_dispatch' ||
        inputs.platform_filter == 'all' ||
        inputs.platform_filter == 'windows')
     uses: ./.github/workflows/build-windows.yml
     with:
-      release_tag: ${{ needs.prepare.outputs.tag }}
-      prerelease: ${{ needs.prepare.outputs.prerelease == 'true' }}
-      test_release: ${{ github.event_name == 'workflow_dispatch' }}
       source_ref: ${{ needs.prepare.outputs.source_ref }}
-      source_name: ${{ github.ref_name }}
     secrets:
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
-  publish-linux:
+  build-linux:
     name: Build Linux Artifacts
-    needs: [prepare, publish-windows]
+    needs: prepare
     if: >-
-      always() && needs.prepare.result == 'success' &&
-      (needs.publish-windows.result == 'success' || needs.publish-windows.result == 'skipped') &&
+      needs.prepare.result == 'success' &&
       (github.event_name != 'workflow_dispatch' ||
        inputs.platform_filter == 'all' ||
        inputs.platform_filter == 'linux')
     uses: ./.github/workflows/build-linux.yml
     with:
-      release_tag: ${{ needs.prepare.outputs.tag }}
-      prerelease: ${{ needs.prepare.outputs.prerelease == 'true' }}
-      test_release: ${{ github.event_name == 'workflow_dispatch' }}
       source_ref: ${{ needs.prepare.outputs.source_ref }}
-      source_name: ${{ github.ref_name }}
     secrets:
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
-  # 所有被选平台（含 macOS 签名/公证）成功后，才把草稿 Release 对用户可见。
+  # 单一 writer 下载全部成功构建的产物，一次性上传并发布 Release。
   finalize:
     name: Publish GitHub Release
-    needs: [prepare, publish-macos, publish-windows, publish-linux]
+    needs: [prepare, build-macos, build-windows, build-linux]
     if: >-
       always() && needs.prepare.result == 'success' &&
       ((github.event_name != 'workflow_dispatch' &&
-        needs.publish-macos.result == 'success' &&
-        needs.publish-windows.result == 'success' &&
-        needs.publish-linux.result == 'success') ||
+        needs.build-macos.result == 'success' &&
+        needs.build-windows.result == 'success' &&
+        needs.build-linux.result == 'success') ||
        (github.event_name == 'workflow_dispatch' &&
-        (needs.publish-macos.result == 'success' || needs.publish-macos.result == 'skipped') &&
-        (needs.publish-windows.result == 'success' || needs.publish-windows.result == 'skipped') &&
-        (needs.publish-linux.result == 'success' || needs.publish-linux.result == 'skipped')))
+        (needs.build-macos.result == 'success' || needs.build-macos.result == 'skipped') &&
+        (needs.build-windows.result == 'success' || needs.build-windows.result == 'skipped') &&
+        (needs.build-linux.result == 'success' || needs.build-linux.result == 'skipped')))
     runs-on: ubuntu-latest
     steps:
-      - name: Publish completed release
+      - name: Download build outputs
+        uses: actions/download-artifact@v7
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Verify downloaded assets
+        run: |
+          find release-assets -type f -print
+          [ -n "$(find release-assets -type f -print -quit)" ] || {
+            echo '::error::No release assets were downloaded'
+            exit 1
+          }
+
+      - name: Upload assets and publish release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && format('test-{0}-{1}', github.ref_name, github.run_number) || needs.prepare.outputs.tag }}
           PRERELEASE: ${{ github.event_name == 'workflow_dispatch' || needs.prepare.outputs.prerelease == 'true' }}
         run: |
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --draft --title "DeepSeek Harness Desktop $RELEASE_TAG"
+          fi
+          mapfile -d '' assets < <(find release-assets -type f -print0)
+          gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
           if [ "$PRERELEASE" = "true" ]; then
             gh release edit "$RELEASE_TAG" --draft=false --prerelease --latest=false
           else
