@@ -32,6 +32,12 @@ on:
 permissions:
   contents: write
 
+# 同一 tag/PR 的重复运行整体排队，平台内部再通过 needs 链串行写 Release。
+concurrency:
+  group: release-workflow-${{ github.ref }}
+  cancel-in-progress: false
+  queue: max
+
 jobs:
   prepare:
     name: Prepare Release
@@ -122,7 +128,7 @@ jobs:
           RELEASE_TAG: ${{ steps.meta.outputs.tag }}
         run: |
           git fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
-          pnpm exec changelogithub --to "$RELEASE_TAG" --name "DeepSeek Harness Desktop $RELEASE_TAG"
+          pnpm exec changelogithub --draft --to "$RELEASE_TAG" --name "DeepSeek Harness Desktop $RELEASE_TAG"
 
       - name: Append Artifacts section to release
         if: steps.meta.outputs.should_release == 'true'
@@ -208,3 +214,31 @@ jobs:
     secrets:
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+  # 所有被选平台（含 macOS 签名/公证）成功后，才把草稿 Release 对用户可见。
+  finalize:
+    name: Publish GitHub Release
+    needs: [prepare, publish-macos, publish-windows, publish-linux]
+    if: >-
+      always() && needs.prepare.result == 'success' &&
+      ((github.event_name != 'workflow_dispatch' &&
+        needs.publish-macos.result == 'success' &&
+        needs.publish-windows.result == 'success' &&
+        needs.publish-linux.result == 'success') ||
+       (github.event_name == 'workflow_dispatch' &&
+        (needs.publish-macos.result == 'success' || needs.publish-macos.result == 'skipped') &&
+        (needs.publish-windows.result == 'success' || needs.publish-windows.result == 'skipped') &&
+        (needs.publish-linux.result == 'success' || needs.publish-linux.result == 'skipped')))
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish completed release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && format('test-{0}-{1}', github.ref_name, github.run_number) || needs.prepare.outputs.tag }}
+          PRERELEASE: ${{ github.event_name == 'workflow_dispatch' || needs.prepare.outputs.prerelease == 'true' }}
+        run: |
+          if [ "$PRERELEASE" = "true" ]; then
+            gh release edit "$RELEASE_TAG" --draft=false --prerelease --latest=false
+          else
+            gh release edit "$RELEASE_TAG" --draft=false --prerelease=false --latest
+          fi

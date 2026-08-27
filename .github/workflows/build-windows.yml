@@ -76,7 +76,7 @@ jobs:
         with:
           tagName: ${{ inputs.release_tag }}
           releaseName: 'DeepSeek Harness Desktop ${{ inputs.release_tag }}'
-          releaseDraft: false
+          releaseDraft: true
           prerelease: ${{ inputs.prerelease }}
           includeUpdaterJson: true
           args: --config release-msi-version.tmp.json
@@ -93,6 +93,7 @@ jobs:
             DeepSeek Harness Desktop 手动触发测试构建。
             触发来源: `${{ inputs.source_name }}`
             打包平台: `windows`
+          releaseDraft: true
           prerelease: true
           args: --config release-msi-version.tmp.json
 

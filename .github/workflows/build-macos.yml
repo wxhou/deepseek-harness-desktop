@@ -133,7 +133,7 @@ jobs:
         with:
           tagName: ${{ inputs.release_tag }}
           releaseName: 'DeepSeek Harness Desktop ${{ inputs.release_tag }}'
-          releaseDraft: false
+          releaseDraft: true
           prerelease: ${{ inputs.prerelease }}
           includeUpdaterJson: true
           args: ${{ matrix.args }}
@@ -155,6 +155,7 @@ jobs:
             DeepSeek Harness Desktop 手动触发测试构建。
             触发来源: `${{ inputs.source_name }}`
             打包平台: `${{ inputs.platform_filter }}`
+          releaseDraft: true
           prerelease: true
           args: ${{ matrix.args }}
 
