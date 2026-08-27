@@ -873,11 +873,13 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     // 直接注入探测到的绝对路径，避免 dsh-market 的 pnpm --version 落到自身 shim
     // 后又因 PATH 看不到真正的 pnpm（issue #139）。
     if let Some(user_pnpm) = crate::service::cli::find_user_pnpm(&app_handle) {
-        let pnpm_abs = dunce::canonicalize(&user_pnpm).unwrap_or(user_pnpm);
-        let shim_dir = dunce::canonicalize(crate::service::cli::get_bin_dir(&app_handle))
-            .unwrap_or_else(|_| crate::service::cli::get_bin_dir(&app_handle));
-        if pnpm_abs.parent() != Some(shim_dir.as_path()) {
-            envs.insert("DSH_PNPM".to_string(), pnpm_abs.to_string_lossy().into_owned());
+        // Unix mise shim 依赖调用路径中的 argv[0]；只做字面绝对化，不能解析
+        // `pnpm -> mise` 链接。Windows 仍由同一辅助函数处理连接点与 `\\?\`。
+        if let Some(pnpm_value) = crate::service::cli::pnpm_env_value(
+            &user_pnpm,
+            &crate::service::cli::get_bin_dir(&app_handle),
+        ) {
+            envs.insert("DSH_PNPM".to_string(), pnpm_value);
         }
     }
 

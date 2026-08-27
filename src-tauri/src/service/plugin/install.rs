@@ -370,17 +370,11 @@ pub(crate) fn build_plugin_envs(app_handle: &AppHandle, prefer_bundled_pnpm: boo
     if prefer_bundled_pnpm {
         envs.insert("DSH_PREFER_BUNDLED_PNPM".to_string(), "1".to_string());
     } else if let Some(pnpm) = cli::find_user_pnpm(app_handle) {
-        // 应用预检选到的用户 pnpm 可能来自相对 PATH / junction；显式注入其绝对
-        // 路径，避免 dsh 子进程在不同 PATH/CWD 下重新发现失败（issue #121）。
-        // 防御性排除应用自身 shim，避免旧 PATH / 大小写差异导致递归调用。
-        // `cmd.exe` 无法 `call` 带 `\\?\` 前缀的 .cmd；dunce 同时剥离该前缀。
-        let pnpm_abs = dunce::canonicalize(&pnpm).unwrap_or(pnpm);
-        let shim_dir = dunce::canonicalize(&bin_dir).unwrap_or_else(|_| bin_dir.clone());
-        if pnpm_abs.parent() != Some(shim_dir.as_path()) {
-            envs.insert(
-                "DSH_PNPM".to_string(),
-                pnpm_abs.to_string_lossy().into_owned(),
-            );
+        // 显式注入绝对路径，避免子进程在不同 PATH/CWD 下重新发现失败。
+        // Unix 保留 mise 依赖 argv[0] 的 shim 链接；Windows 仍解析连接点并剥离
+        // `\\?\`。同时防御性排除应用自身 shim，避免递归调用。
+        if let Some(pnpm_value) = cli::pnpm_env_value(&pnpm, &bin_dir) {
+            envs.insert("DSH_PNPM".to_string(), pnpm_value);
         }
     }
 
