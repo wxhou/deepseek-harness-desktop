@@ -129,37 +129,51 @@ pub(crate) fn bundled_plugin_dir(app_handle: &AppHandle, id: &str) -> Option<Pat
 }
 
 /// 删除旧版随包资源目录 `resources/preset-plugins`，避免升级安装保留不再使用的
-/// 内部插件副本。仅删除目录，不影响同级 `preset-plugins.json` 社区预设清单。
+/// 内部插件副本。仅处理 Tauri 运行时资源根下的目录，绝不删除源码 checkout；逐个
+/// 尝试所有布局后再汇总错误，避免一个被占用的旧目录阻碍其余目录清理。
 pub(crate) fn remove_legacy_bundled_plugins(app_handle: &AppHandle) -> Result<(), String> {
-    let mut candidates = Vec::new();
-    if let Ok(root) = app_handle.path().resource_dir() {
-        candidates.push(root.join(LEGACY_BUNDLED_PLUGINS_DIR));
-        candidates.push(root.join("resources").join(LEGACY_BUNDLED_PLUGINS_DIR));
-    }
-    candidates.push(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("resources")
-            .join(LEGACY_BUNDLED_PLUGINS_DIR),
-    );
+    let Ok(root) = app_handle.path().resource_dir() else {
+        return Ok(());
+    };
+    let candidates = vec![
+        root.join(LEGACY_BUNDLED_PLUGINS_DIR),
+        root.join("resources").join(LEGACY_BUNDLED_PLUGINS_DIR),
+    ];
+    remove_legacy_candidates(candidates, |path| std::fs::remove_dir_all(path))
+}
+
+/// 对候选旧目录执行最佳努力清理；删除动作参数化是为了验证单项失败后仍继续处理。
+fn remove_legacy_candidates(
+    mut candidates: Vec<PathBuf>,
+    mut remove: impl FnMut(&std::path::Path) -> std::io::Result<()>,
+) -> Result<(), String> {
     candidates.sort();
     candidates.dedup();
+    let mut failures = Vec::new();
 
     for path in candidates {
         if !path.is_dir() {
             continue;
         }
-        std::fs::remove_dir_all(&path).map_err(|e| {
-            format!(
+        match remove(&path) {
+            Ok(()) => {
+                log::info!(
+                    "removed legacy bundled plugins directory: {}",
+                    path.display()
+                );
+            }
+            Err(e) => failures.push(format!(
                 "LEGACY_PRESET_PLUGINS_REMOVE_FAILED: {}: {e}",
                 path.display()
-            )
-        })?;
-        log::info!(
-            "removed legacy bundled plugins directory: {}",
-            path.display()
-        );
+            )),
+        }
     }
-    Ok(())
+
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("; "))
+    }
 }
 
 /// 开发模式内置插件源码根目录：读取 `<仓库根>/.env` 的 `DEV_INTERNAL_PLUGINS_DIR`。
@@ -220,6 +234,9 @@ pub(crate) fn bundled_dep_spec(dir: &std::path::Path) -> String {
 }
 
 /// 解析插件清单 JSON，并由清单来源统一设置内部插件标记。
+///
+/// 清单边界是可信的产品分类：即使条目误带或遗漏 `internal` 字段，也不能让社区
+/// 预设获得必装自愈权限，或让内部插件退出自愈流程，因此始终以文件来源覆盖该值。
 fn parse_plugins(json: &str, internal: bool) -> Result<Vec<PreinstallPluginInfo>, String> {
     let mut plugins: Vec<PreinstallPluginInfo> =
         serde_json::from_str(json).map_err(|e| format!("PLUGIN_MANIFEST_INVALID_JSON: {e}"))?;
@@ -230,6 +247,9 @@ fn parse_plugins(json: &str, internal: bool) -> Result<Vec<PreinstallPluginInfo>
 }
 
 /// 读取单个插件清单；资源缺失/损坏时记录错误并返回空清单。
+///
+/// 插件元数据不是桌面壳启动的硬依赖；降级为空列表可让核心服务继续启动，同时用
+/// 明确日志保留发布资源缺失或损坏的诊断信息，避免清单故障导致应用整体不可用。
 fn load_manifest(
     app_handle: &AppHandle,
     file_name: &str,
@@ -409,6 +429,37 @@ mod tests {
         assert!(!preset[0].internal);
         let internal = parse_plugins(raw, true).expect("internal manifest should parse");
         assert!(internal[0].internal);
+    }
+
+    #[test]
+    fn legacy_cleanup_continues_after_failure_and_aggregates_errors() {
+        let root = std::env::temp_dir().join(format!("dsh-legacy-cleanup-{}", std::process::id()));
+        let first = root.join("a");
+        let second = root.join("b");
+        std::fs::create_dir_all(&first).expect("create first legacy dir");
+        std::fs::create_dir_all(&second).expect("create second legacy dir");
+        let mut attempted = Vec::new();
+
+        let error = remove_legacy_candidates(vec![first.clone(), second.clone()], |path| {
+            attempted.push(path.to_path_buf());
+            if path == first {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "locked",
+                ))
+            } else {
+                std::fs::remove_dir_all(path)
+            }
+        })
+        .expect_err("one failed cleanup should be reported");
+
+        assert_eq!(attempted, vec![first.clone(), second.clone()]);
+        assert!(error.contains("LEGACY_PRESET_PLUGINS_REMOVE_FAILED"));
+        assert!(error.contains(&first.display().to_string()));
+        assert!(error.contains("locked"));
+        assert!(first.is_dir());
+        assert!(!second.exists());
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
