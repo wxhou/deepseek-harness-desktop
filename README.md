@@ -29,7 +29,17 @@
   <img src="./docs/images/hero-zh.png" width="100%" alt="DSH Desktop 中文宣传横幅" />
 </p>
 
-> [更多浏览图片](/docs/PREVIEW.md)
+<div style="display:flex; gap:12px; overflow-x:auto; padding:12px 0; scrollbar-width:thin;">
+  <img src="./docs/images/previews/preview-0.png" alt="preview" style="flex:0 0 45%; max-width:520px; border-radius:8px; object-fit:cover;" />
+  <img src="./docs/images/previews/preview-1.png" alt="preview session" style="flex:0 0 45%; max-width:520px; border-radius:8px; object-fit:cover;" />
+  <img src="/docs/images/previews/preview-2.png" alt="preview 1" style="flex:0 0 45%; max-width:520px; border-radius:8px; object-fit:cover;" />
+  <img src="/docs/images/previews/preview-3.png" alt="preview 2" style="flex:0 0 45%; max-width:520px; border-radius:8px; object-fit:cover;" />
+  <img src="/docs/images/previews/preview-4.png" alt="preview 3" style="flex:0 0 45%; max-width:520px; border-radius:8px; object-fit:cover;" />
+  <img src="/docs/images/previews/preview-5.png" alt="preview 4" style="flex:0 0 45%; max-width:520px; border-radius:8px; object-fit:cover;" />
+  <img src="/docs/images/previews/preview-6.png" alt="preview 4" style="flex:0 0 45%; max-width:520px; border-radius:8px; object-fit:cover;" />
+  <img src="/docs/images/previews/preview-7.png" alt="preview 4" style="flex:0 0 45%; max-width:520px; border-radius:8px; object-fit:cover;" />
+  <img src="/docs/images/previews/preview-8.png" alt="preview 4" style="flex:0 0 45%; max-width:520px; border-radius:8px; object-fit:cover;" />
+</div>
 
 ## 功能
 
@@ -63,7 +73,8 @@
 - [DSH Tauri](https://github.com/dsh-tauri-desk/dsh-tauri) — 提供与 Tauri 2 外壳的通信通道
 - [DSH Tauri UI](https://github.com/dsh-tauri-desk/dsh-tauri-ui) — 为 Tauri 2 外壳提供自定义设置侧边栏
 - [DSH Tauri Worktree](https://github.com/dsh-tauri-desk/dsh-tauri-worktree) — 为每个会话创建隔离的 Git Worktree，并支持检出到本地分支或归档放弃
-- 更多即将引入的插件...
+- [DSH Tauri Panel](https://github.com/dsh-tauri-desk/dsh-tauri-plugins/tree/main/packages/dsh-tauri-panel) — 侧栏外壳、面板协议
+- [DSH Tauri Panel Extension](https://github.com/dsh-tauri-desk/dsh-tauri-plugins/tree/main/packages/dsh-tauri-panel-extension) — 技能与 MCP 管理
 
 ## 快速开始
 
