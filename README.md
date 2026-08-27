@@ -31,24 +31,13 @@
 
 <table>
   <tr>
-    <td><img src="docs/images/previews/preview-0.png" alt="preview" width="300" /></td>
-    <td><img src="docs/images/previews/preview-1.png" alt="preview session" width="300" /></td>
-    <td><img src="docs/images/previews/preview-2.png" alt="preview 1" width="300" /></td>
-    <td><img src="docs/images/previews/preview-3.png" alt="preview 2" width="300" /></td>
-    <td><img src="docs/images/previews/preview-4.png" alt="preview 3" width="300" /></td>
-    <td><img src="docs/images/previews/preview-5.png" alt="preview 4" width="300" /></td>
-    <td><img src="docs/images/previews/preview-6.png" alt="preview 4" width="300" /></td>
-    <td><img src="docs/images/previews/preview-7.png" alt="preview 4" width="300" /></td>
-    <td><img src="docs/images/previews/preview-8.png" alt="preview 4" width="300" /></td>
+    <td><a href="docs/PREVIEW.md"><img src="./docs/images/previews/preview-1.png" alt="preview 1" /></a></td>
+    <td><a href="docs/PREVIEW.md"><img src="/docs/images/previews/preview-2.png" alt="preview 2" /></a></td>
+    <td><a href="docs/PREVIEW.md"><img src="/docs/images/previews/preview-4.png" alt="preview 4" /></a></td>
+    <td><a href="docs/PREVIEW.md"><img src="/docs/images/previews/preview-5.png" alt="preview 5" /></a></td>
   </tr>
 </table>
 
-## 功能
-
-- ⚡️ **零环境** — 首次启动无须 Node 运行时与 Harness 内核；默认使用本地环境，不修改已有的系统环境。
-- 🔄 **内核更新** — 应用内同步上游最新 Harness 版本，无需重装即生效；支持多版本核心管理。
-- 🖥️ **应用配置** — 统一的配置对话框（调试 / 档案 / 插件 / 核心），界面按钮中英双语本地化，并适配暗色模式。
-- 🗂️ **档案隔离** — 在应用配置彼此隔离的档案，插件、补丁与设置各自独立，互不干扰。
 - 🧩 **插件管理** — 插件面板管理已安装插件，出现异常时提供升级 / 卸载入口，错误详情。
 - 🎁 **内置插件** — 随安装包内置插件，以及将来引入更多高质量的内置插件。
 - 🪶 **原生轻量** — Tauri 2 外壳（非 Electron）：更小的安装包、更低的内存占用、原生窗口。
@@ -76,19 +65,8 @@
 - [DSH Tauri UI](https://github.com/dsh-tauri-desk/dsh-tauri-ui) — 为 Tauri 2 外壳提供自定义设置侧边栏
 - [DSH Tauri Worktree](https://github.com/dsh-tauri-desk/dsh-tauri-worktree) — 为每个会话创建隔离的 Git Worktree，并支持检出到本地分支或归档放弃
 - [DSH Tauri Panel](https://github.com/dsh-tauri-desk/dsh-tauri-plugins/tree/main/packages/dsh-tauri-panel) — 侧栏外壳、面板协议
-- [DSH Tauri Panel Extension](https://github.com/dsh-tauri-desk/dsh-tauri-plugins/tree/main/packages/dsh-tauri-panel-extension) — 技能与 MCP 管理
-
-## 快速开始
-
-从 [Releases](https://github.com/hairyf/deepseek-harness-desktop/releases) 下载对应平台安装包，安装后启动即可。
-
-**macOS（Homebrew）：** 也可通过 Homebrew 一键安装：
-
-```bash
-brew install dsh-tauri-desk/desktop/deepseek-harness
-```
-
-首次运行会下载 Node 运行时与 Harness 内核（如已经安装 `dsh` ，则使用安装版本），随后直接进入 `http://127.0.0.1:3080` 的 Harness 界面；此后完全本地运行，无需联网。
+- [DSH Tauri Panel Extension](https://github.com/dsh-tauri-desk/dsh-tauri-plugins/tree/main/packages/dsh-tauri-panel-extens- 更多即将引入的插件...
+经安装 `dsh` ，则使用安装版本），随后直接进入 `http://127.0.0.1:3080` 的 Harness 界面；此后完全本地运行，无需联网。
 
 **系统要求：** Windows 10+ · macOS 10.15+ · Linux（AppImage / .deb）· 首次运行需要网络
 

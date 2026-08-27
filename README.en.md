@@ -31,15 +31,10 @@
 
 <table>
   <tr>
-    <td><img src="docs/images/previews/preview-0.png" alt="preview" width="300" /></td>
-    <td><img src="docs/images/previews/preview-1.png" alt="preview session" width="300" /></td>
-    <td><img src="docs/images/previews/preview-2.png" alt="preview 1" width="300" /></td>
-    <td><img src="docs/images/previews/preview-3.png" alt="preview 2" width="300" /></td>
-    <td><img src="docs/images/previews/preview-4.png" alt="preview 3" width="300" /></td>
-    <td><img src="docs/images/previews/preview-5.png" alt="preview 4" width="300" /></td>
-    <td><img src="docs/images/previews/preview-6.png" alt="preview 4" width="300" /></td>
-    <td><img src="docs/images/previews/preview-7.png" alt="preview 4" width="300" /></td>
-    <td><img src="docs/images/previews/preview-8.png" alt="preview 4" width="300" /></td>
+    <td><a href="docs/PREVIEW.md"><img src="./docs/images/previews/preview-1.png" alt="preview 1" /></a></td>
+    <td><a href="docs/PREVIEW.md"><img src="/docs/images/previews/preview-2.png" alt="preview 2" /></a></td>
+    <td><a href="docs/PREVIEW.md"><img src="/docs/images/previews/preview-4.png" alt="preview 4" /></a></td>
+    <td><a href="docs/PREVIEW.md"><img src="/docs/images/previews/preview-5.png" alt="preview 5" /></a></td>
   </tr>
 </table>
 
