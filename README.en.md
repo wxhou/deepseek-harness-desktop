@@ -29,17 +29,19 @@
   <img src="./docs/images/hero-en.png" width="100%" alt="DSH Desktop English promotional banner" />
 </p>
 
-<div style="display:flex; gap:12px; overflow-x:auto; padding:12px 0; scrollbar-width:thin;">
-  <img src="./docs/images/previews/preview-0.png" alt="preview" style="flex:0 0 45%; max-width:520px; border-radius:8px; object-fit:cover;" />
-  <img src="./docs/images/previews/preview-1.png" alt="preview session" style="flex:0 0 45%; max-width:520px; border-radius:8px; object-fit:cover;" />
-  <img src="/docs/images/previews/preview-2.png" alt="preview 1" style="flex:0 0 45%; max-width:520px; border-radius:8px; object-fit:cover;" />
-  <img src="/docs/images/previews/preview-3.png" alt="preview 2" style="flex:0 0 45%; max-width:520px; border-radius:8px; object-fit:cover;" />
-  <img src="/docs/images/previews/preview-4.png" alt="preview 3" style="flex:0 0 45%; max-width:520px; border-radius:8px; object-fit:cover;" />
-  <img src="/docs/images/previews/preview-5.png" alt="preview 4" style="flex:0 0 45%; max-width:520px; border-radius:8px; object-fit:cover;" />
-  <img src="/docs/images/previews/preview-6.png" alt="preview 4" style="flex:0 0 45%; max-width:520px; border-radius:8px; object-fit:cover;" />
-  <img src="/docs/images/previews/preview-7.png" alt="preview 4" style="flex:0 0 45%; max-width:520px; border-radius:8px; object-fit:cover;" />
-  <img src="/docs/images/previews/preview-8.png" alt="preview 4" style="flex:0 0 45%; max-width:520px; border-radius:8px; object-fit:cover;" />
-</div>
+<table>
+  <tr>
+    <td><img src="docs/images/previews/preview-0.png" alt="preview" width="300" /></td>
+    <td><img src="docs/images/previews/preview-1.png" alt="preview session" width="300" /></td>
+    <td><img src="docs/images/previews/preview-2.png" alt="preview 1" width="300" /></td>
+    <td><img src="docs/images/previews/preview-3.png" alt="preview 2" width="300" /></td>
+    <td><img src="docs/images/previews/preview-4.png" alt="preview 3" width="300" /></td>
+    <td><img src="docs/images/previews/preview-5.png" alt="preview 4" width="300" /></td>
+    <td><img src="docs/images/previews/preview-6.png" alt="preview 4" width="300" /></td>
+    <td><img src="docs/images/previews/preview-7.png" alt="preview 4" width="300" /></td>
+    <td><img src="docs/images/previews/preview-8.png" alt="preview 4" width="300" /></td>
+  </tr>
+</table>
 
 ## Features
 
