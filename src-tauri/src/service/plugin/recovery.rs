@@ -70,6 +70,8 @@ fn is_package_name(s: &str) -> bool {
         !component.is_empty()
             && component != "."
             && component != ".."
+            && !component.starts_with('.')
+            && !component.ends_with('.')
             && !component.starts_with("..")
             && !component.ends_with("..")
             && component
@@ -693,6 +695,12 @@ mod tests {
         assert!(!is_package_name("@scope/@pkg"));
         assert!(!is_package_name("@scope/.."));
         assert!(!is_package_name("@scope/."));
+        assert!(!is_package_name(".pnpm"));
+        assert!(!is_package_name(".hidden"));
+        assert!(!is_package_name("foo."));
+        assert!(!is_package_name("@.scope/pkg"));
+        assert!(!is_package_name("@scope/.hidden"));
+        assert!(!is_package_name("@scope/foo."));
         assert!(is_package_name("foo.bar"));
         assert!(is_package_name("@scope/pkg.name"));
         assert!(!is_actionable_plugin_ref("@deepseek-ai/dsh-base"));
