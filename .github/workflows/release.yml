@@ -10,10 +10,10 @@ on:
   pull_request:
     types: [closed]
     paths:
-      - 'package.json'
-      - 'src-tauri/Cargo.toml'
-      - 'src-tauri/Cargo.lock'
-      - 'src-tauri/tauri.conf.json'
+      - package.json
+      - src-tauri/Cargo.toml
+      - src-tauri/Cargo.lock
+      - src-tauri/tauri.conf.json
   # 手动触发：测试打包
   workflow_dispatch:
     inputs:
