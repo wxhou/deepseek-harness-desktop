@@ -115,6 +115,19 @@ pub fn path_registered(app_handle: &AppHandle) -> bool {
 /// 捆绑安装；Unix GUI 额外检查 mise 标准数据目录，生成的 `pnpm` shim 也会
 /// 优先转发到探测出的精确路径。
 pub fn find_user_pnpm(app_handle: &AppHandle) -> Option<PathBuf> {
+    let dirs = user_pnpm_dirs(app_handle);
+    find_pnpm_in_dirs(&get_bin_dir(app_handle), &dirs)
+}
+
+/// Windows 直接创建进程时不能执行 `.cmd`/`.bat`；为无需 shell 的修复流程单独
+/// 查找原生 `pnpm.exe`，不改变常规 shim 对 `.cmd` 的既有优先级。
+#[cfg(windows)]
+pub(crate) fn find_user_pnpm_executable(app_handle: &AppHandle) -> Option<PathBuf> {
+    let dirs = user_pnpm_dirs(app_handle);
+    find_windows_executable_pnpm_in_dirs(&get_bin_dir(app_handle), &dirs)
+}
+
+fn user_pnpm_dirs(_app_handle: &AppHandle) -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> =
         std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).collect();
     #[cfg(windows)]
@@ -123,7 +136,7 @@ pub fn find_user_pnpm(app_handle: &AppHandle) -> Option<PathBuf> {
     {
         let mise_data = std::env::var_os("MISE_DATA_DIR").map(PathBuf::from);
         let xdg_data = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from);
-        let home = app_handle.path().home_dir().ok();
+        let home = _app_handle.path().home_dir().ok();
         append_unix_mise_dirs(
             &mut dirs,
             mise_data.as_deref(),
@@ -131,7 +144,7 @@ pub fn find_user_pnpm(app_handle: &AppHandle) -> Option<PathBuf> {
             home.as_deref(),
         );
     }
-    find_pnpm_in_dirs(&get_bin_dir(app_handle), &dirs)
+    dirs
 }
 
 /// Unix 图形进程不会读取交互式 shell 配置；在继承 PATH 之后补充 mise 的
@@ -186,6 +199,19 @@ fn find_pnpm_in_dirs(bin_dir: &Path, dirs: &[PathBuf]) -> Option<PathBuf> {
     } else {
         &["pnpm"]
     };
+    find_pnpm_candidates_in_dirs(bin_dir, dirs, candidates)
+}
+
+#[cfg(windows)]
+fn find_windows_executable_pnpm_in_dirs(bin_dir: &Path, dirs: &[PathBuf]) -> Option<PathBuf> {
+    find_pnpm_candidates_in_dirs(bin_dir, dirs, &["pnpm.exe"])
+}
+
+fn find_pnpm_candidates_in_dirs(
+    bin_dir: &Path,
+    dirs: &[PathBuf],
+    candidates: &[&str],
+) -> Option<PathBuf> {
     let bin_dir = pnpm_env_path(bin_dir);
     for dir in dirs {
         if dir.as_os_str().is_empty() {
@@ -680,6 +706,33 @@ mod tests {
         make_executable(&second.join(name));
         let found = find_pnpm_in_dirs(&shim_dir, &[shim_dir.clone(), first.clone(), second]);
         assert_eq!(found, Some(pnpm_env_path(&first.join(name))));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn direct_discovery_uses_exe_when_cmd_and_exe_share_a_directory() {
+        let root = temp_dir("pnpm-direct-exe");
+        let desktop_bin = root.join("desktop-bin");
+        let user_bin = root.join("user-bin");
+        std::fs::create_dir_all(&desktop_bin).unwrap();
+        std::fs::create_dir_all(&user_bin).unwrap();
+        let cmd = user_bin.join("pnpm.cmd");
+        let exe = user_bin.join("pnpm.exe");
+        std::fs::write(&cmd, "cmd").unwrap();
+        std::fs::write(&exe, "exe").unwrap();
+
+        assert_eq!(
+            find_pnpm_in_dirs(&desktop_bin, std::slice::from_ref(&user_bin)),
+            Some(pnpm_env_path(&cmd))
+        );
+        assert_eq!(
+            find_windows_executable_pnpm_in_dirs(
+                &desktop_bin,
+                std::slice::from_ref(&user_bin)
+            ),
+            Some(pnpm_env_path(&exe))
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 

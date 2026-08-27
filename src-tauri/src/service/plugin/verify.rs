@@ -170,7 +170,9 @@ const REPAIR_OUTPUT_LIMIT: usize = 4000;
 /// Windows 上 `.cmd`/`.bat` 无法被 CreateProcess 直接执行（需 cmd.exe 解析），
 /// 用户 pnpm 只接受 `.exe`。
 fn pnpm_direct(app_handle: &AppHandle) -> Option<(PathBuf, Vec<OsString>)> {
-    use super::install::{bundled_pnpm_major, profile_store_major, user_pnpm_major_version};
+    use super::install::{
+        bundled_pnpm_major, pnpm_major_version_at, profile_store_major,
+    };
 
     let bundled = config::get_pnpm_binary_path(app_handle);
     let bundled_ready = bundled.exists();
@@ -182,13 +184,14 @@ fn pnpm_direct(app_handle: &AppHandle) -> Option<(PathBuf, Vec<OsString>)> {
         return Some((node, vec![bundled.into_os_string()]));
     }
 
-    // 用户 pnpm 主版本与 store 一致（或 store 未知）都可直接用
-    if let Some(user) = cli::find_user_pnpm(app_handle) {
-        #[cfg(windows)]
-        let spawnable = user.extension().and_then(|e| e.to_str()) == Some("exe");
-        #[cfg(not(windows))]
-        let spawnable = true;
-        if spawnable && store.is_none_or(|s| user_pnpm_major_version(app_handle) == Some(s)) {
+    // 用户 pnpm 主版本与 store 一致（或 store 未知）都可直接用。Windows
+    // CreateProcess 不能直接执行 `.cmd`/`.bat`，因此专门查找原生 pnpm.exe。
+    #[cfg(windows)]
+    let user_pnpm = cli::find_user_pnpm_executable(app_handle);
+    #[cfg(not(windows))]
+    let user_pnpm = cli::find_user_pnpm(app_handle);
+    if let Some(user) = user_pnpm {
+        if store.is_none_or(|s| pnpm_major_version_at(&user) == Some(s)) {
             return Some((user, Vec::new()));
         }
     }
