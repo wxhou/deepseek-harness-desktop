@@ -3,7 +3,7 @@
 
 #[cfg(not(windows))]
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
 
 #[cfg(windows)]
@@ -114,15 +114,27 @@ pub fn path_registered(app_handle: &AppHandle) -> bool {
 /// "用户优先"策略：安装时（`Pnpm::check_installed`）用户已有 pnpm 则跳过
 /// 捆绑安装；`pnpm` shim 运行时也会优先转发到用户的 pnpm。
 pub fn find_user_pnpm(app_handle: &AppHandle) -> Option<PathBuf> {
-    let bin_dir = get_bin_dir(app_handle);
+    let mut dirs: Vec<PathBuf> =
+        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).collect();
+    #[cfg(windows)]
+    append_windows_pnpm_dirs(&mut dirs);
+    find_pnpm_in_dirs(&get_bin_dir(app_handle), &dirs)
+}
+
+/// 在给定目录中按顺序查找用户 pnpm，便于不依赖全局环境测试探测规则。
+fn find_pnpm_in_dirs(bin_dir: &Path, dirs: &[PathBuf]) -> Option<PathBuf> {
     let candidates: &[&str] = if cfg!(windows) {
-        // npm 全局安装的是 pnpm.cmd，standalone 安装的是 pnpm.exe
         &["pnpm.cmd", "pnpm.exe", "pnpm.bat"]
     } else {
         &["pnpm"]
     };
-    for dir in std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()) {
-        if dir == bin_dir || dir.as_os_str().is_empty() {
+    let bin_dir = dunce::canonicalize(bin_dir).unwrap_or_else(|_| bin_dir.to_path_buf());
+    for dir in dirs {
+        if dir.as_os_str().is_empty() {
+            continue;
+        }
+        let normalized = dunce::canonicalize(dir).unwrap_or_else(|_| dir.clone());
+        if normalized == bin_dir {
             continue;
         }
         for name in candidates {
@@ -133,6 +145,27 @@ pub fn find_user_pnpm(app_handle: &AppHandle) -> Option<PathBuf> {
         }
     }
     None
+}
+
+/// Windows GUI 进程的 PATH 可能早于 npm/pnpm 安装，补充这些工具的标准用户目录。
+#[cfg(windows)]
+fn append_windows_pnpm_dirs(dirs: &mut Vec<PathBuf>) {
+    let mut append = |dir: PathBuf| {
+        if dir.is_absolute() && !dirs.iter().any(|existing| existing == &dir) {
+            dirs.push(dir);
+        }
+    };
+    if let Some(appdata) = std::env::var_os("APPDATA") {
+        append(PathBuf::from(appdata).join("npm"));
+    }
+    for variable in ["PNPM_HOME", "NPM_CONFIG_PREFIX", "npm_config_prefix"] {
+        if let Some(value) = std::env::var_os(variable) {
+            append(PathBuf::from(value));
+        }
+    }
+    if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+        append(PathBuf::from(local_app_data).join("pnpm"));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -546,6 +579,24 @@ mod tests {
         "# >>> deepseek-harness dsh >>>\nexport PATH=\"$HOME/.local/bin:$PATH\"\n# <<< deepseek-harness dsh <<<\n";
 
     /// 独立的临时目录，避免测试间互相干扰
+    #[test]
+    fn find_pnpm_prefers_path_order_and_skips_shim_dir() {
+        let root = temp_dir("pnpm-discovery");
+        let shim_dir = root.join("shim");
+        let first = root.join("first");
+        let second = root.join("second");
+        std::fs::create_dir_all(&shim_dir).unwrap();
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+        let name = if cfg!(windows) { "pnpm.cmd" } else { "pnpm" };
+        std::fs::write(shim_dir.join(name), "shim").unwrap();
+        std::fs::write(first.join(name), "first").unwrap();
+        std::fs::write(second.join(name), "second").unwrap();
+        let found = find_pnpm_in_dirs(&shim_dir, &[shim_dir.clone(), first.clone(), second]);
+        assert_eq!(found, Some(first.join(name)));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     fn temp_dir(tag: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "dsh-rc-{tag}-{}-{}",
