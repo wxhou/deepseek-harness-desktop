@@ -28,6 +28,7 @@ jobs:
   # push main 与 pull_request main 常常是同一个内容，用 skip_after_successful_duplicate
   # 加 concurrent_skipping: same_content 精确去重；手动触发/schedule 永不跳过。
   pre_job:
+    name: Pre-job (Skip Duplicate Actions)
     runs-on: ubuntu-latest
     outputs:
       should_skip: ${{ steps.skip_check.outputs.should_skip }}
