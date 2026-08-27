@@ -1,16 +1,20 @@
 name: Build & Release
 
 on:
-  # 正式发布：推送 v* tag，或合并同仓库的 release/* PR；同一工作流创建 Release 并打包
-  # git tag -a v0.1.0 -m "release: DeepSeek Harness Desktop v0.1.0"
-  # git push origin v0.1.0
+  # 正式发布：推送 v* tag，或合并 release/* PR
   push:
     tags:
       - 'v*'
-  # 合并 release/* PR 时创建 tag 并继续正式发布
+  # GitHub 的 branches 过滤目标分支，无法按 release/* 源分支过滤；版本文件过滤可避免
+  # 绝大多数无关 PR 关闭时创建空的 workflow run，job 级 if 再校验源分支与仓库。
   pull_request:
     types: [closed]
-  # 手动触发：支持单平台、多平台测试打包（草稿 + 预发布，不打扰正式用户）
+    paths:
+      - package.json
+      - src-tauri/Cargo.toml
+      - src-tauri/Cargo.lock
+      - src-tauri/tauri.conf.json
+  # 手动触发：测试打包
   workflow_dispatch:
     inputs:
       platform_filter:
@@ -29,6 +33,9 @@ permissions:
   contents: write
 
 jobs:
+  # =========================================================================
+  # 1. Prepare Release Job
+  # =========================================================================
   prepare:
     name: Prepare Release
     if: >-
@@ -40,6 +47,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.meta.outputs.tag }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
       should_release: ${{ steps.meta.outputs.should_release }}
     steps:
       - name: Checkout release commit
@@ -48,19 +56,37 @@ jobs:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.merge_commit_sha || github.sha }}
           fetch-depth: 0
 
+      - name: Setup Node.js & pnpm
+        uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
       - name: Read release metadata
         id: meta
         shell: bash
         run: |
-          if [ "${{ github.event_name }}" = "push" ]; then
-            tag="$GITHUB_REF_NAME"; should_release=true
-          elif [ "${{ github.event_name }}" = "pull_request" ]; then
-            tag="v$(node -p "require('./package.json').version")"; should_release=true
+          EVENT="${{ github.event_name }}"
+          if [ "$EVENT" = "push" ]; then
+            tag="$GITHUB_REF_NAME"
+            should_release=true
+          elif [ "$EVENT" = "pull_request" ]; then
+            tag="v$(node -p "require('./package.json').version")"
+            should_release=true
           else
-            tag=""; should_release=false
+            tag=""
+            should_release=false
           fi
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "should_release=$should_release" >> "$GITHUB_OUTPUT"
+
+          prerelease=$([[ "$tag" == *-* ]] && echo "true" || echo "false")
+
+          {
+            echo "tag=$tag"
+            echo "prerelease=$prerelease"
+            echo "should_release=$should_release"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Create release tag
         if: github.event_name == 'pull_request'
@@ -70,37 +96,46 @@ jobs:
           RELEASE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
         with:
           script: |
-            const ref = `tags/${process.env.RELEASE_TAG}`
+            const ref = `tags/${process.env.RELEASE_TAG}`;
+            const sha = process.env.RELEASE_SHA;
             try {
-              await github.rest.git.getRef({owner: context.repo.owner, repo: context.repo.repo, ref})
-              await github.rest.git.updateRef({owner: context.repo.owner, repo: context.repo.repo, ref, sha: process.env.RELEASE_SHA, force: true})
+              await github.rest.git.getRef({ ...context.repo, ref });
+              await github.rest.git.updateRef({ ...context.repo, ref, sha, force: true });
             } catch (error) {
-              if (error.status !== 404) throw error
-              await github.rest.git.createRef({owner: context.repo.owner, repo: context.repo.repo, ref: `refs/${ref}`, sha: process.env.RELEASE_SHA})
+              if (error.status !== 404) throw error;
+              await github.rest.git.createRef({ ...context.repo, ref: `refs/${ref}`, sha });
             }
 
-      - name: Create GitHub Release
+      - name: Sync git tag & Generate Changelog
+        if: steps.meta.outputs.should_release == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          git fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          pnpx changelogithub --to "$RELEASE_TAG" --name "DeepSeek Harness Desktop $RELEASE_TAG"
+
+      - name: Append Artifacts section to release
         if: steps.meta.outputs.should_release == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ steps.meta.outputs.tag }}
         run: |
-          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release create "$RELEASE_TAG" --title "DeepSeek Harness Desktop $RELEASE_TAG" --generate-notes
-          fi
           gh release view "$RELEASE_TAG" --json body -q .body > release_notes.md
-          cat >> release_notes.md << 'EOF'
+          cat << 'EOF' >> release_notes.md
 
-          ### Artifacts
+          ### 📦 Artifacts
           - **macOS (Apple Silicon)**: 下载 `aarch64.dmg`
           - **macOS (Intel)**: 下载 `x64.dmg`
           - **Windows**: 下载 `.exe`
-          - **Linux (x64)**: 下载 `.AppImage` 或 `.deb`（基于 Ubuntu 22.04 构建，兼容 22.04 及更新版本）
+          - **Linux (x64)**: 下载 `.AppImage` 或 `.deb`（基于 Ubuntu 22.04 构建）
           EOF
           gh release edit "$RELEASE_TAG" --notes-file release_notes.md
 
+  # =========================================================================
+  # 2. Publish / Build Job
+  # =========================================================================
   publish:
-    # 正式发布由 prepare 创建 tag/Release 后打包；手动触发时进行测试打包
     needs: prepare
     if: github.event_name == 'workflow_dispatch' || (needs.prepare.result == 'success' && needs.prepare.outputs.should_release == 'true')
     strategy:
@@ -117,35 +152,25 @@ jobs:
             arch: x86_64
           - id: windows
             platform: windows-latest
-            # MSI(WiX) 只接受纯数字版本，见下方 "Prepare MSI version override" 步骤
             args: --config release-msi-version.tmp.json
-          # Linux 打包跑在 ubuntu-22.04 而非 ubuntu-latest：
-          # 22.04 的 glibc/WebKitGTK 版本更老，产出的 .deb/.AppImage 才能在
-          # Ubuntu 22.04 及更高版本上运行；用 latest(24.04) 构建的产物会因依赖新
-          # 库而在 22.04 上装不上/跑不起来(issue #41)。
           - id: linux
             platform: ubuntu-22.04
             args: ''
 
     runs-on: ${{ matrix.platform }}
-    # 兜底：apt/网络偶发卡死时避免占用 runner 到 GitHub 默认的 6 小时上限
     timeout-minutes: 60
 
     steps:
-      - name: Check if this platform should run
+      - name: Filter target platform
         id: check
         shell: bash
         run: |
-          # Tag 触发全部构建；手动触发时仅构建与 platform_filter 匹配的平台
-          if [ "${{ github.event_name }}" != "workflow_dispatch" ] || \
-             [ "${{ github.event.inputs.platform_filter }}" = "all" ] || \
-             [ "${{ github.event.inputs.platform_filter }}" = "${{ matrix.id }}" ]; then
-            echo "should_run=true" >> $GITHUB_OUTPUT
-            echo "平台匹配成功，开始构建..."
-          else
-            echo "should_run=false" >> $GITHUB_OUTPUT
-            echo "平台不匹配，将跳过后续构建步骤。"
+          FILTER="${{ github.event.inputs.platform_filter }}"
+          IF_RUN="true"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "$FILTER" != "all" ] && [ "$FILTER" != "${{ matrix.id }}" ]; then
+            IF_RUN="false"
           fi
+          echo "should_run=$IF_RUN" >> $GITHUB_OUTPUT
 
       - name: Checkout repository
         if: steps.check.outputs.should_run == 'true'
@@ -153,12 +178,10 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install pnpm
+      - name: Setup Node.js & pnpm
         if: steps.check.outputs.should_run == 'true'
         uses: pnpm/action-setup@v6
-
-      - name: Setup Node.js
-        if: steps.check.outputs.should_run == 'true'
+      - if: steps.check.outputs.should_run == 'true'
         uses: actions/setup-node@v7
         with:
           node-version: '22'
@@ -172,13 +195,11 @@ jobs:
           toolchain: stable
           targets: ${{ matrix.platform == 'macos-latest' && (matrix.arch == 'aarch64' && 'aarch64-apple-darwin' || 'x86_64-apple-darwin') || '' }}
 
-      - name: Install dependencies (Ubuntu only)
+      - name: Install dependencies (Ubuntu)
         if: steps.check.outputs.should_run == 'true' && matrix.platform == 'ubuntu-22.04'
         run: |
-          # GitHub runner 上 apt-get update 偶发网络卡死（无输出、无超时），
-          # 加 Acquire 超时/重试 + 外层 timeout + 循环重试，避免整个 job 挂起数小时。
           apt_ok=0
-          for i in 1 2 3; do
+          for i in {1..3}; do
             if timeout 180 sudo apt-get update \
               -o Acquire::Retries=5 \
               -o Acquire::http::Timeout=60 \
@@ -187,7 +208,7 @@ jobs:
               apt_ok=1
               break
             fi
-            echo "apt-get update 第 $i 次失败，10 秒后重试..."
+            echo "apt-get update 失败，准备重试 ($i/3)..."
             sleep 10
           done
           [ "$apt_ok" = "1" ] || { echo "apt-get update 连续 3 次失败，中止"; exit 1; }
@@ -197,8 +218,6 @@ jobs:
         if: steps.check.outputs.should_run == 'true'
         run: pnpm install --no-frozen-lockfile
 
-      # macOS 正式产物必须完成 Developer ID 签名与 Apple 公证；缺少凭据时直接失败，
-      # 避免误发仍需用户手动绕过 Gatekeeper 的 DMG。
       - name: Validate macOS signing secrets
         if: steps.check.outputs.should_run == 'true' && matrix.platform == 'macos-latest'
         shell: bash
@@ -210,36 +229,27 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           missing=()
-          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
-            if [ -z "${!name}" ]; then
-              missing+=("$name")
-            fi
+          for var in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            [ -z "${!var}" ] && missing+=("$var")
           done
-
-          if [ "${#missing[@]}" -ne 0 ]; then
-            printf '::error::Missing required macOS signing secrets: %s\n' "${missing[*]}"
+          if [ ${#missing[@]} -ne 0 ]; then
+            echo "::error::Missing macOS signing secrets: ${missing[*]}"
             exit 1
           fi
 
-      # Windows 的 MSI(WiX) 目标只接受纯数字 `major.minor.patch[.build]` 版本：
-      # 当 tauri.conf.json 的版本带 pre-release（如 0.7.14-rc.1 / 0.7.14-beta）或
-      # build metadata 时，tauri-bundler 的 convert_version 会直接报
-      # "optional pre-release identifier in app version must be numeric-only ... 65535"
-      # 导致打包失败（v0.7.0-rc.1 因此没有产出任何 Windows 安装包）。
-      # 这里把版本去掉 `-`/`+` 后缀后写入 bundle.windows.wix.version 覆盖项：
-      # MSI 用纯数字版本，NSIS 仍保留完整 semver，macOS/Linux 不受影响。
-      # 该选项来自 tauri-apps/tauri#11388（`wix > version`，需 tauri-cli >= 2.1）。
       - name: Prepare MSI version override
         if: steps.check.outputs.should_run == 'true' && matrix.id == 'windows'
         shell: bash
         run: |
-          APP_VERSION=$(node -p 'require("./src-tauri/tauri.conf.json").version.replace(/[-+].*$/, "")')
-          node -e "require('fs').writeFileSync('release-msi-version.tmp.json', JSON.stringify({ bundle: { windows: { wix: { version: process.argv[1] } } } }))" "$APP_VERSION"
-          echo "MSI (WiX) version override -> $APP_VERSION"
+          node -e "
+            const fs = require('fs');
+            const rawVer = require('./src-tauri/tauri.conf.json').version;
+            const cleanVer = rawVer.replace(/[-+].*$/, '');
+            fs.writeFileSync('release-msi-version.tmp.json', JSON.stringify({ bundle: { windows: { wix: { version: cleanVer } } } }));
+            console.log('MSI version override ->', cleanVer);
+          "
 
-      # 正式发布：Release 已由 prepare 任务创建，这里只上传产物。
-      # 注意：不要传 releaseBody —— tauri-action 会用它覆盖已有 release 的正文。
-      - name: Build and Release (For Tags)
+      - name: Build and Release (Official Tag)
         if: steps.check.outputs.should_run == 'true' && github.event_name != 'workflow_dispatch'
         uses: tauri-apps/tauri-action@v0
         env:
@@ -256,12 +266,11 @@ jobs:
           tagName: ${{ needs.prepare.outputs.tag }}
           releaseName: 'DeepSeek Harness Desktop ${{ needs.prepare.outputs.tag }}'
           releaseDraft: false
-          prerelease: false
+          prerelease: ${{ needs.prepare.outputs.prerelease }}
           includeUpdaterJson: true
           args: ${{ matrix.args }}
 
-      # 手动触发：单平台/全平台测试打包（草稿 + 预发布，不打扰正式用户）
-      - name: Build and Create Test Release (For Manual Trigger)
+      - name: Build and Create Test Release (Manual Trigger)
         if: steps.check.outputs.should_run == 'true' && github.event_name == 'workflow_dispatch'
         uses: tauri-apps/tauri-action@v0
         env:
@@ -276,13 +285,13 @@ jobs:
           tagName: ${{ format('test-{0}-{1}', github.ref_name, github.run_number) }}
           releaseName: 'DeepSeek Harness Desktop 手动测试版 (构建 #${{ github.run_number }})'
           releaseBody: |
-            DeepSeek Harness Desktop 手动触发的单平台/全平台测试构建。
+            DeepSeek Harness Desktop 手动触发测试构建。
             触发分支: `${{ github.ref_name }}`
             打包平台: `${{ github.event.inputs.platform_filter }}`
           prerelease: true
           args: ${{ matrix.args }}
 
-      - name: Verify macOS signature and notarization
+      - name: Verify macOS signature
         if: steps.check.outputs.should_run == 'true' && matrix.platform == 'macos-latest'
         shell: bash
         run: |
@@ -291,12 +300,11 @@ jobs:
             echo '::error::Built macOS app bundle was not found'
             exit 1
           fi
-
           codesign --verify --deep --strict --verbose=2 "$app_path"
           xcrun stapler validate "$app_path"
           spctl --assess --type execute --verbose=4 "$app_path"
 
-      - name: Upload Artifacts (For Manual Trigger)
+      - name: Upload Artifacts (Manual Trigger)
         if: steps.check.outputs.should_run == 'true' && github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v6
         with:
