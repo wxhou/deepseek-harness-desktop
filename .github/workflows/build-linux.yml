@@ -36,10 +36,6 @@ jobs:
     # 22.04 的 glibc/WebKitGTK 产物兼容 Ubuntu 22.04 及更新版本。
     runs-on: ubuntu-22.04
     timeout-minutes: 60
-    # 三个平台共享同一 Release 和 latest.json，必须避免 tauri-action 并发写入。
-    concurrency:
-      group: release-assets-${{ inputs.release_tag || format('test-{0}-{1}', inputs.source_name, github.run_number) }}
-      cancel-in-progress: false
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7

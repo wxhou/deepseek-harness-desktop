@@ -169,9 +169,12 @@ jobs:
 
   publish-windows:
     name: Build Windows Artifacts
-    needs: prepare
+    needs: [prepare, publish-macos]
+    # 平台串行发布，避免 tauri-action 并发更新同一 Release/latest.json；
+    # always() 允许手动只选 Windows 时跨过 skipped 的 macOS job。
     if: >-
-      needs.prepare.result == 'success' &&
+      always() && needs.prepare.result == 'success' &&
+      (needs.publish-macos.result == 'success' || needs.publish-macos.result == 'skipped') &&
       (github.event_name != 'workflow_dispatch' ||
        inputs.platform_filter == 'all' ||
        inputs.platform_filter == 'windows')
@@ -188,9 +191,10 @@ jobs:
 
   publish-linux:
     name: Build Linux Artifacts
-    needs: prepare
+    needs: [prepare, publish-windows]
     if: >-
-      needs.prepare.result == 'success' &&
+      always() && needs.prepare.result == 'success' &&
+      (needs.publish-windows.result == 'success' || needs.publish-windows.result == 'skipped') &&
       (github.event_name != 'workflow_dispatch' ||
        inputs.platform_filter == 'all' ||
        inputs.platform_filter == 'linux')

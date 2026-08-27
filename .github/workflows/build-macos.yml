@@ -49,6 +49,8 @@ jobs:
     name: Build (${{ matrix.id }})
     strategy:
       fail-fast: false
+      # 两个架构会更新同一 Release 和 latest.json，必须串行发布。
+      max-parallel: 1
       matrix:
         include:
           - id: macos-aarch64
@@ -59,10 +61,6 @@ jobs:
             rust-target: x86_64-apple-darwin
     runs-on: macos-latest
     timeout-minutes: 60
-    # matrix 架构及其他平台共享同一 Release 和 latest.json，串行执行写入步骤。
-    concurrency:
-      group: release-assets-${{ inputs.release_tag || format('test-{0}-{1}', inputs.source_name, github.run_number) }}
-      cancel-in-progress: false
     steps:
       - name: Filter target architecture
         id: check
