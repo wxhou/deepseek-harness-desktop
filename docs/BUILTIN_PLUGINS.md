@@ -42,7 +42,7 @@ Append an entry:
 Field reference:
 
 - `id` — unique preset id (the repo jump / lookup key; also the default npm package name used for install-state detection). Ids must be unique across the list (enforced by the `preset_json_ids_are_unique` unit test).
-- `spec` — the source. Either `github:owner/repo` (source form) or a bare npm package name `name[@version]` (published form, skips the build). This is what `prebuild.ts` feeds to git/pnpm.
+- `spec` — the source. Either `github:owner/repo` (source form) or an npm package spec `name[@version]` (published form, skips the build). Omit `@version` to resolve the registry's latest release at build time, which avoids manifest-only version bumps. This is what `prebuild.ts` feeds to git/pnpm.
 - `name`, `description`, `repoUrl` — display metadata. `repoUrl` is used for the repo-jump link in the UI.
 - `package` — optional. When the real npm package name differs from `id` (typical for scoped `@scope/name`), declare it here; it is used for install-state detection and self-heal matching. Defaults to `id`.
 - Chip flags `recommended` / `fix` / `defaultChecked` — not meaningful for internal plugins (they never appear in the checklist) but harmless to keep.
