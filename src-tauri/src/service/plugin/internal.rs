@@ -1,5 +1,5 @@
-//! 内置插件启动自愈：随安装包分发的内置插件（`preset-plugins.json` 标记
-//! `internal: true`，产物目录 `resources/preset-plugins/<id>` 由构建期
+//! 内置插件启动自愈：随安装包分发的内置插件（条目位于
+//! `internal-plugins.json`，产物目录 `resources/internal-plugins/<id>` 由构建期
 //! `scripts/prebuild.ts` 拉取）在服务启动前核对「是否已安装 + 安装路径是否仍
 //! 指向当前捆绑目录」：未安装 / 路径不正确 / 用户卸载后残留缺失 → 一律走常规
 //! 安装流程强制重装，保证桌面外壳依赖的桥接层（如 dsh-tauri）随包可用。
@@ -47,9 +47,15 @@ pub(crate) async fn ensure(app_handle: &AppHandle) -> Result<(), String> {
         .await;
     // 前端据此在「Loading internal plugins…」与「Loading plugins…」间切换；
     // 事件在服务进程启动前发出，于健康轮询期间到达，先于 dsh 自家的 boot 输出。
-    let _ = app_handle.emit("internal-plugins-phase", InternalPluginsPhase { phase: "loading" });
+    let _ = app_handle.emit(
+        "internal-plugins-phase",
+        InternalPluginsPhase { phase: "loading" },
+    );
     let outcome = ensure_inner(app_handle, &internal).await;
-    let _ = app_handle.emit("internal-plugins-phase", InternalPluginsPhase { phase: "done" });
+    let _ = app_handle.emit(
+        "internal-plugins-phase",
+        InternalPluginsPhase { phase: "done" },
+    );
     outcome
 }
 
@@ -154,55 +160,58 @@ mod tests {
 
     #[test]
     fn dep_spec_matches_itself() {
-        let expected = "link:C:/Apps/dsh/resources/preset-plugins/dsh-tauri";
+        let expected = "link:C:/Apps/dsh/resources/internal-plugins/dsh-tauri";
         // 与自身一致
         assert!(dep_matches_spec(expected, expected));
         // 无 link:/file: 前缀（pnpm 某些场景直接落路径）
         assert!(dep_matches_spec(
-            "C:/Apps/dsh/resources/preset-plugins/dsh-tauri",
+            "C:/Apps/dsh/resources/internal-plugins/dsh-tauri",
             expected
         ));
         // 尾部斜杠差异
         assert!(dep_matches_spec(
-            "link:C:/Apps/dsh/resources/preset-plugins/dsh-tauri/",
+            "link:C:/Apps/dsh/resources/internal-plugins/dsh-tauri/",
             expected
         ));
         // 反斜杠（Windows 原生形式）
         assert!(dep_matches_spec(
-            "link:C:\\Apps\\dsh\\resources\\preset-plugins\\dsh-tauri",
+            "link:C:\\Apps\\dsh\\resources\\internal-plugins\\dsh-tauri",
             expected
         ));
         // 历史遗留 file: 形式（协议切换前已安装的值）
         assert!(dep_matches_spec(
-            "file:C:/Apps/dsh/resources/preset-plugins/dsh-tauri",
+            "file:C:/Apps/dsh/resources/internal-plugins/dsh-tauri",
             expected
         ));
     }
 
     #[test]
     fn dep_spec_rejects_wrong_path_or_source() {
-        let expected = "link:C:/Apps/dsh/resources/preset-plugins/dsh-tauri";
+        let expected = "link:C:/Apps/dsh/resources/internal-plugins/dsh-tauri";
         // 仍指向 npm 版本（用户手动从 npm 安装，非捆绑 link: 源）
         assert!(!dep_matches_spec("dsh-tauri@0.2.0", expected));
         // 指向其它位置（旧版本安装目录等）
         assert!(!dep_matches_spec("link:D:/elsewhere/dsh-tauri", expected));
         // 同名不同宿主盘符
-        assert!(!dep_matches_spec("link:D:/Apps/dsh/resources/preset-plugins/dsh-tauri", expected));
+        assert!(!dep_matches_spec(
+            "link:D:/Apps/dsh/resources/internal-plugins/dsh-tauri",
+            expected
+        ));
     }
 
     #[cfg(windows)]
     #[test]
     fn dep_spec_case_insensitive_on_windows() {
         // Windows 文件系统大小写不敏感，路径比较须忽略大小写
-        let expected = "link:C:/Apps/dsh/resources/preset-plugins/dsh-tauri";
+        let expected = "link:C:/Apps/dsh/resources/internal-plugins/dsh-tauri";
         assert!(dep_matches_spec(
-            "link:c:/apps/DSH/resources/preset-plugins/Dsh-Tauri",
+            "link:c:/apps/DSH/resources/internal-plugins/Dsh-Tauri",
             expected
         ));
         // 实值仍带 Windows 扩展长度前缀（`\\?\`，dunce::simplified 归一化）时，
         // 与归一化掉前缀的期望值仍视为同一路径（幂等，避免不必要的重装）
         assert!(dep_matches_spec(
-            "link://?/C:/Apps/dsh/resources/preset-plugins/dsh-tauri",
+            "link://?/C:/Apps/dsh/resources/internal-plugins/dsh-tauri",
             expected
         ));
     }
