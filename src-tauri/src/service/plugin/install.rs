@@ -769,28 +769,64 @@ async fn ensure_pnpm(app_handle: &AppHandle, window: &WebviewWindow) -> Result<b
 /// 供 [`ensure_pnpm`] 选版与 [`super::verify`] 的修复选版共用（store 主版本匹配）。
 pub(crate) fn user_pnpm_major_version(app_handle: &AppHandle) -> Option<u32> {
     let pnpm = cli::find_user_pnpm(app_handle)?;
-    pnpm_major_version_at(&pnpm)
+    let node = config::get_node_binary_path(app_handle);
+    pnpm_major_version_at_with_node(&pnpm, Some(&node))
 }
 
 /// 探测精确 pnpm 可执行路径的主版本，供直接执行路径校验实际将运行的文件。
 pub(crate) fn pnpm_major_version_at(pnpm: &Path) -> Option<u32> {
-    // 打包版是 GUI 进程（无控制台）：直接运行 pnpm（控制台子系统）会新建一个
-    // 可见的黑色 cmd 窗口。`harness_prefer_bundled_pnpm` 在每次服务启动都会调本
-    // 函数探测用户 pnpm，若不隐藏窗口则每次打开应用都会闪一个黑窗。此处与
-    // `config::runtime::node_version_output` 的 CREATE_NO_WINDOW 处理保持一致。
+    pnpm_major_version_at_with_node(pnpm, None)
+}
+
+/// 在受控 Node 环境中探测 pnpm 主版本。Windows GUI 进程继承的 PATH 可能早于
+/// Node/pnpm 安装，而 corepack 的 `pnpm.cmd` 需要通过 PATH 调用 `node`；探测时
+/// 必须注入桌面端已经选定的 Node 目录，否则会把健康 pnpm 误判为不可用（issue #182）。
+fn pnpm_major_version_at_with_node(pnpm: &Path, node: Option<&Path>) -> Option<u32> {
     let mut cmd = std::process::Command::new(pnpm);
     cmd.arg("--version");
+    if let Some(path) = pnpm_probe_path(pnpm, node) {
+        cmd.env("PATH", path);
+    }
+    // 打包版是 GUI 进程（无控制台）：版本探测不能弹出可见黑窗。
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
-    let output = cmd.output().ok()?;
+    let output = match cmd.output() {
+        Ok(output) => output,
+        Err(error) => {
+            log::warn!("pnpm version probe failed to spawn {}: {error}", pnpm.display());
+            return None;
+        }
+    };
     if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        log::warn!(
+            "pnpm version probe failed for {} with status {}: {}",
+            pnpm.display(),
+            output.status,
+            stderr.trim()
+        );
         return None;
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
     stdout.split('.').next()?.trim().parse::<u32>().ok()
+}
+
+/// 构建 pnpm 探测专用 PATH：用户 pnpm 所在目录和选定 Node 目录前置，其余环境保留。
+fn pnpm_probe_path(pnpm: &Path, node: Option<&Path>) -> Option<OsString> {
+    let mut paths = Vec::new();
+    if let Some(parent) = pnpm.parent() {
+        paths.push(parent.to_path_buf());
+    }
+    if let Some(parent) = node.and_then(Path::parent) {
+        paths.push(parent.to_path_buf());
+    }
+    paths.extend(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    ));
+    std::env::join_paths(paths).ok()
 }
 
 /// 档案 `node_modules` 使用的 pnpm store 主版本（`<profile>/node_modules/.modules.yaml`
@@ -1323,6 +1359,8 @@ mod tests {
     use super::{append_command_output, apply_allow_build_keys, collapse_allow_builds_duplicates, dep_path_to_name, extract_allow_line_key, extract_only_builds_git_name, git_transport_hint, normalize_git_spec, parse_allowlist_keys, parse_store_major_from_modules_yaml, preset_spec_for_install, shell_quote_spec, silent_install_failure_detail, PreinstallPluginInfo};
     #[cfg(unix)]
     use super::pnpm_major_version_at;
+    #[cfg(windows)]
+    use super::pnpm_major_version_at_with_node;
 
     #[cfg(unix)]
     #[test]
@@ -1351,6 +1389,35 @@ mod tests {
 
         assert_eq!(pnpm_major_version_at(&selected), Some(11));
         assert_eq!(pnpm_major_version_at(&other), Some(10));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn pnpm_major_version_probe_injects_selected_node_for_cmd_shim() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "dsh pnpm cmd major {} {nonce}",
+            std::process::id()
+        ));
+        let pnpm_dir = root.join("pnpm & corepack");
+        let node_dir = root.join("selected node");
+        std::fs::create_dir_all(&pnpm_dir).unwrap();
+        std::fs::create_dir_all(&node_dir).unwrap();
+        let selected = pnpm_dir.join("pnpm.cmd");
+        let node = node_dir.join("node.cmd");
+        std::fs::write(&selected, "@echo off\r\nnode --version\r\n").unwrap();
+        std::fs::write(&node, "@echo off\r\necho 11.24.0\r\n").unwrap();
+
+        assert_eq!(
+            pnpm_major_version_at_with_node(&selected, Some(&node)),
+            Some(11)
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 
