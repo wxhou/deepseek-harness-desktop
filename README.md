@@ -53,7 +53,6 @@
 - [DSH Market](https://github.com/dsh-market/dsh-market) — 浏览、搜索并一键安装社区插件（推荐）
 - [DSH Better Sidebar](https://github.com/omdsh-dev/DSH-better-sidebar) — 类 VSCode 右侧栏，按会话隔离（推荐）
 - [DSH Notification](https://github.com/omdsh-dev/dsh-notification) — 回合完成时的桌面通知
-- [DSH Session Context Menu](https://github.com/baihejiangnan/dsh-session-context-menu) — DSH 右键菜单：为会话、工作区、输入框和链接补充常用操作
 
 <!-- > 你想收录新的插件作为预设？修改 [preset-plugins.json](https://github.com/hairyf/deepseek-harness-desktop/blob/main/src-tauri/resources/preset-plugins.json) 并提交 PR，通过后将在将来版本新增为预设插件。 -->
 
@@ -68,6 +67,7 @@
 - [DSH Tauri Worktree](https://github.com/dsh-tauri-desk/dsh-tauri-worktree) — 为每个会话创建隔离的 Git Worktree，并支持检出到本地分支或归档放弃
 - [DSH Tauri Panel](https://github.com/dsh-tauri-desk/dsh-tauri-plugins/tree/main/packages/dsh-tauri-panel) — 侧栏外壳、面板协议
 - [DSH Tauri Panel Extension](https://github.com/dsh-tauri-desk/dsh-tauri-plugins/tree/main/packages/dsh-tauri-panel-extension) — Skills/MCP 管理与导入技能仓库
+- [DSH Tauri Rightclick Menu](https://github.com/dsh-tauri-desk/dsh-tauri-plugins/tree/main/packages/dsh-tauri-rightclick) — 原生风格右键菜单：为会话、工作区、正文、链接和输入框补充常用操作（源自于 [DSH Session Context Menu](https://github.com/baihejiangnan/dsh-session-context-menu)）
 - 更多即将引入的插件...
 
 ## 快速开始
@@ -88,7 +88,14 @@ brew install dsh-tauri-desk/desktop/deepseek-harness
 
 ## 交流
 
-<img width="360" height="566" alt="image" src="https://github.com/user-attachments/assets/598308b5-681d-4514-a8d7-a36810fa8636" />
+- [加入 Discord 社区](https://discord.gg/RT9As6Cj8B)
+
+<table>
+  <tr>
+    <td align="center"><strong>QQ 群</strong><br /><img src="./docs/images/community/qq-qrcode.jpg" width="360" alt="QQ 群二维码" /></td>
+    <td align="center"><strong>微信群</strong><br /><img src="./docs/images/community/wx-qrcode.png" width="360" alt="微信群二维码" /></td>
+  </tr>
+</table>
 
 
 ## 开发
