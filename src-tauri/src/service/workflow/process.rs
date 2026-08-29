@@ -1,6 +1,6 @@
 //! Harness 进程生命周期：本应用持有的根进程登记（PID + Windows 句柄成对存储）、
 //! 启动守卫、进程树终止与退出状态回落，以及按 dsh 安装路径清扫历史残留的
-//! 孤儿服务实例（release 构建；debug 由 `.harness.pid` 标记精确回收）。
+//! 孤儿服务实例（release 构建；debug 由各自 AppData 下的 `.harness.pid` 标记精确回收）。
 
 use crate::config;
 use std::fs;
@@ -123,8 +123,7 @@ fn core_transition_lock() -> &'static Arc<tokio::sync::Mutex<()>> {
 /// 调用方必须从获取锁开始，持续持有到目录切换完成或 Harness 进程登记完成；
 /// RAII guard 会在所有成功/失败路径自动释放。超时必须失败返回，避免切换或启动
 /// 卡死后永久阻塞后续所有核心操作。
-pub async fn acquire_core_transition(
-) -> Result<tokio::sync::OwnedMutexGuard<()>, String> {
+pub async fn acquire_core_transition() -> Result<tokio::sync::OwnedMutexGuard<()>, String> {
     const CORE_TRANSITION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
     tokio::time::timeout(
         CORE_TRANSITION_TIMEOUT,

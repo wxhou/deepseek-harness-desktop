@@ -114,12 +114,16 @@ pub async fn install(
         // dsh 核心默认先走 GitHub 官方直连，失败自动切换 ghfast.top 镜像兜底
         // （下载层会在界面上告知用户）；其余任务保持单一官方源。
         let (urls, name) = if kind == download::InstallKind::Dsh {
-            let urls = config::get_dsh_download_urls()?;
-            let name = urls
-                .first()
-                .and_then(|u| u.rsplit('/').next())
-                .unwrap_or("")
-                .to_string();
+            // 摘要与资产必须来自同一个 release。若前面已取得 release 元数据，
+            // 必须使用其中的固定 asset URL；继续请求 `releases/latest` 会在 latest
+            // 发布切换或 CDN 缓存不一致时下载另一份文件，最终表现为摘要 mismatch。
+            let primary = dsh_latest
+                .as_ref()
+                .map(|info| info.asset_url.clone())
+                .filter(|url| !url.is_empty())
+                .unwrap_or(config::get_dsh_download_url()?);
+            let name = primary.rsplit('/').next().unwrap_or("").to_string();
+            let urls = vec![primary.clone(), config::mirror_download_url(&primary)];
             (urls, name)
         } else {
             let url = task.get_download_url()?;

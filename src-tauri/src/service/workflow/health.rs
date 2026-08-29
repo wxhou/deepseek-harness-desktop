@@ -7,6 +7,30 @@ use crate::config;
 use super::process::{has_owned_process, LAUNCH_GUARD};
 use super::utils;
 
+/// 读取 Harness 首页并解析本次启动实际声明的客户端模块。
+async fn client_probe_endpoints(port: u16) -> Result<Vec<String>, String> {
+    let client = utils::loopback_http_client(config::HEALTH_CHECK_TIMEOUT)
+        .map_err(|e| format!("HARNESS_HEALTH_CLIENT_FAILED: {e}"))?;
+    let root = format!("{}/", config::get_dsh_service_url(port));
+    let response = client
+        .get(root)
+        .send()
+        .await
+        .map_err(|e| format!("HARNESS_BOOT_MANIFEST_REQUEST_FAILED: {e}"))?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "HARNESS_NOT_READY: boot page returned {}",
+            response.status()
+        ));
+    }
+    let body = response
+        .text()
+        .await
+        .map_err(|e| format!("HARNESS_BOOT_MANIFEST_READ_FAILED: {e}"))?;
+    Ok(utils::client_urls_from_boot_html(port, &body)
+        .unwrap_or_else(|| utils::health_probe_plugin_urls(port)))
+}
+
 /// 无持有进程时应返回给前端的探测信号。
 ///
 /// `launch` 仍在进行（LAUNCH_GUARD 未释放）时，无持有进程是**临时**状态：`launch`
@@ -39,7 +63,7 @@ pub async fn proxy_health_check(port: u16) -> Result<String, String> {
     }
     let client = utils::loopback_http_client(config::HEALTH_CHECK_TIMEOUT)
         .map_err(|e| format!("HARNESS_HEALTH_CLIENT_FAILED: {e}"))?;
-    let endpoints = utils::health_probe_plugin_urls(port);
+    let endpoints = client_probe_endpoints(port).await?;
     let total = endpoints.len();
     let mut ready = 0usize;
     let mut failures = Vec::with_capacity(total);

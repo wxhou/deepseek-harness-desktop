@@ -36,10 +36,11 @@ export function ConfigCore() {
   const [downloadDialogHolder, openDownloadDialog] = useOverlay(DownloadCoreDialog, { type: 'holder' })
 
   const { t } = useTranslation()
-  const { cores, loading, error, setActiveCore, updateLocalCore, downloadCore, removeCore, busy } = useDshCores()
+  const { cores, loading, error, setActiveCore, updateLocalCore, downloadCore, removeCore, refreshCores, busy } = useDshCores()
 
   /** 行内操作进行中的核心 id（该行的下载/卸载按钮显示 Spinner 并禁用重复点击） */
   const [busyId, setBusyId] = useState<string | null>(null)
+  const [refreshing, setRefreshing] = useState(false)
 
   // 本地核心未检测到时不渲染 local 行（保留 local_missing_hint 提示）
   const rows = cores.filter(core => !(core.source === 'local' && !core.present))
@@ -162,6 +163,23 @@ export function ConfigCore() {
     }
   }
 
+  async function onRefresh() {
+    if (busy || refreshing)
+      return
+    setRefreshing(true)
+    try {
+      await refreshCores()
+      toast(t('core.refreshed_toast'), {})
+    }
+    catch (err) {
+      console.error('[ConfigCore] refresh failed:', err)
+      toast(t('core.refresh_failed'), {})
+    }
+    finally {
+      setRefreshing(false)
+    }
+  }
+
   async function onUpdateLocal() {
     if (busy)
       return
@@ -181,7 +199,23 @@ export function ConfigCore() {
 
   return (
     <div className="space-y-3">
-      <PanelHeader title={t('core.title')} description={t('core.tooltip')} />
+      <PanelHeader
+        title={t('core.title')}
+        description={t('core.tooltip')}
+        action={(
+          <Button
+            size="sm"
+            variant="tertiary"
+            className="h-7 shrink-0 rounded-md text-xs"
+            isDisabled={busy || refreshing}
+            aria-label={t('core.refresh')}
+            onPress={onRefresh}
+          >
+            <If cond={refreshing} then={<Spinner size="sm" color="current" />} else={<ArrowRotateRight className="size-3.5" />} />
+            {t('core.refresh')}
+          </Button>
+        )}
+      />
 
       {/* 加载 / 失败 / 列表 */}
       <PanelState loading={loading} error={error}>

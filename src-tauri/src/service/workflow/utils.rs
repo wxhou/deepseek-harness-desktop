@@ -24,16 +24,70 @@ pub(super) fn loopback_http_client(timeout: Duration) -> Result<reqwest::Client,
         .build()
 }
 
-/// 客户端插件 bundle 探测地址。
+/// 旧版客户端插件 bundle 探测地址。
 ///
 /// SPA `/` 在 webServer 绑定后立刻 200，此时连接桥与 Loader 图往往还没就绪；
 /// WebView 若在这个窗口加载，会永久停在官方 boot 页 “Loading plugins…”。
-/// 必须等到真实 JS bundle（而非 HTML fallback）可取，才视为可挂载 iframe。
+/// 旧版没有可读取的启动图时，保留这两个稳定入口作为兼容兜底。
 pub(super) fn health_probe_plugin_urls(port: u16) -> Vec<String> {
     vec![
         format!("http://127.0.0.1:{port}/plugins/@deepseek-ai/dsh-client-ui-layout/client.js"),
         format!("http://127.0.0.1:{port}/plugins/@deepseek-ai/dsh-client-runtime/client.js"),
     ]
+}
+
+/// 从新版 Harness 首页的 `__DSH_BOOT__` 启动图提取客户端 bundle 地址。
+///
+/// alpha 版不再保证桌面端旧适配器中的功能包名称存在，首页注入的启动图才是
+/// WebView 实际会加载的唯一模块清单。这里不猜测替代包名，而是复用该清单中的
+/// `entries`，同时加入 HTML 中预加载的 modules/runtime 两个入口。
+pub(super) fn client_urls_from_boot_html(port: u16, html: &str) -> Option<Vec<String>> {
+    let marker = "globalThis[\"__DSH_BOOT__\"] = ";
+    let start = html.find(marker)? + marker.len();
+    let end = html[start..].find("</script>")? + start;
+    let json = html[start..end].trim().trim_end_matches(';').trim();
+    let boot: serde_json::Value = serde_json::from_str(json).ok()?;
+    let entries = boot.get("entries")?.as_array()?;
+    let mut paths = Vec::new();
+
+    // 预加载脚本不一定重复出现在 entries 的 url 中（例如老的 boot 页面），因此
+    // 两类地址都收集后去重；只接受同源相对的插件 client.js 路径。
+    for script in html.split("<script").skip(1) {
+        let Some(src_start) = script.find("src=\"") else {
+            continue;
+        };
+        let rest = &script[src_start + 5..];
+        let Some(src_end) = rest.find('\"') else {
+            continue;
+        };
+        let src = &rest[..src_end];
+        if is_client_bundle_path(src) {
+            paths.push(src.to_string());
+        }
+    }
+    for entry in entries {
+        let Some(url) = entry.get("url").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        if is_client_bundle_path(url) {
+            paths.push(url.to_string());
+        }
+    }
+    paths.sort();
+    paths.dedup();
+    if paths.is_empty() {
+        return None;
+    }
+    Some(
+        paths
+            .into_iter()
+            .map(|path| format!("http://127.0.0.1:{port}{path}"))
+            .collect(),
+    )
+}
+
+fn is_client_bundle_path(path: &str) -> bool {
+    path.starts_with("/plugins/") && path.contains("/client.js") && !path.starts_with("//")
 }
 
 /// 判断健康检查响应是不是可用的插件 bundle。
@@ -334,6 +388,29 @@ mod tests {
         assert!(!dir.join("dsh-web.log.3").exists());
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn boot_html_uses_declared_client_graph() {
+        let html = r#"<script src="/plugins/@deepseek-ai/dsh-client-modules/client.js?rev=one"></script><script>globalThis["__DSH_BOOT__"] = {"rev":"graph","entries":[{"id":"@deepseek-ai/dsh-client-ui-layout","url":"/plugins/@deepseek-ai/dsh-client-ui-layout/client.js?rev=two","rev":"two"}]}</script>"#;
+        let urls = client_urls_from_boot_html(3099, html).expect("boot graph");
+        assert_eq!(urls.len(), 2);
+        assert!(urls
+            .iter()
+            .any(|url| url.contains("dsh-client-modules/client.js")));
+        assert!(urls
+            .iter()
+            .any(|url| url.contains("dsh-client-ui-layout/client.js")));
+        assert!(urls
+            .iter()
+            .all(|url| url.starts_with("http://127.0.0.1:3099/plugins/")));
+    }
+
+    #[test]
+    fn boot_html_rejects_missing_or_external_graph_entries() {
+        assert!(client_urls_from_boot_html(3099, "<html></html>").is_none());
+        let html = r#"<script>globalThis[\"__DSH_BOOT__\"] = {\"entries\":[{\"url\":\"https://example.test/client.js\"}]}</script>"#;
+        assert!(client_urls_from_boot_html(3099, html).is_none());
     }
 
     #[test]

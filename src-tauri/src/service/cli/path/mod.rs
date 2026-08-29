@@ -16,6 +16,7 @@ use tauri::{AppHandle, Manager};
 use super::shim::SHIM_CMD_NAME;
 #[cfg(unix)]
 use super::shim::SHIM_SH_NAME;
+use crate::config::CLI_ROOT_DEV_DIR_NAME;
 
 #[cfg(not(windows))]
 use rc::{inject_shell_rc, strip_shell_rc, RC_FILES, RC_MARK_START};
@@ -61,16 +62,24 @@ pub fn get_bin_dir(app_handle: &AppHandle) -> PathBuf {
                     .and_then(|d| d.parent().map(|p| p.to_path_buf()))
             })
             .unwrap_or_else(std::env::temp_dir)
-            .join(CLI_ROOT_DIR_NAME)
+            .join(if cfg!(debug_assertions) {
+                CLI_ROOT_DEV_DIR_NAME
+            } else {
+                CLI_ROOT_DIR_NAME
+            })
             .join("bin")
     }
     #[cfg(not(windows))]
     {
-        app_handle
+        let home = app_handle
             .path()
             .home_dir()
-            .unwrap_or_else(|_| PathBuf::from("."))
-            .join(UNIX_BIN_DIR)
+            .unwrap_or_else(|_| PathBuf::from("."));
+        if cfg!(debug_assertions) {
+            home.join(".local/bin/dev")
+        } else {
+            home.join(UNIX_BIN_DIR)
+        }
     }
 }
 
