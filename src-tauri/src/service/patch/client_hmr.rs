@@ -20,8 +20,9 @@ const PATCHED: &str = r#"case "rebuilt":
 						window.location.reload();
 						break;"#;
 // 上游已恢复完整的 invalidate → refresh 流程时，无需桌面端降级补丁。
-const UPSTREAM_FIXED: &str = r#"modLoader.invalidate(id, rev);
-				await modLoader.prefetch(id);"#;
+// alpha 的压缩/格式化可能改变缩进，因此下面两个语句分别作为稳定锚点。
+const UPSTREAM_INVALIDATE: &str = "modLoader.invalidate(id, rev);";
+const UPSTREAM_PREFETCH: &str = "await modLoader.prefetch(id);";
 
 /// 相对活动核心安装目录的 client-hmr `lib/client.js` 包内路径。
 const CLIENT_HMR_CLIENT_JS: &str = "node_modules/@deepseek-ai/dsh-client-hmr/lib/client.js";
@@ -30,7 +31,7 @@ fn patch_source(source: &str) -> PatchOutcome {
     if source.contains(PATCH_MARKER) {
         return PatchOutcome::AlreadyPatched;
     }
-    if source.contains(UPSTREAM_FIXED) {
+    if source.contains(UPSTREAM_INVALIDATE) && source.contains(UPSTREAM_PREFETCH) {
         return PatchOutcome::AlreadyPatched;
     }
     if !source.contains(ORIGINAL) {
@@ -83,7 +84,7 @@ mod tests {
 
     #[test]
     fn accepts_upstream_fixed_reload_flow() {
-        let source = format!("{UPSTREAM_FIXED}");
+        let source = format!("{UPSTREAM_INVALIDATE} {UPSTREAM_PREFETCH}");
         assert_eq!(patch_source(&source), PatchOutcome::AlreadyPatched);
     }
 }
