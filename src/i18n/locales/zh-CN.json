@@ -14,7 +14,7 @@
   "status.loading_plugins": "Loading plugins…",
   "status.loading_internal": "Loading internal plugins…",
   "status.loading_process": "Starting Harness service…",
-  "status.loading_client_modules": "Waiting for Harness client…",
+  "status.loading_client_modules": "Waiting for Harness…",
   "status.internal_waiting": "Waiting for internal plugins…",
   "status.internal_checking": "Checking {{total}} internal plugins…",
   "status.internal_installing": "Installing {{total}} internal plugins…",
