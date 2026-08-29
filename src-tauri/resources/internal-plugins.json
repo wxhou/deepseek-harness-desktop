@@ -39,8 +39,7 @@
     "spec": "dsh-tauri-session",
     "name": "DSH Tauri Session",
     "description": "Session archive for the desktop: rewrites the workspace browser's 'delete workspace' action into 'archive workspace', and adds an 'Archived chats' settings page with search, sort, grouping, project filter and unarchive.",
-    "repoUrl": "https://github.com/dsh-tauri-desk/dsh-tauri-plugins/tree/main/packages/dsh-tauri-session",
-    "recommended": true
+    "repoUrl": "https://github.com/dsh-tauri-desk/dsh-tauri-plugins/tree/main/packages/dsh-tauri-session"
   },
   {
     "id": "dsh-tauri-rightclick",
