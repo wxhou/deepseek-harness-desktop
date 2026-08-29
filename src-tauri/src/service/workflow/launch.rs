@@ -17,7 +17,10 @@ use super::process::set_owned_process;
 use super::process::set_owned_process_with_handle;
 #[cfg(unix)]
 use super::process::warn_if_inotify_watch_limit_low;
-use super::process::{has_owned_process, on_owned_process_exit, stop, LaunchGuard, LAUNCH_GUARD};
+use super::process::{
+    has_owned_process, on_owned_process_exit, stop, terminate_stale_harness_processes, LaunchGuard,
+    LAUNCH_GUARD,
+};
 use super::status;
 use super::sweep::persist_harness_pid;
 #[cfg(windows)]
@@ -200,6 +203,10 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
         return Err("HARNESS_NOT_FOUND: Harness not installed".to_string());
     }
 
+    // 从这里开始持有与核心切换共用的互斥锁：最终状态检查、启动守卫、残留清扫
+    // 及新进程登记必须处于同一临界区，避免切换在检查后插入。
+    let _transition_guard = super::process::acquire_core_transition().await?;
+
     // 避免重复启动（配合启动守卫，确保并发调用只拉起一个进程）
     if has_owned_process() {
         log::info!("Owned Harness process is already running, skipping launch");
@@ -213,6 +220,26 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
         return Ok(());
     }
     let _launch_guard = LaunchGuard;
+
+    // 只有持有启动守卫的这条路径清扫残留：并发启动的其它调用已在守卫处返回，
+    // 不会误杀刚拉起的进程。崩溃/强杀残留的孤儿 Harness 实例（不在
+    // .harness.pid 标记中）持续占用配置端口与 dependencies/dsh 的文件句柄，
+    // 不清扫会导致端口一路漂移（3080→…→3085，issue #91）并让后续目录互换
+    // 失败（os error 32）。按命令行路径精确匹配本应用 dsh 服务，不会误杀
+    // 用户其它 node 程序（debug 构建为 no-op，见 terminate_stale_harness_processes）。
+    {
+        let handle = app_handle.clone();
+        if let Err(e) = tauri::async_runtime::spawn_blocking(move || {
+            terminate_stale_harness_processes(&handle);
+        })
+        .await
+        {
+            log::warn!(
+                "failed to sweep stale Harness processes before launch at {}: {e}",
+                dsh_binary_path.display()
+            );
+        }
+    }
 
     // 端口自愈：自动避让递增（配置端口被占 → 逐级顶高）遗留的非默认端口，
     // 在回落目标（用户手动端口 manual_port，否则默认端口）空闲时回落，避免
