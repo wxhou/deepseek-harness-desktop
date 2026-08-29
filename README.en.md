@@ -22,7 +22,11 @@
 </p>
 
 <p align="center">
-  <samp><strong>English</strong> · <a href="./README.md">中文</a></samp>
+  <samp><strong>English</strong> · <a href="https://dshtauri.mintlify.site">Docs</a> · <a href="./README.md">中文</a></samp>
+</p>
+
+<p align="center">
+ <a href="https://trendshift.io/repositories/151676?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-151676" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/151676/daily?language=Rust" alt="dsh-tauri-desk%2Fdeepseek-harness-desktop | Trendshift" width="250" height="55"/></a>
 </p>
 
 <p align="center">
