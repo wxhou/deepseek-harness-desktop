@@ -55,7 +55,9 @@
 - [DSH Notification](https://github.com/omdsh-dev/dsh-notification) — 回合完成时的桌面通知
 - [DSH Session Context Menu](https://github.com/baihejiangnan/dsh-session-context-menu) — DSH 右键菜单：为会话、工作区、输入框和链接补充常用操作
 
-> 你想收录新的插件作为预设？修改 [preset-plugins.json](https://github.com/hairyf/deepseek-harness-desktop/blob/main/src-tauri/resources/preset-plugins.json) 并提交 PR，通过后将在将来版本新增为预设插件。
+<!-- > 你想收录新的插件作为预设？修改 [preset-plugins.json](https://github.com/hairyf/deepseek-harness-desktop/blob/main/src-tauri/resources/preset-plugins.json) 并提交 PR，通过后将在将来版本新增为预设插件。 -->
+
+> 为避免不稳定的预设插件导致软件异常，如需新增插件，请在 [dsh-tauri-plugins/issues](https://github.com/dsh-tauri-desk/dsh-tauri-plugins/issues) 提起请求
 
 ## 内置插件
 
