@@ -116,11 +116,30 @@ fn version_supports_no_open(version: &str) -> bool {
 ///
 /// 版本以活动核心为准：本地核心（用户 CLI 安装）与预打包核心各自读自己的
 /// 包清单；读不到时保守处理：不追加标志。
-fn web_supports_no_open_flag(app_handle: &tauri::AppHandle) -> bool {
-    match crate::service::core::active_version(app_handle) {
-        Some(version) => version_supports_no_open(&version),
-        None => false,
-    }
+fn dsh_binary_version(binary: &std::path::Path) -> Option<String> {
+    let package_dir = binary.parent()?.parent()?;
+    let manifest = package_dir.join("package.json");
+    let content = fs::read_to_string(manifest).ok()?;
+    serde_json::from_str::<serde_json::Value>(&content)
+        .ok()?
+        .get("version")
+        .and_then(|value| value.as_str())
+        .map(str::to_owned)
+}
+
+/// 按实际将要执行的 dsh `bin.js` 判定 `--no-open` 能力。
+///
+/// 核心切换槽位的外层 package.json 可能没有 `dependencies` 清单（源码构建
+/// alpha 尤其如此），因此不能只读取活动核心登记版本；必须读取入口所属的
+/// `@deepseek-ai/dsh/package.json`，避免 alpha 因版本读空而漏传参数。
+fn web_supports_no_open_flag(
+    app_handle: &tauri::AppHandle,
+    dsh_binary_path: &std::path::Path,
+) -> bool {
+    dsh_binary_version(dsh_binary_path)
+        .or_else(|| crate::service::core::active_version(app_handle))
+        .map(|version| version_supports_no_open(&version))
+        .unwrap_or(false)
 }
 
 /// 检测并启动 Harness 服务
@@ -220,7 +239,6 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
         return Ok(());
     }
     let _launch_guard = LaunchGuard;
-
     // 只有持有启动守卫的这条路径清扫残留：并发启动的其它调用已在守卫处返回，
     // 不会误杀刚拉起的进程。崩溃/强杀残留的孤儿 Harness 实例（不在
     // .harness.pid 标记中）持续占用配置端口与 dependencies/dsh 的文件句柄，
@@ -291,6 +309,12 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     // minimal-win 用户 preset 落盘（幂等）。最佳努力：失败只告警，不阻断启动。
     if let Err(e) = win_inspector::apply(&app_handle) {
         log::warn!("win32 terminal support apply failed: {e}");
+    }
+    // alpha 的 iframe 无法稳定完成 SameSite=Strict browser-session Cookie 交换：
+    // 仅命中 alpha 鉴权锚点时跳过 browser-session 层，但保留 Host/Origin fence；
+    // 旧核心无 alpha 锚点，patch_dsh 会安全跳过，不改变旧版行为。
+    if let Err(e) = crate::service::patch::alpha_auth::apply(&app_handle) {
+        log::warn!("alpha embedded auth patch failed: {e}");
     }
     // renderer 的 SlotOutlet 一行导出补丁（dsh-tauri-ui 设置侧边栏依赖）：只补
     // 活动核心的 dsh-client-ui-renderer lib/client.js，已含导出即跳过（幂等；核心
@@ -431,7 +455,7 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
 
     // rc.8 起 `dsh web` 默认在系统浏览器打开 UI；桌面端内嵌 WebView，不需要
     // 浏览器，追加 `--no-open` 关闭（老版本无此标志时按版本判定不传）。
-    let no_open = web_supports_no_open_flag(&app_handle);
+    let no_open = web_supports_no_open_flag(&app_handle, &dsh_binary_path);
 
     log::info!("Starting Harness process");
 
