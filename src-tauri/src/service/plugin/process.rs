@@ -319,18 +319,39 @@ fn spawn_line_emitter<R: Read + Send + 'static>(
     captured: Arc<Mutex<String>>,
 ) {
     std::thread::spawn(move || {
-        let buf = BufReader::new(reader);
-        for line in buf.lines().map_while(Result::ok) {
-            let trimmed = line.trim_end().to_string();
-            let _ = window.emit(
-                PREINSTALL_LOG_EVENT,
-                PreinstallLogPayload {
-                    line: trimmed.clone(),
-                },
-            );
-            if let Ok(mut acc) = captured.lock() {
-                acc.push_str(&trimmed);
-                acc.push('\n');
+        let mut buf = BufReader::new(reader);
+        let mut acc_buf = Vec::new();
+        loop {
+            acc_buf.clear();
+            match buf.read_until(b'\n', &mut acc_buf) {
+                Ok(0) => break,
+                Ok(_) => {
+                    // lossy 兜底：zh-CN Windows 下 python MCP 插件输出 GBK 日志时，
+                    // 严格 UTF-8 读取会中断本线程并关闭子进程管道（EPIPE）——
+                    // 安装进程可能因此以非 0 退出码失败，被误判为安装失败。
+                    // 行尾剥离与上游 utils.rs 的 #197 修复一致：只剥 \r\n/\n，
+                    // 保留行内尾随空白以对齐 BufRead::lines() 语义。
+                    let line = String::from_utf8_lossy(&acc_buf);
+                    let trimmed = line
+                        .strip_suffix("\r\n")
+                        .or_else(|| line.strip_suffix('\n'))
+                        .unwrap_or(&line)
+                        .to_string();
+                    let _ = window.emit(
+                        PREINSTALL_LOG_EVENT,
+                        PreinstallLogPayload {
+                            line: trimmed.clone(),
+                        },
+                    );
+                    if let Ok(mut acc) = captured.lock() {
+                        acc.push_str(&trimmed);
+                        acc.push('\n');
+                    }
+                }
+                Err(e) => {
+                    log::error!("Failed to read plugin process output: {}", e);
+                    break;
+                }
             }
         }
     });

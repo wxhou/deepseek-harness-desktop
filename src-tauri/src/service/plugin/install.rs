@@ -27,6 +27,7 @@ use crate::service::download::Installable;
 use crate::service::profile::active_profile;
 use crate::service::workflow;
 use serde_yaml::{Mapping, Value};
+use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::io::Read;
@@ -252,6 +253,30 @@ async fn install_with_cancel(
     // exit 0 退出（假成功），若产物缺失则记录错误并返回 Err，让前端如实展示失败、
     // 允许重试，而不是误报「已安装」。已落盘的插件在上一步被核验并清除历史错误。
     verify_installed_products(app_handle, ids, &preset_map, &last_output)?;
+
+    // 产物级核验：包已落盘但声明入口（如 `lib/index.js`）未构建时，本次安装
+    // 同样是假成功——cordis 加载器在下一次启动必然 ERR_MODULE_NOT_FOUND 崩溃
+    // （见 [`ensure_plugin_entry_built`]）。就地补构建或如实报错，不让坏态
+    // 静默进入下一次启动；包目录按预设的 `installed_name` 解析（scoped 插件
+    // 与 id 不同名），失败跨插件聚合后一次性返回，前端可一并重试。
+    let mut entry_errors = Vec::new();
+    for id in ids {
+        let Some(preset) = preset_map.get(id.as_str()) else {
+            continue;
+        };
+        let pkg_dir = profile_dir(app_handle)
+            .join("node_modules")
+            .join(installed_name(preset));
+        if let Err(e) = ensure_plugin_entry_built(app_handle, id, &pkg_dir, &envs, &window).await {
+            if let Err(err) = errors::record(app_handle, id, "install", &e) {
+                log::warn!("failed to record plugin error for {id}: {err}");
+            }
+            entry_errors.push(format!("{id}: {e}"));
+        }
+    }
+    if !entry_errors.is_empty() {
+        return Err(format!("PREINSTALL_ENTRY_FAILED:\n{}", entry_errors.join("\n")));
+    }
 
     // Windows 极简模式专项修复
     if ids.iter().any(|id| id == "dsh-win-terminal-inspector") {
@@ -665,6 +690,200 @@ fn append_command_output(all_output: &mut String, captured: &str) {
     all_output.push_str(captured);
 }
 
+/// 解析插件包声明的主入口（与 cordis 加载器实际读取的字段一致）：
+/// 优先 `dsh.plugin.json` 的 `main`（加载器入口，见 loader 报错路径），
+/// 回落 `package.json` 的 `main` / `exports["."]`（字符串简写 → 对象
+/// `default` → `import` → `require`）。
+/// 仅负责解析声明，不校验产物是否存在；入口越界（`../` 逃逸/绝对路径）
+/// 或无可解析入口时返回 None。
+fn declared_main_entry(pkg_dir: &Path) -> Option<PathBuf> {
+    /// 拼接声明入口并拒绝越界：绝对路径会被 `join` 整体替换基路径，`../`
+    /// 逃逸在 `starts_with` 的词法比较下不会被解析——两者都会让核验目标指向
+    /// 包外文件，导致假通过。
+    fn join_contained(pkg_dir: &Path, entry: &str) -> Option<PathBuf> {
+        let candidate = Path::new(entry);
+        if candidate.is_absolute()
+            || candidate
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
+            return None;
+        }
+        let joined = pkg_dir.join(candidate);
+        joined.starts_with(pkg_dir).then_some(joined)
+    }
+    let from_main_field = |value: &JsonValue| -> Option<PathBuf> {
+        value
+            .get("main")
+            .and_then(|v| v.as_str())
+            .and_then(|main| join_contained(pkg_dir, main))
+    };
+    let plugin_manifest_text = std::fs::read_to_string(pkg_dir.join("dsh.plugin.json")).ok();
+    if let Some(text) = plugin_manifest_text {
+        if let Ok(value) = serde_json::from_str::<JsonValue>(&text) {
+            if let Some(entry) = from_main_field(&value) {
+                return Some(entry);
+            }
+        }
+    }
+    let pkg_text = std::fs::read_to_string(pkg_dir.join("package.json")).ok()?;
+    let value = serde_json::from_str::<JsonValue>(&pkg_text).ok()?;
+    if let Some(entry) = from_main_field(&value) {
+        return Some(entry);
+    }
+    let exports = value.get("exports");
+    // 字符串简写："exports": "./lib/index.js"（`get(".")` 对字符串取值会落空，
+    // 必须先试字符串形态）
+    if let Some(shorthand) = exports.and_then(|v| v.as_str()) {
+        return join_contained(pkg_dir, shorthand);
+    }
+    let dot = exports.and_then(|v| v.get("."));
+    for key in ["default", "import", "require"] {
+        if let Some(entry) = dot
+            .and_then(|d| d.get(key))
+            .and_then(|v| v.as_str())
+            .and_then(|s| join_contained(pkg_dir, s))
+        {
+            return Some(entry);
+        }
+    }
+    None
+}
+
+/// 把插件 id 解析为 profile 中实际的 npm 包名：预设表（`package` 覆盖字段）
+/// 优先；找不到预设时按 profile 清单 `dependencies` 键的 basename 匹配
+/// （覆盖 `@scope/name` 形态，如 `dsh-session-context-menu` →
+/// `@baihejiangnan/dsh-session-context-menu`）。
+fn installed_package_name(app_handle: &AppHandle, id: &str) -> Option<String> {
+    if let Some(preset) = load_presets(app_handle).iter().find(|p| p.id == id) {
+        return Some(installed_name(preset).to_string());
+    }
+    let manifest_path = profile_dir(app_handle).join("package.json");
+    let text = std::fs::read_to_string(&manifest_path).ok()?;
+    let value = serde_json::from_str::<JsonValue>(&text).ok()?;
+    value
+        .get("dependencies")
+        .and_then(|d| d.as_object())
+        .and_then(|deps| {
+            deps.keys()
+                .find(|name| name.rsplit('/').next() == Some(id))
+                .cloned()
+        })
+}
+
+/// 核验已装插件包的声明入口产物，缺失时就地补构建或如实报错。
+///
+/// 背景：`verify_installed_products` 核验的是「包是否落盘」（`package.json`
+/// 存在），但 pnpm 放行 git 托管插件的 `prepare` 后，构建仍可能停在不产出的
+/// 坏态：tsdown 在 `node_modules` 内加载其 TS 配置受 Node 版本限制（报错建议
+/// `--config-loader` 用 `tsx`/`unrun`），此时 `dsh plugin add` 以 0 退出且
+/// `package.json` 已落盘，但 `lib/index.js` 缺失——下一次启动 cordis 加载器
+/// `ERR_MODULE_NOT_FOUND` 崩溃（应用内所有 fetch 必挂，表现为「插件目录 /
+/// 历史会话全部 Failed to fetch」）。
+/// 补构建按成本递增：`run build` → `run prepare` → `exec tsdown --config-loader unrun`
+/// （社区已知绕过方式，unrun 已随 tsdown 进插件 devDeps）。全部失败则记录错误并
+/// 如实返回，杜绝「装上了却跑不起来」的静默成功。
+///
+/// `pkg_dir` 由调用方解析（install 用预设的 `installed_name`，update 用
+/// `installed_package_name`），本函数不再假设 id 即包名。
+async fn ensure_plugin_entry_built(
+    app_handle: &AppHandle,
+    id: &str,
+    pkg_dir: &Path,
+    envs: &HashMap<String, String>,
+    window: &WebviewWindow,
+) -> Result<(), String> {
+    if !pkg_dir.is_dir() {
+        return Err(format!(
+            "PLUGIN_ENTRY_MISSING: {id} 未安装（{} 不存在），请重新安装",
+            pkg_dir.display()
+        ));
+    }
+    let Some(entry) = declared_main_entry(pkg_dir) else {
+        // 无声明入口（包本身不暴露可核验产物）：不阻塞，仅告警
+        log::warn!("plugin {id} declares no verifiable main entry, skipping build verify");
+        return Ok(());
+    };
+    if entry.is_file() {
+        return Ok(());
+    }
+
+    // 与 verify 修复路径同一套 store 主版本感知 pnpm 选择（捆绑版优先，不匹配
+    // 时回落用户 pnpm.exe），不硬编码单一 pnpm，避免「装了用户版却没捆绑版」
+    // 或 v10/v11 store 不兼容的假失败。
+    let Some((program, pre_args)) = super::verify::pnpm_direct(app_handle) else {
+        return Err(format!(
+            "PNPM_NOT_FOUND: no usable pnpm (bundled or user) to rebuild plugin {id}"
+        ));
+    };
+    log::warn!(
+        "plugin {id} declared entry {} is missing; rebuilding in place",
+        entry.display()
+    );
+    let attempts: [(&str, &[&str]); 3] = [
+        ("build", &["run", "build"]),
+        ("prepare", &["run", "prepare"]),
+        (
+            "tsdown --config-loader unrun",
+            &["exec", "tsdown", "--config-loader", "unrun"],
+        ),
+    ];
+    let mut all_output = String::new();
+    for (label, args) in attempts {
+        let _ = window.emit(
+            PREINSTALL_LOG_EVENT,
+            PreinstallLogPayload {
+                line: format!(
+                    "[pnpm] {id} 缺少构建产物（{}），正在补构建（{label}）…",
+                    entry.display()
+                ),
+            },
+        );
+        let mut full_args = pre_args.clone();
+        full_args.extend(args.iter().map(|a| OsString::from(*a)));
+        // 单次 spawn 失败（pnpm 瞬时不可用等）不致命：记日志后尝试下一策略，
+        // 输出跨尝试累计，保证最终报错携带最早一次的有效诊断。
+        // main 侧 `run_plugin_process` 要求显式 ProcessOwner（pid 槽位跟踪/取消）；
+        // 补构建是独立的一次性构建，不隶属 install/update 的操作锁，取新 owner。
+        match run_plugin_process(&program, &full_args, pkg_dir, envs, window, new_process_owner())
+            .await
+        {
+            Ok((code, output)) => {
+                append_command_output(&mut all_output, &output);
+                // 产物出现即视为成功（目标=「入口存在、加载器不崩」）；
+                // 退出码非 0 但产物已生成（如 post-build 钩子失败）仅记警告。
+                if entry.is_file() {
+                    if code != 0 {
+                        log::warn!(
+                            "plugin {id} build via {label} exited {code} but entry {} exists",
+                            entry.display()
+                        );
+                    }
+                    log::info!("plugin {id} rebuilt via {label}: {}", entry.display());
+                    return Ok(());
+                }
+                log::warn!("plugin {id} build via {label} exited {code}; trying next strategy");
+            }
+            Err(e) => {
+                log::warn!("plugin {id} build via {label} failed to spawn: {e}; trying next strategy");
+            }
+        }
+    }
+    let tail = all_output
+        .lines()
+        .rev()
+        .take(8)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>()
+        .join("\n");
+    Err(format!(
+        "PLUGIN_ENTRY_MISSING: {id} 声明的入口 {} 构建失败（build/prepare 均未产出），尾部日志：\n{tail}",
+        entry.display()
+    ))
+}
+
 /// 升级单个插件：`dsh plugin --profile <当前档案> update <id>`
 pub async fn update(app_handle: &AppHandle, id: &str) -> Result<(), String> {
     run_single_plugin_command(
@@ -851,6 +1070,24 @@ async fn run_single_plugin_command(
     // 成功：清除历史错误；卸载 win-terminal-inspector 时顺带清理 patch 挂载
     if let Err(e) = errors::clear(app_handle, id) {
         log::warn!("failed to clear plugin error for {id}: {e}");
+    }
+    // 升级路径与安装一致地核验构建产物：git 托管插件升级后同样可能停在
+    // 「prepare 未构建 → 声明入口缺失」坏态，若不拦截，下一次启动即崩溃
+    // （见 [`ensure_plugin_entry_built`]）。包名先解析（预设 package 覆盖 /
+    // 清单依赖 basename），解析不到时跳过核验（警告即可，不误杀成功更新）。
+    if action == "update" {
+        let Some(name) = installed_package_name(app_handle, id) else {
+            log::warn!("plugin {id} not resolvable to a package name, skipping entry verify");
+            return Ok(());
+        };
+        let pkg_dir = profile_dir(app_handle).join("node_modules").join(name);
+        if let Err(e) = ensure_plugin_entry_built(app_handle, id, &pkg_dir, &envs, &window).await
+        {
+            if let Err(err) = errors::record(app_handle, id, action, &e) {
+                log::warn!("failed to record plugin error for {id}: {err}");
+            }
+            return Err(e);
+        }
     }
     if action == "remove" && id == "dsh-win-terminal-inspector" {
         if let Err(e) = workflow::win_inspector::apply(app_handle) {
@@ -2048,7 +2285,8 @@ mod tests {
     use super::pnpm_major_version_at_with_node;
     use super::{
         append_command_output, apply_allow_build_keys, collapse_allow_builds_duplicates,
-        dep_path_to_name, deprecated_installed_names, diagnostic_suffix, extract_allow_line_key,
+        declared_main_entry, dep_path_to_name, deprecated_installed_names, diagnostic_suffix,
+        extract_allow_line_key,
         extract_only_builds_git_name, git_transport_hint, has_github_ssh_rewrite_in_output,
         normalize_git_spec, parse_allowlist_keys, parse_store_major_from_modules_yaml,
         preset_spec_for_install, probe_output_or_fallback, probe_task_or_fallback, read_probe_pipe,
@@ -2794,6 +3032,143 @@ onlyBuiltDependencies:
         // allowBuilds 场景（prepare 构建被拦）不应误判为传输层错误
         let out = "[ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED] ...\nallowBuilds:\n  node-pty: true\n";
         assert!(git_transport_hint(out).is_none());
+    }
+
+    // ---- 插件声明入口解析（构建产物核验）----
+
+    fn tmp_pkg_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "dsh-entry-test-{name}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn declared_main_prefers_dsh_plugin_manifest() {
+        let dir = tmp_pkg_dir("manifest");
+        std::fs::write(
+            dir.join("dsh.plugin.json"),
+            r#"{"id":"x","main":"./lib/index.js"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("package.json"),
+            r#"{"name":"x","main":"dist/index.js"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            declared_main_entry(&dir).unwrap(),
+            dir.join("lib/index.js")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn declared_main_falls_back_to_package_json() {
+        let dir = tmp_pkg_dir("pkgjson");
+        std::fs::write(
+            dir.join("package.json"),
+            r#"{"name":"x","main":"lib/index.js"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            declared_main_entry(&dir).unwrap(),
+            dir.join("lib/index.js")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn declared_main_reads_exports_default() {
+        let dir = tmp_pkg_dir("exports");
+        std::fs::write(
+            dir.join("package.json"),
+            r#"{"name":"x","exports":{".":{"types":"./lib/types.d.ts","default":"./lib/index.js"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            declared_main_entry(&dir).unwrap(),
+            dir.join("lib/index.js")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn declared_main_reads_exports_string_shorthand_and_require() {
+        let dir = tmp_pkg_dir("exports-shorthand");
+        std::fs::write(
+            dir.join("package.json"),
+            r#"{"name":"x","exports":"./dist/main.js"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            declared_main_entry(&dir).unwrap(),
+            dir.join("dist/main.js")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let dir2 = tmp_pkg_dir("exports-require");
+        std::fs::write(
+            dir2.join("package.json"),
+            r#"{"name":"x","exports":{".":{"require":"./cjs/index.js"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            declared_main_entry(&dir2).unwrap(),
+            dir2.join("cjs/index.js")
+        );
+        let _ = std::fs::remove_dir_all(&dir2);
+    }
+
+    #[test]
+    fn declared_main_rejects_escaping_or_absolute_entries() {
+        // `../` 逃逸与绝对路径都不应通过核验：防止把检查指向包外文件造成假通过
+        let dir = tmp_pkg_dir("escape");
+        std::fs::write(
+            dir.join("package.json"),
+            r#"{"name":"x","main":"../outside/index.js"}"#,
+        )
+        .unwrap();
+        assert!(declared_main_entry(&dir).is_none());
+        let absolute_entry = if cfg!(windows) {
+            "C:\\\\outside\\\\index.js"
+        } else {
+            "/outside/index.js"
+        };
+        std::fs::write(
+            dir.join("package.json"),
+            format!(r#"{{"name":"x","main":"{}"}}"#, absolute_entry),
+        )
+        .unwrap();
+        assert!(declared_main_entry(&dir).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn declared_main_falls_through_broken_plugin_manifest() {
+        // dsh.plugin.json 存在但损坏/无 main 时，回落 package.json
+        let dir = tmp_pkg_dir("broken-plugin-manifest");
+        std::fs::write(dir.join("dsh.plugin.json"), r#"not-json"#).unwrap();
+        std::fs::write(
+            dir.join("package.json"),
+            r#"{"name":"x","main":"lib/index.js"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            declared_main_entry(&dir).unwrap(),
+            dir.join("lib/index.js")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn declared_main_none_without_manifest() {
+        let dir = tmp_pkg_dir("none");
+        assert!(declared_main_entry(&dir).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
