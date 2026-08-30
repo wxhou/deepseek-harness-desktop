@@ -7,6 +7,7 @@ use std::sync::OnceLock;
 
 use crate::config;
 use crate::service::cli;
+use crate::service::core;
 use crate::service::download::{self, Installable};
 use crate::service::workflow;
 use tauri::AppHandle;
@@ -16,6 +17,11 @@ use tauri::AppHandle;
 /// 改用独立的进程内互斥锁覆盖完整安装生命周期，避免两路并发 install 的
 /// TOCTOU 与安装失败后状态卡死导致后续请求被静默跳过。
 static INSTALL_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+
+/// 返回当前实际选中的核心版本，不能直接读取固定预打包目录。
+fn active_dsh_version(app_handle: &AppHandle) -> Option<String> {
+    core::active_version(app_handle).or_else(|| config::get_dsh_version(app_handle))
+}
 
 fn install_lock() -> &'static tokio::sync::Mutex<()> {
     INSTALL_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
@@ -133,7 +139,7 @@ pub async fn install_dependencies(app_handle: AppHandle) -> Result<bool, String>
         Ok(latest) if dsh_files_ok => {
             let record_commit = config::get_dsh_pkg_commit(&app_handle);
             let record_tag = config::get_dsh_pkg_tag(&app_handle);
-            let installed_version = config::get_dsh_version(&app_handle);
+            let installed_version = active_dsh_version(&app_handle);
             // 老记录没有 tag，反查 pkg 仓库 tags 列表确认记录对应的发布版本；
             // 反查失败时由 resolve_update 回退到“以实际文件为准”的保守分支
             let legacy_tags = if record_tag.is_none() {
@@ -239,9 +245,18 @@ pub async fn check_dsh_update(
         return Ok(None);
     }
 
+    // 当前运行的是预览版时不提示稳定/RC 更新：预览版可能高于当前 release，
+    // 但不能把用户主动选择的 alpha/beta 版本降级成较旧的 rc。
+    if config::get_store_dat_setting(&app_handle).active_core.as_deref() == Some("app")
+        && config::get_dsh_pkg_tag(&app_handle).as_deref().is_some_and(download::is_preview_tag)
+    {
+        log::info!("Suppressing dsh update because a preview core is active");
+        return Ok(None);
+    }
+
     // 当前已运行版本高于推荐版本时也不提示更新；否则从高版本核心切换后，
     // latest release 仍可能被误判为更新并再次弹出通知。
-    if let Some(installed_version) = config::get_dsh_version(&app_handle) {
+    if let Some(installed_version) = active_dsh_version(&app_handle) {
         if config::is_dsh_version_above_recommended(&app_handle, &installed_version) {
             log::info!(
                 "Suppressing dsh update because installed version is above recommended: {}",
@@ -263,7 +278,7 @@ pub async fn check_dsh_update(
     }
     let record_commit = config::get_dsh_pkg_commit(&app_handle);
     let record_tag = config::get_dsh_pkg_tag(&app_handle);
-    let installed_version = config::get_dsh_version(&app_handle);
+    let installed_version = active_dsh_version(&app_handle);
 
     // 老记录没有 tag，反查 pkg 仓库 tags 列表确认记录对应的发布版本；
     // 反查失败时由 resolve_update 回退到“以实际文件为准”的保守分支

@@ -511,6 +511,15 @@ pub fn get_dsh_version<R: Runtime>(app_handle: &AppHandle<R>) -> Option<String> 
                 .trim_start_matches(['^', '~', '=', '>', '<'])
                 .to_string()
         })
+        .or_else(|| {
+            manifest
+                .get("name")
+                .and_then(|value| value.as_str())
+                .filter(|name| *name == "@deepseek-ai/dsh")
+                .and_then(|_| manifest.get("version"))
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+        })
 }
 
 /// 侧边栏展示的运行时/版本/诊断信息

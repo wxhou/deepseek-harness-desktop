@@ -2,7 +2,8 @@ import { ArrowRotateRight, ArrowUpRightFromSquare, ChevronRight, Copy, Folder, P
 import { Button, Chip, Description, Input, Link, ListBox, Select, Spinner, Surface, Switch } from '@heroui/react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { invoke } from '@tauri-apps/api/core'
-import { useState } from 'react'
+import { listen } from '@tauri-apps/api/event'
+import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { If } from 'react-if-lite'
 import { useStore } from 'valtio-define'
@@ -50,10 +51,27 @@ export function ConfigDebug() {
   // 读取 config 数据；用户一旦输入即以输入值为准。
   const [portInput, setPortInput] = useState<number>()
 
-  const { data: info } = useQuery({
+  const { data: info, refetch: refreshInfo } = useQuery({
     queryKey: ['info'],
     queryFn: () => invoke<RuntimeInfo>('get_runtime_info'),
   })
+
+  useEffect(() => {
+    let disposed = false
+    let unlisten: (() => void) | undefined
+    listen('setting_updated', () => {
+      void refreshInfo()
+    }).then((fn) => {
+      if (disposed)
+        fn()
+      else
+        unlisten = fn
+    }).catch(() => {})
+    return () => {
+      disposed = true
+      unlisten?.()
+    }
+  }, [refreshInfo])
 
   const { data: config, refetch: refreshConfig } = useQuery({
     queryKey: ['config'],
