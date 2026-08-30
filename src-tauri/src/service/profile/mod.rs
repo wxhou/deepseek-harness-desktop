@@ -58,8 +58,6 @@ pub fn profile_dir_of(app_handle: &AppHandle, id: &str) -> PathBuf {
 /// 仅豁免 lockfile 使用的精确版本，避免关闭整个 supply-chain policy。
 const PROFILE_MINIMUM_RELEASE_AGE_EXCLUDES: [&str; 1] = ["zod@4.4.3"];
 
-/// 确保现有档案也获得与新建档案相同的 pnpm 供应链策略例外。
-/// 使用 YAML 合并而不是文本追加，避免重复映射键破坏 pnpm-workspace.yaml。
 pub(crate) fn ensure_profile_pnpm_policy(app_handle: &AppHandle) -> Result<(), String> {
     let path = profile_dir_of(app_handle, &active_profile(app_handle)).join("pnpm-workspace.yaml");
     let existing = match fs::read_to_string(&path) {

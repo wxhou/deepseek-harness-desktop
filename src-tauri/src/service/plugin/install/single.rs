@@ -174,7 +174,6 @@ async fn run_single_plugin_command(
     // 与批量安装保持一致：旧档案也必须具备精确的 release-age 例外，
     // 否则升级/卸载触发 pnpm lockfile 校验时同样会被 issue #222 的问题阻断。
     super::ensure_profile_pnpm_policy(app_handle)?;
-
     // 插件操作会改写 profile，先停止运行中的服务（与安装一致）
     if workflow::has_owned_process() {
         let _ = window.emit(

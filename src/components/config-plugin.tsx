@@ -1,5 +1,5 @@
 import { CircleExclamation } from '@gravity-ui/icons'
-import { Button, Chip, Label, Spinner, Tooltip, Typography } from '@heroui/react'
+import { Button, Chip, Label, Spinner, Tooltip } from '@heroui/react'
 import { useOverlay } from '@overlastic/react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { invoke } from '@tauri-apps/api/core'
@@ -123,24 +123,22 @@ export function ConfigPlugin() {
     <div>
       <PanelHeader
         className="sticky top-0 bg-canvas z-10 pb-3"
-        title={(
-          <div className="flex justify-between">
-            <Typography type="h4">{t('plugins.title')}</Typography>
-            <Tooltip delay={0}>
-              <Button
-                size="sm"
-                variant="primary"
-                className="rounded-md"
-                onPress={store.harness.openPreinstall}
-                isDisabled={preinstall.installing}
-              >
-                {t('preinstall.open_preset')}
-              </Button>
-              <Tooltip.Content>
-                <p>{t('preinstall.settings_hint')}</p>
-              </Tooltip.Content>
-            </Tooltip>
-          </div>
+        title={t('plugins.title')}
+        action={(
+          <Tooltip delay={0}>
+            <Button
+              size="sm"
+              variant="primary"
+              className="rounded-md"
+              onPress={store.harness.openPreinstall}
+              isDisabled={preinstall.installing}
+            >
+              {t('preinstall.open_preset')}
+            </Button>
+            <Tooltip.Content>
+              <p>{t('preinstall.settings_hint')}</p>
+            </Tooltip.Content>
+          </Tooltip>
         )}
         description={t('plugins.panel_tooltip')}
       />
