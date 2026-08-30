@@ -65,6 +65,39 @@ async fn fetch_releases_latest(client: &reqwest::Client) -> Result<serde_json::V
         .map_err(|e| format!("Failed to parse latest release response: {e}"))
 }
 
+/// 从 Releases 页面 HTML 中解析 release 标签及 Pre-release 标记。
+///
+/// 页面可能为同一 release 渲染桌面端和移动端两个链接，因此按 tag 去重。
+/// 这是 API 限流时的列表级兜底，不能依赖页面的 CSS 结构以外的接口。
+fn parse_release_list_from_html(body: &str) -> Vec<DshPkgReleaseMeta> {
+    let mut releases = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let marker = "releases/tag/";
+    let mut cursor = 0;
+    while let Some(relative) = body[cursor..].find(marker) {
+        let start = cursor + relative + marker.len();
+        let Some(end) = body[start..].find(|c: char| c == '"' || c == '\'' || c == '?') else {
+            break;
+        };
+        let tag = &body[start..start + end];
+        let next = body[start + end..]
+            .find(marker)
+            .map(|offset| start + end + offset)
+            .unwrap_or(body.len());
+        // 从当前 tag 开始截取到下一个 tag，避免把上一个 release 的
+        // `Pre-release` 文案带入当前条目（尤其是 alpha 后面的 rc）。
+        let entry = &body[start..next];
+        if !tag.is_empty() && seen.insert(tag.to_string()) {
+            releases.push(DshPkgReleaseMeta {
+                tag: tag.to_string(),
+                prerelease: entry.contains("Pre-release"),
+            });
+        }
+        cursor = next;
+    }
+    releases
+}
+
 /// 通过 commits 端点把 release tag 解析为完整 commit hash。
 async fn fetch_tag_commit(client: &reqwest::Client, tag: &str) -> Result<String, String> {
     let commit: serde_json::Value =
@@ -584,37 +617,76 @@ pub struct DshPkgReleaseMeta {
     pub prerelease: bool,
 }
 
+/// 通过 Releases 页面获取 pkg 发行列表。
+///
+/// 页面位于 github.com，不消耗 api.github.com 的未认证配额；页面上的
+/// `Pre-release` 标签也能保留预览版信息。页面结构变化或网络失败时返回错误，
+/// 由调用方继续回退到 Tags API。
+async fn fetch_dsh_pkg_releases_from_html(
+    client: &reqwest::Client,
+) -> Result<Vec<DshPkgReleaseMeta>, String> {
+    let body = client
+        .get(format!("{DSH_PKG_REPO}/releases"))
+        .send()
+        .await
+        .map_err(|e| format!("Release page request failed: {e}"))?
+        .error_for_status()
+        .map_err(|e| format!("Release page request failed: {e}"))?
+        .text()
+        .await
+        .map_err(|e| format!("Failed to read release page: {e}"))?;
+    let releases = parse_release_list_from_html(&body);
+    if releases.is_empty() {
+        return Err("Release page contained no release tags".to_string());
+    }
+    Ok(releases)
+}
+
 /// 拉取 pkg 仓库的 release 列表（最新在前），含 GitHub 的 Pre-release label。
 ///
 /// 核心面板的多版本列表以此作为远程数据源（替代 git tags）：git tags 不含
 /// Pre-release label，无法区分预览版；releases 列表还能天然排除 draft（未发布
-/// 对匿名请求不可见）。失败时调用方回退 git tags，预览标记按 tag 命名
-/// （[`is_preview_tag`]）兜底。
+/// 对匿名请求不可见）。API 失败时先读取 github.com Releases 页面，再失败时
+/// 由调用方回退 git tags，预览标记按 tag 命名（[`is_preview_tag`]）兜底。
 pub async fn fetch_dsh_pkg_releases() -> Result<Vec<DshPkgReleaseMeta>, String> {
     let client = github_client()?;
-    let releases: serde_json::Value = github_api_get(
+    match github_api_get(
         &client,
         &format!("{DSH_PKG_GITHUB_API}/releases?per_page=100"),
     )
     .await
-    .map_err(|e| format!("Release list request failed: {e}"))?
-    .json()
-    .await
-    .map_err(|e| format!("Failed to parse release list response: {e}"))?;
-
-    Ok(releases
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|entry| {
-            let tag = entry.get("tag_name")?.as_str()?.to_string();
-            let prerelease = entry
-                .get("prerelease")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            Some(DshPkgReleaseMeta { tag, prerelease })
-        })
-        .collect())
+    {
+        Ok(response) => {
+            let releases: serde_json::Value = response
+                .json()
+                .await
+                .map_err(|e| format!("Failed to parse release list response: {e}"))?;
+            Ok(releases
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|entry| {
+                    let tag = entry.get("tag_name")?.as_str()?.to_string();
+                    let prerelease = entry
+                        .get("prerelease")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    Some(DshPkgReleaseMeta { tag, prerelease })
+                })
+                .collect())
+        }
+        Err(api_error) => {
+            log::warn!(
+                "GitHub API release list unavailable ({}), falling back to Releases page",
+                api_error
+            );
+            fetch_dsh_pkg_releases_from_html(&client)
+                .await
+                .map_err(|page_error| {
+                    format!("Release list request failed: {api_error}; {page_error}")
+                })
+        }
+    }
 }
 
 /// 拉取 pkg 仓库的 release tag 列表（tag, commit），用于反查历史记录对应的版本。
@@ -753,6 +825,21 @@ mod tests {
         assert!(!is_preview_tag("dsh-0.2.0-32490000006"));
         assert!(!is_preview_tag("dsh-0.2.0"));
         assert!(!is_preview_tag(""));
+    }
+
+    #[test]
+    fn release_page_parser_preserves_preview_labels_and_deduplicates_links() {
+        let html = concat!(
+            r#"<a href="/dsh-tauri-desk/deepseek-harness-pkg/releases/tag/dsh-0.2.0-beta.1-1">Pre-release</a>"#,
+            r#"<a href="/dsh-tauri-desk/deepseek-harness-pkg/releases/tag/dsh-0.2.0-beta.1-1">same release</a>"#,
+            r#"<a href="/dsh-tauri-desk/deepseek-harness-pkg/releases/tag/dsh-0.1.1-rc.2-2">Release</a>"#,
+        );
+        let releases = parse_release_list_from_html(html);
+        assert_eq!(releases.len(), 2);
+        assert_eq!(releases[0].tag, "dsh-0.2.0-beta.1-1");
+        assert!(releases[0].prerelease);
+        assert_eq!(releases[1].tag, "dsh-0.1.1-rc.2-2");
+        assert!(!releases[1].prerelease);
     }
 
     #[test]

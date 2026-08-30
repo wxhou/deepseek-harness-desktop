@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use tauri::AppHandle;
 
 use super::local::local_core;
+use crate::service::download::parse_version_from_tag;
 
 /// 核心来源
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -63,6 +64,8 @@ pub struct HarnessCore {
     pub preview: bool,
     /// 当前版本是否高于资源清单中的推荐版本。
     pub above_recommended: bool,
+    /// 本地存在但远程 pkg 仓库已不再提供的历史槽位。
+    pub orphaned: bool,
     /// 资源清单中的推荐版本，用于切换前风险提示。
     pub recommended_version: Option<String>,
     pub error: Option<String>,
@@ -104,7 +107,10 @@ pub fn active_dsh_binary(app_handle: &AppHandle) -> PathBuf {
 pub fn active_version(app_handle: &AppHandle) -> Option<String> {
     match active_source(app_handle) {
         CoreSource::Local => local_core(app_handle).map(|c| c.version),
-        CoreSource::App => config::get_dsh_version(app_handle),
+        CoreSource::App => config::get_dsh_pkg_tag(app_handle)
+            .as_deref()
+            .and_then(parse_version_from_tag)
+            .or_else(|| config::get_dsh_version(app_handle)),
     }
 }
 
