@@ -1,7 +1,8 @@
 import type { Copy } from '../i18n'
 import { useEffect, useRef, useState } from 'react'
 import { If } from 'react-if-lite'
-import { AppleIcon, ChevronDownIcon, InfoIcon, WindowsIcon } from './icons'
+import { formatCompact, useDownloadCount } from '../hooks/use-download-count'
+import { AppleIcon, ChevronDownIcon, DownloadIcon, InfoIcon, WindowsIcon } from './icons'
 
 // 下载地址：GitHub Release 资产直链（latest 模式，跟随最新 release）。
 // 注意：资产文件名含版本号，版本升级后需同步更新。
@@ -10,10 +11,11 @@ const DOWNLOAD_MAC_URL = `${RELEASE_BASE}/Deepseek.Harness.Desktop_0.10.0_aarch6
 const DOWNLOAD_MAC_INTEL_URL = `${RELEASE_BASE}/Deepseek.Harness.Desktop_0.10.0_x64.dmg`
 const DOWNLOAD_WINDOWS_URL = `${RELEASE_BASE}/Deepseek.Harness.Desktop_0.10.0_x64-setup.exe`
 
-/** 主视觉左列：标题、简介、免责声明、平台下载按钮（Mac 为架构选择下拉） */
+/** 主视觉左列：标题、简介、免责声明、平台下载按钮（Mac 为架构选择下拉）与累计下载量 */
 export function Hero(props: {
   copy: Copy
 }) {
+  const downloads = useDownloadCount()
   const [macMenuOpen, setMacMenuOpen] = useState(false)
   const macMenuRef = useRef<HTMLDivElement>(null)
 
@@ -87,6 +89,17 @@ export function Hero(props: {
           <WindowsIcon className="h-6 w-6 shrink-0" />
           {props.copy.downloadWindows}
         </a>
+      </div>
+      {/* 累计下载量：接口未就绪时显示 '--' */}
+      <div className="mt-4 flex w-fit items-center gap-2 text-[13px] text-white/45" aria-live="polite">
+        <DownloadIcon className="size-4 text-white/55" />
+        <span>
+          {props.copy.totalDownloadsPrefix && <span className="mr-1">{props.copy.totalDownloadsPrefix}</span>}
+          <span className="font-medium tabular-nums text-white/75">
+            {downloads === null ? '--' : formatCompact(downloads)}
+          </span>
+          {props.copy.totalDownloadsSuffix && <span className="ml-1">{props.copy.totalDownloadsSuffix}</span>}
+        </span>
       </div>
     </div>
   )

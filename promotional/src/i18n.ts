@@ -9,6 +9,8 @@ export interface Copy {
   downloadWindows: string
   macChipApple: string
   macChipIntel: string
+  totalDownloadsPrefix: string
+  totalDownloadsSuffix: string
   appScreenshotAlt: string
   title: string
   docTitle: string
@@ -21,6 +23,8 @@ const zh: Copy = {
   downloadWindows: '下载 Windows 版',
   macChipApple: 'Apple Silicon 芯片',
   macChipIntel: 'Intel 芯片',
+  totalDownloadsPrefix: '累计下载',
+  totalDownloadsSuffix: '次',
   appScreenshotAlt: 'DeepSeek Harness Desktop 界面',
   title: 'DeepSeek Harness Desktop',
   docTitle: 'DeepSeek Harness Desktop｜DeepSeek Harness 桌面客户端',
@@ -33,6 +37,8 @@ const en: Copy = {
   downloadWindows: 'Download for Windows',
   macChipApple: 'Apple Silicon',
   macChipIntel: 'Intel chip',
+  totalDownloadsPrefix: '',
+  totalDownloadsSuffix: 'total downloads',
   appScreenshotAlt: 'DeepSeek Harness Desktop interface',
   title: 'DeepSeek Harness Desktop',
   docTitle: 'DeepSeek Harness Desktop',
