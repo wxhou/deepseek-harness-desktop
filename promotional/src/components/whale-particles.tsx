@@ -20,7 +20,8 @@ import {
  * - 常驻动效：整体呼吸/摇摆、中心波纹、粒子闪烁（加性混合）
  */
 
-const WHALE_SVG = '/images/hero-whale.svg'
+// BASE_URL 前缀：兼容 GitHub Pages 项目页（/deepseek-harness-desktop/）等任意子路径部署
+const WHALE_SVG = `${import.meta.env.BASE_URL}images/hero-whale.svg`
 
 /** 采样参数（与参考站一致） */
 const GRID = 60

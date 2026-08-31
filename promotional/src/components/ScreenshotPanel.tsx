@@ -14,7 +14,7 @@ export function ScreenshotPanel(props: { copy: Copy }) {
           height={749}
           decoding="async"
           className="h-full w-full rounded-2xl object-cover object-top shadow-[0_34px_70px_rgba(0,0,0,0.55)] ring-1 ring-white/10"
-          src="/images/app-preview.png"
+          src={`${import.meta.env.BASE_URL}images/app-preview.png`}
         />
       </div>
     </div>
