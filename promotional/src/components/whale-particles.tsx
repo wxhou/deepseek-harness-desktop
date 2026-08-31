@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import type { Group } from 'three'
+import { Canvas, useFrame, useThree } from '@react-three/fiber'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   AdditiveBlending,
   BufferAttribute,
@@ -63,7 +63,8 @@ function sampleWhale(img: HTMLImageElement): PixelData {
   function isIsolated(x: number, y: number): boolean {
     for (let dy = -2; dy <= 2; dy++) {
       for (let dx = -2; dx <= 2; dx++) {
-        if (dx === 0 && dy === 0) continue
+        if (dx === 0 && dy === 0)
+          continue
         const nx = x + dx
         const ny = y + dy
         if (nx >= 0 && ny >= 0 && nx < GRID && ny < GRID && lum[GRID * ny + nx] > LUMINANCE_MIN)
@@ -81,14 +82,16 @@ function sampleWhale(img: HTMLImageElement): PixelData {
   for (let y = 0; y < GRID; y += 1) {
     for (let x = 0; x < GRID; x += 1) {
       const l = lum[GRID * y + x]
-      if (l <= LUMINANCE_MIN || isIsolated(x, y)) continue
+      if (l <= LUMINANCE_MIN || isIsolated(x, y))
+        continue
       positions.push((x - GRID / 2) * WORLD_STEP, (GRID / 2 - y) * WORLD_STEP, 0)
       opacities.push(l)
       // 3x3 邻域缺口比例 → 边缘系数（内部 0、轮廓 1），边缘粒子抖动更大
       let missing = 0
       for (let dy = -1; dy <= 1; dy++) {
         for (let dx = -1; dx <= 1; dx++) {
-          if (dx === 0 && dy === 0) continue
+          if (dx === 0 && dy === 0)
+            continue
           const nx = x + dx
           const ny = y + dy
           if (nx < 0 || ny < 0 || nx >= GRID || ny >= GRID || lum[GRID * ny + nx] <= LUMINANCE_MIN)
@@ -279,8 +282,10 @@ function FrameDriver() {
     let last = 0
     const tick = (now: number) => {
       raf = requestAnimationFrame(tick)
-      if (start === null) start = now
-      if (now - last < FRAME_INTERVAL_MS) return
+      if (start === null)
+        start = now
+      if (now - last < FRAME_INTERVAL_MS)
+        return
       last = now - ((now - last) % FRAME_INTERVAL_MS)
       advanceFn((now - start) / 1000)
     }
@@ -297,12 +302,12 @@ function WhalePointCloud(props: { data: PixelData }) {
   const viewport = useThree(state => state.viewport)
   const stateSize = useThree(state => state.size)
   const pixelRatio = useThree(state => state.viewport.dpr)
-  const canvasEl = useRef<HTMLElement | null>(null)
-  const mouseNdc = useRef({ x: 0, y: 0 })
-  const mouseActive = useRef(false)
-  const mouseHasMoved = useRef(false)
-  const smoothedMouse = useRef(new Vector2(0, 0))
-  const elapsed = useRef(0)
+  const canvasElRef = useRef<HTMLElement | null>(null)
+  const mouseNdcRef = useRef({ x: 0, y: 0 })
+  const mouseActiveRef = useRef(false)
+  const mouseHasMovedRef = useRef(false)
+  const smoothedMouseRef = useRef(new Vector2(0, 0))
+  const elapsedRef = useRef(0)
 
   const geometry = useMemo(() => {
     const geo = new BufferGeometry()
@@ -340,26 +345,28 @@ function WhalePointCloud(props: { data: PixelData }) {
   )
 
   useEffect(() => {
-    canvasEl.current = document.querySelector('canvas')
+    canvasElRef.current = document.querySelector('canvas')
   }, [])
 
   useEffect(() => {
     function handleMove(event: MouseEvent) {
-      const canvas = canvasEl.current
-      if (!canvas) return
+      const canvas = canvasElRef.current
+      if (!canvas)
+        return
       const rect = canvas.getBoundingClientRect()
-      mouseNdc.current = {
+      mouseNdcRef.current = {
         x: ((event.clientX - rect.left) / rect.width) * 2 - 1,
         y: -(((event.clientY - rect.top) / rect.height) * 2 - 1),
       }
-      mouseActive.current = true
-      mouseHasMoved.current = true
+      mouseActiveRef.current = true
+      mouseHasMovedRef.current = true
     }
     function handleLeave() {
-      mouseActive.current = false
+      mouseActiveRef.current = false
     }
     function handleVisibility() {
-      if (document.hidden) mouseActive.current = false
+      if (document.hidden)
+        mouseActiveRef.current = false
     }
     window.addEventListener('mousemove', handleMove, { passive: true })
     window.addEventListener('mouseleave', handleLeave)
@@ -372,10 +379,10 @@ function WhalePointCloud(props: { data: PixelData }) {
   }, [])
 
   useFrame((state, delta) => {
-    elapsed.current += delta
+    elapsedRef.current += delta
     // 入场：0.3s 延迟 + 2.5s easeOutCubic 汇聚
-    const assembleT = Math.max(0, Math.min(1, (elapsed.current - 0.3) / 2.5))
-    const assembly = 1 - Math.pow(1 - assembleT, 3)
+    const assembleT = Math.max(0, Math.min(1, (elapsedRef.current - 0.3) / 2.5))
+    const assembly = 1 - (1 - assembleT) ** 3
     const group = groupRef.current
     if (!group)
       return
@@ -394,23 +401,23 @@ function WhalePointCloud(props: { data: PixelData }) {
     u.uShadeMax.value = LIGHT_DEFAULTS.shadeMax
 
     // 鼠标强度平滑进出（参考站同款指数趋近）
-    const targetStrength = mouseActive.current ? MOUSE_DEFAULTS.strength : 0
-    u.uMouseStrength.value += (targetStrength - u.uMouseStrength.value) * (1 - Math.pow(0.05, delta))
+    const targetStrength = mouseActiveRef.current ? MOUSE_DEFAULTS.strength : 0
+    u.uMouseStrength.value += (targetStrength - u.uMouseStrength.value) * (1 - 0.05 ** delta)
 
     // 归一化鼠标 → 世界坐标（指数平滑，decay 换算为帧率无关）
-    const targetX = (mouseHasMoved.current ? mouseNdc.current.x : 0) * viewport.width * 0.5
-    const targetY = (mouseHasMoved.current ? mouseNdc.current.y : 0) * viewport.height * 0.5
-    const factor = 1 - Math.pow(1 - MOUSE_DEFAULTS.decay, delta * 60)
-    smoothedMouse.current.x += (targetX - smoothedMouse.current.x) * (mouseHasMoved.current ? factor : 1)
-    smoothedMouse.current.y += (targetY - smoothedMouse.current.y) * (mouseHasMoved.current ? factor : 1)
+    const targetX = (mouseHasMovedRef.current ? mouseNdcRef.current.x : 0) * viewport.width * 0.5
+    const targetY = (mouseHasMovedRef.current ? mouseNdcRef.current.y : 0) * viewport.height * 0.5
+    const factor = 1 - (1 - MOUSE_DEFAULTS.decay) ** (delta * 60)
+    smoothedMouseRef.current.x += (targetX - smoothedMouseRef.current.x) * (mouseHasMovedRef.current ? factor : 1)
+    smoothedMouseRef.current.y += (targetY - smoothedMouseRef.current.y) * (mouseHasMovedRef.current ? factor : 1)
 
     // 点光源 X 跟随鼠标
-    const lightX = LIGHT_DEFAULTS.x + smoothedMouse.current.x * LIGHT_DEFAULTS.followX
+    const lightX = LIGHT_DEFAULTS.x + smoothedMouseRef.current.x * LIGHT_DEFAULTS.followX
     u.uLightPos.value.set(lightX, LIGHT_DEFAULTS.y, LIGHT_DEFAULTS.z)
 
     // 鼠标世界位置 → 组局部坐标（组带轻微摇摆旋转）
     const inverse = group.matrixWorld.clone().invert()
-    const local = new Vector3(smoothedMouse.current.x, smoothedMouse.current.y, 0).applyMatrix4(inverse)
+    const local = new Vector3(smoothedMouseRef.current.x, smoothedMouseRef.current.y, 0).applyMatrix4(inverse)
     u.uMouse.value.set(local.x, local.y)
 
     // 颜色随汇聚淡入；粒子尺寸跟随窗口与 DPR
@@ -458,7 +465,8 @@ export function WhaleParticles() {
     img.src = WHALE_SVG
   }, [])
 
-  if (!data || data.count === 0) return null
+  if (!data || data.count === 0)
+    return null
 
   return (
     <div

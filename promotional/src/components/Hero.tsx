@@ -1,6 +1,6 @@
-import { If } from 'react-if-lite'
-import { useEffect, useRef, useState } from 'react'
 import type { Copy } from '../i18n'
+import { useEffect, useRef, useState } from 'react'
+import { If } from 'react-if-lite'
 import { AppleIcon, ChevronDownIcon, InfoIcon, WindowsIcon } from './icons'
 
 // 下载地址：GitHub Release 资产直链（latest 模式，跟随最新 release）。
