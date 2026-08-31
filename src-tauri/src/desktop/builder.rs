@@ -579,10 +579,48 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
             }
             _ => {}
         })
-        // 点击关闭按钮时隐藏到托盘而不是退出程序
+        // 关闭行为由设置项 `setting.close_action` 控制（D-08 / D-09）：
+        // - quit：关窗即完整退出进程，不驻留托盘、不切 Accessory；
+        // - tray（默认）：阻止关闭，应用级 hide（Cmd+H 语义）并切 Accessory 隐藏 Dock。
+        // 退出分支**故意不加** `#[cfg(target_os = "macos")]` 门控 —— 「关闭窗口＝
+        // 退出应用」是用户可选项，语义上应当三平台一致，不是 macOS 专属；而
+        // `activation::on_window_hidden` 仅在 macOS 上有实现，故它保留 macOS 门控。
+        // 点击关闭按钮时按设置决定：隐藏到托盘驻留，还是完整退出程序
         .on_window_event(|window, event| match event {
             tauri::WindowEvent::CloseRequested { api, .. } => {
+                // get_store_dat_setting 内部已归一化，取值只可能是 tray 或 quit
+                let close_action =
+                    crate::config::get_store_dat_setting(&window.app_handle()).close_action;
+                if close_action == crate::desktop::activation::CLOSE_ACTION_QUIT {
+                    // 不 prevent_close、不 hide：直接退出。app.exit(0) 会走
+                    // RunEvent::ExitRequested，既有的几何保存逻辑照常触发
+                    window.app_handle().exit(0);
+                    return;
+                }
                 api.prevent_close();
+                // macOS 上隐藏不能用窗口级 orderOut（window.hide()）：应用隐藏
+                // 最后一个窗口后会被系统在 ~1.5s 后发 quit Apple Event 终止
+                // （macOS 26/27 对「无可见窗口」应用的回收行为）。正确顺序：
+                // 先切 Accessory（此时窗口仍可见，避免 Accessory 下 show 的
+                // tauri #5122 问题），再用应用级 hide（Cmd+H 语义）—— 系统不会
+                // 回收 hide: 隐藏的应用。恢复路径见 utils::show_main_window 的
+                // app.show()（unhide）配对。
+                #[cfg(target_os = "macos")]
+                {
+                    crate::desktop::activation::on_window_hidden(window, &close_action);
+                    if let Err(error) = window.app_handle().hide() {
+                        // 应用级 hide 失败（理论不发生）时**保持窗口可见**：
+                        // 窗口级 hide() 是 orderOut，会落入 macOS 26/27 对
+                        // 「无可见窗口」应用的 ~1.5s quit 回收 —— 比可见窗口
+                        // 更糟。可见窗口是严格更安全的降级态。
+                        // hide 失败意味着应用仍停留在 Accessory（on_window_hidden
+                        // 已提前切过去），可见窗口配合消失的 Dock/⌘-Tab 会让用户
+                        // 无法将应用拉回前台，故这里必须切回 regular 恢复 Dock。
+                        crate::desktop::activation::set_regular_policy(window.app_handle());
+                        log::error!("[activation] APP_HIDE_FAILED: {error}");
+                    }
+                }
+                #[cfg(not(target_os = "macos"))]
                 let _ = window.hide();
             }
             // 移动/缩放主窗口时记录几何，重启后据此恢复（见 config::window_state）
@@ -593,6 +631,9 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
                 crate::config::save_geometry(window);
                 #[cfg(target_os = "macos")]
                 sync_macos_fullscreen_menu(window);
+                // 退出全屏后补做全屏期间被推迟的 Accessory 切换
+                #[cfg(target_os = "macos")]
+                crate::desktop::activation::on_window_resized(window);
             }
             _ => {}
         });
