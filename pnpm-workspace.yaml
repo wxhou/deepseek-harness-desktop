@@ -99,6 +99,8 @@ trustPolicy: no-downgrade
 
 packages:
   - packages/*
+  # 宣传页独立子应用（React + Vite），与桌面端主应用互不影响
+  - promotional
 
 patchedDependencies:
   '@tauri-apps/plugin-http@2.6.0': patches/@tauri-apps__plugin-http@2.6.0.patch

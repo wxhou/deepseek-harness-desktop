@@ -1,0 +1,42 @@
+@import "tailwindcss";
+
+/* 参考站同款暗底：单屏不滚动，禁止横向溢出（截图右侧刻意出血） */
+html,
+body,
+#root {
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  background-color: #05070b;
+  color: #fff;
+  font-family:
+    "Noto Sans SC",
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    "PingFang SC",
+    "Microsoft YaHei",
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 背景极光带缓慢漂移 */
+@keyframes aurora-drift {
+  0%, 100% {
+    transform: translate3d(-4%, -2%, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(4%, 3%, 0) scale(1.08);
+  }
+}
+
+@keyframes aurora-drift-reverse {
+  0%, 100% {
+    transform: translate3d(3%, 2%, 0) scale(1.05);
+  }
+  50% {
+    transform: translate3d(-3%, -3%, 0) scale(1);
+  }
+}
