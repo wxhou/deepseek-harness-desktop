@@ -1,5 +1,7 @@
+import { If } from 'react-if-lite'
+import { useEffect, useRef, useState } from 'react'
 import type { Copy } from '../i18n'
-import { AppleIcon, InfoIcon, WindowsIcon } from './icons'
+import { AppleIcon, ChevronDownIcon, InfoIcon, WindowsIcon } from './icons'
 
 // 下载地址：GitHub Release 资产直链（latest 模式，跟随最新 release）。
 // 注意：资产文件名含版本号，版本升级后需同步更新。
@@ -8,10 +10,24 @@ const DOWNLOAD_MAC_URL = `${RELEASE_BASE}/Deepseek.Harness.Desktop_0.10.0_aarch6
 const DOWNLOAD_MAC_INTEL_URL = `${RELEASE_BASE}/Deepseek.Harness.Desktop_0.10.0_x64.dmg`
 const DOWNLOAD_WINDOWS_URL = `${RELEASE_BASE}/Deepseek.Harness.Desktop_0.10.0_x64-setup.exe`
 
-/** 主视觉左列：标题、简介、免责声明、平台下载按钮 */
+/** 主视觉左列：标题、简介、免责声明、平台下载按钮（Mac 为架构选择下拉） */
 export function Hero(props: {
   copy: Copy
 }) {
+  const [macMenuOpen, setMacMenuOpen] = useState(false)
+  const macMenuRef = useRef<HTMLDivElement>(null)
+
+  // 点击下拉外部任意区域关闭
+  useEffect(() => {
+    function onDocClick(event: MouseEvent) {
+      if (macMenuRef.current && !macMenuRef.current.contains(event.target as Node)) {
+        setMacMenuOpen(false)
+      }
+    }
+    document.addEventListener('click', onDocClick)
+    return () => document.removeEventListener('click', onDocClick)
+  }, [])
+
   return (
     <div className="relative z-10 -translate-y-4 lg:-translate-x-8 lg:-translate-y-7">
       <h1 className="max-w-[590px] text-[44px] font-medium leading-[1.12] text-white md:text-[56px] xl:text-[62px]">
@@ -26,20 +42,44 @@ export function Hero(props: {
       </div>
       <div className="mt-6 flex flex-col gap-4 sm:flex-row md:mt-7">
         {/* 下载链接预留：见文件顶部 DOWNLOAD_*_URL */}
-        <a
-          href={DOWNLOAD_MAC_URL}
-          className="flex h-[54px] w-fit items-center justify-center gap-2.5 whitespace-nowrap rounded-[14px] bg-white px-5 text-[15px] font-semibold text-black transition-colors hover:bg-white/90"
-        >
-          <AppleIcon className="h-6 w-6 shrink-0" />
-          {props.copy.downloadMac}
-        </a>
-        <a
-          href={DOWNLOAD_MAC_INTEL_URL}
-          className="flex h-[54px] w-fit items-center justify-center gap-2.5 whitespace-nowrap rounded-[14px] bg-white px-5 text-[15px] font-semibold text-black transition-colors hover:bg-white/90"
-        >
-          <AppleIcon className="h-6 w-6 shrink-0" />
-          {props.copy.downloadMacIntel}
-        </a>
+        <div ref={macMenuRef} className="relative w-fit">
+          <button
+            type="button"
+            aria-expanded={macMenuOpen}
+            onClick={() => setMacMenuOpen(open => !open)}
+            className="flex h-[54px] w-fit items-center justify-center gap-2.5 whitespace-nowrap rounded-[14px] bg-white px-5 text-[15px] font-semibold text-black transition-colors hover:bg-white/90"
+          >
+            <AppleIcon className="h-6 w-6 shrink-0" />
+            {props.copy.downloadMac}
+            <ChevronDownIcon className={`h-4 w-4 shrink-0 transition-transform ${macMenuOpen ? 'rotate-180' : ''}`} />
+          </button>
+          <If cond={macMenuOpen}>
+            <div className="absolute left-0 top-[calc(100%+8px)] z-20 w-fit min-w-[220px] overflow-hidden rounded-[14px] bg-white p-1.5 shadow-[0_12px_36px_rgba(0,0,0,0.35)]">
+              <a
+                href={DOWNLOAD_MAC_URL}
+                onClick={() => setMacMenuOpen(false)}
+                className="flex items-center gap-3 rounded-[10px] px-3 py-2.5 transition-colors hover:bg-black/5"
+              >
+                <AppleIcon className="h-5 w-5 shrink-0 text-black" />
+                <span className="flex flex-col">
+                  <span className="text-[14px] font-semibold leading-5 text-black">{props.copy.macChipApple}</span>
+                  <span className="text-[12px] leading-4 text-black/50">M1 / M2 / M3 / M4 · dmg</span>
+                </span>
+              </a>
+              <a
+                href={DOWNLOAD_MAC_INTEL_URL}
+                onClick={() => setMacMenuOpen(false)}
+                className="flex items-center gap-3 rounded-[10px] px-3 py-2.5 transition-colors hover:bg-black/5"
+              >
+                <AppleIcon className="h-5 w-5 shrink-0 text-black" />
+                <span className="flex flex-col">
+                  <span className="text-[14px] font-semibold leading-5 text-black">{props.copy.macChipIntel}</span>
+                  <span className="text-[12px] leading-4 text-black/50">Intel · dmg</span>
+                </span>
+              </a>
+            </div>
+          </If>
+        </div>
         <a
           href={DOWNLOAD_WINDOWS_URL}
           className="flex h-[54px] w-fit items-center justify-center gap-2.5 whitespace-nowrap rounded-[14px] bg-white px-5 text-[15px] font-semibold text-black transition-colors hover:bg-white/90"
