@@ -1,0 +1,6 @@
+{
+  "$schema": "https://unpkg.com/wrangler/config-schema.json",
+  "name": "dshdesktop-promo",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-08-01"
+}
