@@ -1,11 +1,11 @@
-import { lazy, Suspense, useEffect, useState } from 'react'
 import type { Lang } from './i18n'
-import { COPY } from './i18n'
-import { useMatchMedia } from './hooks/use-match-media'
+import { lazy, Suspense, useEffect, useState } from 'react'
 import { Background } from './components/Background'
 import { Header } from './components/Header'
 import { Hero } from './components/Hero'
 import { ScreenshotPanel } from './components/ScreenshotPanel'
+import { useMatchMedia } from './hooks/use-match-media'
+import { COPY } from './i18n'
 
 // three.js 粒子背景按需加载：移动端（lg 断点以下）不渲染则完全不下载
 const WhaleParticles = lazy(() =>
