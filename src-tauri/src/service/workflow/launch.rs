@@ -352,9 +352,9 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     // alpha 的 iframe 无法稳定完成 SameSite=Strict browser-session Cookie 交换：
     // 仅命中 alpha 鉴权锚点时跳过 browser-session 层，但保留 Host/Origin fence；
     // 旧核心无 alpha 锚点，patch_dsh 会安全跳过，不改变旧版行为。
-    if let Err(e) = crate::service::patch::alpha_auth::apply(&app_handle) {
-        log::warn!("alpha embedded auth patch failed: {e}");
-    }
+    // if let Err(e) = crate::service::patch::alpha_auth::apply(&app_handle) {
+    //     log::warn!("alpha embedded auth patch failed: {e}");
+    // }
     // renderer 的 SlotOutlet 一行导出补丁（dsh-tauri-ui 设置侧边栏依赖）：只补
     // 活动核心的 dsh-client-ui-renderer lib/client.js，已含导出即跳过（幂等；核心
     // 换版本后自动重打，上游官方导出后自动退休）。最佳努力：失败只告警，不阻断
