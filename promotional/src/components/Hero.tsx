@@ -2,7 +2,7 @@ import type { Copy } from '../i18n'
 import { useEffect, useRef, useState } from 'react'
 import { If } from 'react-if-lite'
 import { formatCompact, useDownloadCount } from '../hooks/use-download-count'
-import { AppleIcon, ChevronDownIcon, DownloadIcon, InfoIcon, WindowsIcon } from './icons'
+import { AppleIcon, ChevronDownIcon, DownloadIcon, WindowsIcon } from './icons'
 
 // 下载地址：GitHub Release 资产直链（latest 模式，跟随最新 release）。
 // 注意：资产文件名含版本号，版本升级后需同步更新。
@@ -38,10 +38,6 @@ export function Hero(props: {
       <p className="mt-6 max-w-[550px] text-[18px] font-normal leading-[1.55] text-white/55 md:mt-8 md:text-[20px]">
         {props.copy.productDesc}
       </p>
-      <div className="mt-4 flex max-w-[550px] items-center gap-2 text-[13px] leading-5 text-white/45">
-        <InfoIcon className="size-4 shrink-0 text-white/55" />
-        <span>{props.copy.disclaimer}</span>
-      </div>
       <div className="mt-6 flex flex-col gap-4 sm:flex-row md:mt-7">
         {/* 下载链接预留：见文件顶部 DOWNLOAD_*_URL */}
         <div ref={macMenuRef} className="relative w-fit">
