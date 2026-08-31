@@ -5,6 +5,7 @@ import { AppleIcon, InfoIcon, WindowsIcon } from './icons'
 // 注意：资产文件名含版本号，版本升级后需同步更新。
 const RELEASE_BASE = 'https://github.com/wxhou/deepseek-harness-desktop/releases/latest/download'
 const DOWNLOAD_MAC_URL = `${RELEASE_BASE}/Deepseek.Harness.Desktop_0.10.0_aarch64.dmg`
+const DOWNLOAD_MAC_INTEL_URL = `${RELEASE_BASE}/Deepseek.Harness.Desktop_0.10.0_x64.dmg`
 const DOWNLOAD_WINDOWS_URL = `${RELEASE_BASE}/Deepseek.Harness.Desktop_0.10.0_x64-setup.exe`
 
 /** 主视觉左列：标题、简介、免责声明、平台下载按钮 */
@@ -31,6 +32,13 @@ export function Hero(props: {
         >
           <AppleIcon className="h-6 w-6 shrink-0" />
           {props.copy.downloadMac}
+        </a>
+        <a
+          href={DOWNLOAD_MAC_INTEL_URL}
+          className="flex h-[54px] w-fit items-center justify-center gap-2.5 whitespace-nowrap rounded-[14px] bg-white px-5 text-[15px] font-semibold text-black transition-colors hover:bg-white/90"
+        >
+          <AppleIcon className="h-6 w-6 shrink-0" />
+          {props.copy.downloadMacIntel}
         </a>
         <a
           href={DOWNLOAD_WINDOWS_URL}
