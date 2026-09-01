@@ -485,7 +485,9 @@ fn pid_alive(pid: u32) -> bool {
         let mut exit_code: u32 = 0;
         let ok = GetExitCodeProcess(handle, &mut exit_code);
         CloseHandle(handle);
-        ok != 0 && exit_code == STILL_ACTIVE
+        // windows-sys 0.61 的 STILL_ACTIVE 是 i32，GetExitCodeProcess 写出的
+        // 退出码是 u32——统一按 u32 比较
+        ok != 0 && exit_code == STILL_ACTIVE as u32
     }
 }
 

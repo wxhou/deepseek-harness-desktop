@@ -92,8 +92,13 @@ jobs:
           for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
             [ -z "${!name}" ] && missing+=("$name")
           done
-          if [ "${#missing[@]}" -ne 0 ]; then
-            echo "::error::Missing macOS signing secrets: ${missing[*]}"
+          if [ "${#missing[@]}" -eq 5 ]; then
+            # fork/社区构建无任何 Apple 签名 secrets：警告后继续，产出未签名包
+            # （tauri 只在 APPLE_CERTIFICATE 存在时才签名/公证）。首次启动需
+            # 右键 -> 打开 绕过 Gatekeeper。
+            echo "::warning::macOS signing secrets not configured; building UNSIGNED bundle (Gatekeeper: right-click -> Open on first launch)"
+          elif [ "${#missing[@]}" -ne 0 ]; then
+            echo "::error::macOS signing partially configured, missing: ${missing[*]}"
             exit 1
           fi
 
