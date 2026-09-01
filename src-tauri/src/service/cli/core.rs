@@ -72,11 +72,32 @@ pub fn ensure(app_handle: &AppHandle) -> Result<CliLinkStatus, String> {
 ///
 /// 供预装插件等应用内部流程使用：需要 `pnpm`/`dsh` 可被子进程解析，
 /// 但不希望改动用户的 PATH 注册（避免与"命令行集成"开关状态不一致）。
+///
+/// 容错语义（与 [`ensure`] 的严格传播不同）：标准 bin 目录不可写（如
+/// `~/.local/bin` 为 root 属主，EACCES）不阻断插件安装——降级为含修复
+/// 指引的 WARN，并把 shim 写入应用私有回退目录，保证插件子进程仍能按名
+/// 解析 `pnpm`/`dsh`（PATH 优先级由 [`super::path::get_effective_bin_dir`]
+/// 对齐）。仅当回退目录也写失败（应用数据目录损坏）才返回 Err。
 pub fn ensure_shims(app_handle: &AppHandle) -> Result<(), String> {
     let bin_dir = get_bin_dir(app_handle);
-    write_shims(app_handle, &bin_dir)?;
-    log::info!("dsh/pnpm shims ensured at {}", bin_dir.display());
-    Ok(())
+    match write_shims(app_handle, &bin_dir) {
+        Ok(()) => {
+            log::info!("dsh/pnpm shims ensured at {}", bin_dir.display());
+            Ok(())
+        }
+        Err(e) => {
+            let fallback_dir = super::path::get_fallback_bin_dir(app_handle);
+            log::warn!(
+                "SHIM_WRITE_DEGRADED: {e}; CLI integration degraded but app and plugin \
+                 install continue via fallback. Fix hint: check ownership/permissions of {} \
+                 (e.g. `sudo chown -R $(whoami) <dir>`) and restart the app",
+                bin_dir.display()
+            );
+            write_shims(app_handle, &fallback_dir)?;
+            log::info!("dsh/pnpm shims fell back to {}", fallback_dir.display());
+            Ok(())
+        }
+    }
 }
 
 /// 禁用并清理命令行集成（删除 shim + 移除 PATH 注册）

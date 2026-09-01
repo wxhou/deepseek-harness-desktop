@@ -459,6 +459,65 @@ async fn commit_staged_install(staging: &Path, dest: &Path, backup: &Path) -> Re
 /// - `dest`: 解压目标目录
 ///
 /// # 返回
+/// 探测进程是否存活（staging 残留归属判断用，零新依赖）。
+///
+/// - Unix：`kill(pid, 0)` 不投递信号只探测——0 = 存活；EPERM = 存活但无权
+///   发信号（他人进程，同样不可删）；ESRCH = 不存在。
+/// - Windows：`OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` + 退出码是否
+///   仍为 `STILL_ACTIVE`；打不开句柄视为已退出。
+#[cfg(unix)]
+fn pid_alive(pid: u32) -> bool {
+    let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    rc == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+#[cfg(windows)]
+fn pid_alive(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return false;
+        }
+        let mut exit_code: u32 = 0;
+        let ok = GetExitCodeProcess(handle, &mut exit_code);
+        CloseHandle(handle);
+        ok != 0 && exit_code == STILL_ACTIVE
+    }
+}
+
+/// 收集同 leaf 的历史 staging 残留路径（`.{leaf}.installing-<pid>`）。
+///
+/// 跳过当前进程 pid 与归属进程仍存活的目录（并发实例可能正在使用），只返回
+/// 归属 pid 已不存在的残留（上次崩溃/断电/磁盘满中断遗留，如 .docx 案例的
+/// `.dsh.installing-67933`）。文件名非完整模式（无 pid 段/非数字）一律不动。
+/// 纯同步收集 + 谓词注入，便于单测复现存活/死亡/当前 pid 各分支。
+fn collect_stale_staging(
+    parent: &Path,
+    leaf: &str,
+    is_alive: &dyn Fn(u32) -> bool,
+) -> Vec<PathBuf> {
+    let prefix = format!(".{leaf}.installing-");
+    let current_pid = std::process::id();
+    let Ok(entries) = fs::read_dir(parent) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let file_name = entry.file_name().to_str()?.to_string();
+            let pid = file_name.strip_prefix(&prefix)?.parse::<u32>().ok()?;
+            if pid == current_pid || is_alive(pid) {
+                return None;
+            }
+            Some(entry.path())
+        })
+        .collect()
+}
+
 /// 成功返回 `Ok(())`，失败返回错误信息
 pub async fn ensure_extract<'a, R: Runtime>(
     tracker: &'a ProgressTracker<'a, R>,
@@ -478,78 +537,99 @@ pub async fn ensure_extract<'a, R: Runtime>(
         .unwrap_or("package");
     let staging = parent.join(format!(".{leaf}.installing-{}", std::process::id()));
     let backup = parent.join(format!(".{leaf}.backup"));
+
+    // 清理历史残留（上次中断遗留的旧 pid staging，如磁盘满现场）；当前 pid 的
+    // 由下方 remove_path_if_exists 处理。残留清理失败不阻断本次安装。
+    for stale in collect_stale_staging(parent, leaf, &pid_alive) {
+        log::warn!("Removing stale staging leftover: {}", stale.display());
+        let _ = remove_path_if_exists(&stale).await;
+    }
     remove_path_if_exists(&staging).await?;
 
-    // 判断文件类型
-    let pure_name = name.split('?').next().unwrap_or(&name).to_lowercase();
-    let is_tgz = pure_name.ends_with(".tar.gz") || pure_name.ends_with(".tgz");
-    let is_zip = pure_name.ends_with(".zip");
-    log::debug!("File type: tgz={}, zip={}", is_tgz, is_zip);
+    // 准备阶段（写文件/解压/flatten/权限修复）独立成块：任一步失败即清理本次
+    // staging 再返回——ENOSPC 等中断不再留下几十 MB 的永久残留（错误信息已含
+    // 文件路径，取证不受影响）。commit 阶段的失败不清理（内部有 backup 回滚
+    // 语义，staging 可能仍是回滚依据）。
+    let prepare: Result<(), String> = async {
+        // 判断文件类型
+        let pure_name = name.split('?').next().unwrap_or(&name).to_lowercase();
+        let is_tgz = pure_name.ends_with(".tar.gz") || pure_name.ends_with(".tgz");
+        let is_zip = pure_name.ends_with(".zip");
+        log::debug!("File type: tgz={}, zip={}", is_tgz, is_zip);
 
-    // 目标是文件，跳过，直接写入文件
-    if !is_tgz && !is_zip {
-        log::debug!("Non-compressed file, writing directly");
-        if let Some(parent) = staging.parent() {
-            fs::create_dir_all(parent).map_err(|e| {
-                log::error!("Failed to create parent directory: {}", e);
+        // 目标是文件，跳过，直接写入文件
+        if !is_tgz && !is_zip {
+            log::debug!("Non-compressed file, writing directly");
+            if let Some(parent) = staging.parent() {
+                fs::create_dir_all(parent).map_err(|e| {
+                    log::error!("Failed to create parent directory: {}", e);
+                    e.to_string()
+                })?;
+            }
+            fs::write(&staging, &buffer).map_err(|e| {
+                log::error!("Failed to write file: {}", e);
                 e.to_string()
             })?;
+            tracker.update(
+                100.0,
+                format!("已写入: {}", "100%"),
+                format!("File written: {}", staging.display()),
+            );
+            return Ok(());
         }
-        fs::write(&staging, &buffer).map_err(|e| {
-            log::error!("Failed to write file: {}", e);
+
+        fs::create_dir_all(&staging).map_err(|e| {
+            log::error!("Failed to create destination directory: {}", e);
             e.to_string()
         })?;
-        tracker.update(
-            100.0,
-            format!("已写入: {}", "100%"),
-            format!("File written: {}", staging.display()),
-        );
-        commit_staged_install(&staging, &dest, &backup).await?;
-        log::info!("File write completed: {}", dest.display());
-        return Ok(());
-    }
 
-    fs::create_dir_all(&staging).map_err(|e| {
-        log::error!("Failed to create destination directory: {}", e);
-        e.to_string()
-    })?;
+        // 根据文件类型解压
+        if is_tgz {
+            log::debug!("Using tgz extractor");
+            extract_tgz(tracker, &buffer, &staging)?;
+        } else {
+            log::debug!("Using zip extractor");
+            extract_zip(tracker, &buffer, &staging)?;
+        }
 
-    // 根据文件类型解压
-    if is_tgz {
-        log::debug!("Using tgz extractor");
-        extract_tgz(tracker, &buffer, &staging)?;
-    } else {
-        log::debug!("Using zip extractor");
-        extract_zip(tracker, &buffer, &staging)?;
-    }
-
-    // 处理解压后的"套娃"文件夹
-    log::debug!("Flattening directory structure");
-    flatten_directory(&staging).map_err(|e| {
-        log::error!("Failed to flatten directory: {}", e);
-        e.to_string()
-    })?;
-
-    // 权限修复与隔离属性移除 (仅限 Unix/macOS)
-    #[cfg(unix)]
-    {
-        use super::utils::fix_recursive_permissions;
-        // 递归赋予可执行权限 (755)
-        log::debug!("Fixing file permissions");
-        fix_recursive_permissions(&staging).map_err(|e| {
-            log::error!("Failed to fix permissions: {}", e);
-            format!("Failed to fix permissions: {}", e)
+        // 处理解压后的"套娃"文件夹
+        log::debug!("Flattening directory structure");
+        flatten_directory(&staging).map_err(|e| {
+            log::error!("Failed to flatten directory: {}", e);
+            e.to_string()
         })?;
 
-        // macOS 移除 quarantine 属性
-        #[cfg(target_os = "macos")]
+        // 权限修复与隔离属性移除 (仅限 Unix/macOS)
+        #[cfg(unix)]
         {
-            use std::process::Command;
-            log::debug!("Removing macOS quarantine attribute");
-            if let Some(path_str) = staging.to_str() {
-                let _ = Command::new("xattr").args(["-cr", path_str]).output();
+            use super::utils::fix_recursive_permissions;
+            // 递归赋予可执行权限 (755)
+            log::debug!("Fixing file permissions");
+            fix_recursive_permissions(&staging).map_err(|e| {
+                log::error!("Failed to fix permissions: {}", e);
+                format!("Failed to fix permissions: {}", e)
+            })?;
+
+            // macOS 移除 quarantine 属性
+            #[cfg(target_os = "macos")]
+            {
+                use std::process::Command;
+                log::debug!("Removing macOS quarantine attribute");
+                if let Some(path_str) = staging.to_str() {
+                    let _ = Command::new("xattr").args(["-cr", path_str]).output();
+                }
             }
         }
+        Ok(())
+    }
+    .await;
+    if let Err(e) = prepare {
+        let _ = remove_path_if_exists(&staging).await;
+        log::warn!(
+            "Cleaned up staging after failed extraction: {} ({e})",
+            staging.display()
+        );
+        return Err(e);
     }
 
     commit_staged_install(&staging, &dest, &backup).await?;
@@ -559,6 +639,41 @@ pub async fn ensure_extract<'a, R: Runtime>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stale_staging_collection_skips_alive_and_current() {
+        let parent = std::env::temp_dir().join(format!(
+            "dsh-staging-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        fs::create_dir_all(&parent).unwrap();
+        // 死亡 pid（谓词判死）→ 应收集
+        let dead = parent.join(".dsh.installing-111111");
+        fs::create_dir_all(&dead).unwrap();
+        // 存活 pid（谓词判活，模拟并发实例）→ 跳过
+        let alive = parent.join(".dsh.installing-222222");
+        fs::create_dir_all(&alive).unwrap();
+        // 当前进程 pid → 即便谓词判死也跳过
+        let current = parent.join(format!(".dsh.installing-{}", std::process::id()));
+        fs::create_dir_all(&current).unwrap();
+        // 非完整模式（非数字后缀）→ 不动
+        let malformed = parent.join(".dsh.installing-notapid");
+        fs::create_dir_all(&malformed).unwrap();
+        // 非本 leaf 条目 → 不动
+        let other_leaf = parent.join(".node.installing-333333");
+        fs::create_dir_all(&other_leaf).unwrap();
+
+        let stale = collect_stale_staging(&parent, "dsh", &|pid| pid == 222222);
+        assert_eq!(stale, vec![dead.clone()], "只应收集死亡 pid 的残留");
+
+        // pid_alive 现实探针：当前进程必须判活
+        assert!(pid_alive(std::process::id()));
+        let _ = fs::remove_dir_all(&parent);
+    }
 
     #[test]
     fn progress_percent_never_emits_nan_or_inf() {

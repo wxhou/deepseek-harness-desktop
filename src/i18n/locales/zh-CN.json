@@ -97,6 +97,7 @@
   "ui.close_action_tray": "隐藏到托盘",
   "ui.close_action_quit": "退出应用",
   "ui.cli_link": "命令行集成",
+  "ui.cli_link_degraded": "命令行集成未就绪：{{dir}} 不可写（shim 未写入），应用与插件安装不受影响；修复目录属主/权限后重启应用即可恢复",
   "ui.cli_link_enabled": "启用 dsh 命令",
   "ui.cli_link_hint": "在新终端中运行 dsh --help 查看用法",
   "ui.cli_link_user_dsh_preserved": "检测到你已自行安装 dsh，已保留未覆盖；终端中的 dsh 仍指向你自己的安装与配置",

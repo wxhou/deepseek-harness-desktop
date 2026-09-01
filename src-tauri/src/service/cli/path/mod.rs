@@ -9,13 +9,15 @@
 
 #[cfg(not(windows))]
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
 
 #[cfg(windows)]
 use super::shim::SHIM_CMD_NAME;
 #[cfg(unix)]
 use super::shim::SHIM_SH_NAME;
+use crate::config::get_base_dir;
+#[cfg(windows)]
 use crate::config::CLI_ROOT_DEV_DIR_NAME;
 
 #[cfg(not(windows))]
@@ -93,6 +95,52 @@ pub fn get_shim_path(app_handle: &AppHandle) -> PathBuf {
     #[cfg(not(windows))]
     {
         bin_dir.join(SHIM_SH_NAME)
+    }
+}
+
+/// 应用私有回退 bin 目录（AppData/bin，应用数据目录必定可写）。
+///
+/// 标准 bin 目录不可写（如 `~/.local/bin` 为 root 属主触发 EACCES）时，插件
+/// 安装子进程仍需按名解析 `pnpm`/`dsh`，shim 改写到该目录并优先进入子进程
+/// PATH（见 [`get_effective_bin_dir`]）。debug 构建用 `bin.dev` 与生产隔离，
+/// 与 store 的 `.store.dev.dat` 同一隔离思路。
+pub fn get_fallback_bin_dir(app_handle: &AppHandle) -> PathBuf {
+    get_base_dir(app_handle).join(if cfg!(debug_assertions) {
+        "bin.dev"
+    } else {
+        "bin"
+    })
+}
+
+/// 探测目录可写性：尝试创建并删除探针文件（目录不存在则先创建）。
+///
+/// 不用 readonly 位判断——root 属主目录对当前用户不可写（EACCES）时该位
+/// 仍是 false；真实写入一次才能暴露权限问题。
+pub fn dir_is_writable(dir: &Path) -> bool {
+    if std::fs::create_dir_all(dir).is_err() {
+        return false;
+    }
+    let probe = dir.join(format!(".dsh-writable-probe-{}", std::process::id()));
+    match std::fs::write(&probe, b"ok") {
+        Ok(()) => {
+            let _ = std::fs::remove_file(&probe);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// 插件子进程实际使用的 shim 目录：标准 bin 目录可写则用之；否则回退到
+/// 应用私有目录（必定可写）。
+///
+/// 供 `build_plugin_envs` 计算子进程 PATH 首位——dsh CLI 按名 `spawnSync("pnpm")`
+/// 经 PATH 解析，解析目录必须真实存在 shim 文件。
+pub fn get_effective_bin_dir(app_handle: &AppHandle) -> PathBuf {
+    let bin_dir = get_bin_dir(app_handle);
+    if dir_is_writable(&bin_dir) {
+        bin_dir
+    } else {
+        get_fallback_bin_dir(app_handle)
     }
 }
 
@@ -220,5 +268,64 @@ mod test_util {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::dir_is_writable;
+
+    fn temp_probe_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "dsh-writable-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    fn writable_dir_probe_succeeds() {
+        let dir = temp_probe_dir("ok");
+        assert!(dir_is_writable(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn probe_creates_missing_nested_dirs() {
+        let dir = temp_probe_dir("nested").join("a").join("b");
+        assert!(dir_is_writable(&dir));
+        assert!(dir.is_dir());
+        let _ = std::fs::remove_dir_all(temp_probe_dir("nested"));
+    }
+
+    /// 权限异常（如 root 属主目录）应被探针识别为不可写；以 root 运行测试时
+    /// chmod 000 仍可写，此时优雅跳过（AGENTS.md 测试约定）。
+    #[cfg(unix)]
+    #[test]
+    fn unwritable_dir_probe_fails() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp_probe_dir("denied");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o000)).unwrap();
+        // 还原位：无论断言走向，测试结束后目录可被清理
+        let restore = |mode| {
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(mode)).unwrap();
+        };
+        let manual_probe = dir.join(".manual-probe");
+        if std::fs::write(&manual_probe, b"x").is_ok() {
+            // root（或等价特权）环境：权限模型对本测试无效，跳过断言
+            let _ = std::fs::remove_file(&manual_probe);
+            restore(0o755);
+            return;
+        }
+        let result = dir_is_writable(&dir);
+        restore(0o755);
+        assert!(!result, "chmod 000 目录应被探针判定为不可写");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

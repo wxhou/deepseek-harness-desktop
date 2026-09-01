@@ -97,6 +97,7 @@
   "ui.close_action_tray": "Hide to tray",
   "ui.close_action_quit": "Quit app",
   "ui.cli_link": "CLI Integration",
+  "ui.cli_link_degraded": "CLI integration not ready: {{dir}} is not writable (shims not written). The app and plugin installs are unaffected — fix the directory ownership/permissions and restart to restore",
   "ui.cli_link_enabled": "Enable dsh command",
   "ui.cli_link_hint": "Run dsh --help in a new terminal",
   "ui.cli_link_user_dsh_preserved": "A dsh you installed yourself was detected and preserved — the dsh command still points to your own install and config",
