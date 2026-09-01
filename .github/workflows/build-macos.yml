@@ -124,9 +124,17 @@ jobs:
           pnpm tauri build --target ${{ matrix.target }}
 
       - name: Verify signature and notarization
-        if: steps.check.outputs.should_run == 'true' && secrets.APPLE_CERTIFICATE != ''
+        if: steps.check.outputs.should_run == 'true'
         shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
         run: |
+          # 未配置签名（未签名包）时跳过签名/公证校验；注意 step 级 if 不能
+          # 引用 secrets 上下文，故在运行时判断
+          if [ -z "$APPLE_CERTIFICATE" ]; then
+            echo "Unsigned build — skipping signature/notarization verification"
+            exit 0
+          fi
           app_path="$(find "src-tauri/target/${{ matrix.target }}/release/bundle/macos" -type d -name '*.app' -print -quit)"
           if [ -z "$app_path" ]; then
             echo '::error::Built macOS app bundle was not found'
