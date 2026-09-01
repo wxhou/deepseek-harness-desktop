@@ -7,11 +7,11 @@ import { AppleIcon, ChevronDownIcon, DownloadIcon, WindowsIcon } from './icons'
 // 下载地址：经站点自有 Cloudflare 反代（functions/dl，中国可达）下载 GitHub Release
 // 资产，不直连 github.com。用同域绝对地址而非相对路径：release zip 等静态托管场景下
 // 按钮仍可用。资产文件名与 tag 均含版本号，版本升级后需同步更新 RELEASE_TAG 与文件名。
-const RELEASE_TAG = 'v0.10.0'
+const RELEASE_TAG = 'v0.10.1'
 const RELEASE_BASE = `https://dshdesktop.pages.dev/dl/wxhou/deepseek-harness-desktop/releases/download/${RELEASE_TAG}`
-const DOWNLOAD_MAC_URL = `${RELEASE_BASE}/Deepseek.Harness.Desktop_0.10.0_aarch64.dmg`
-const DOWNLOAD_MAC_INTEL_URL = `${RELEASE_BASE}/Deepseek.Harness.Desktop_0.10.0_x64.dmg`
-const DOWNLOAD_WINDOWS_URL = `${RELEASE_BASE}/Deepseek.Harness.Desktop_0.10.0_x64-setup.exe`
+const DOWNLOAD_MAC_URL = `${RELEASE_BASE}/Deepseek.Harness.Desktop_0.10.1_aarch64.dmg`
+const DOWNLOAD_MAC_INTEL_URL = `${RELEASE_BASE}/Deepseek.Harness.Desktop_0.10.1_x64.dmg`
+const DOWNLOAD_WINDOWS_URL = `${RELEASE_BASE}/Deepseek.Harness.Desktop_0.10.1_x64-setup.exe`
 
 /** 主视觉左列：标题、简介、免责声明、平台下载按钮（Mac 为架构选择下拉）与累计下载量 */
 export function Hero(props: {
