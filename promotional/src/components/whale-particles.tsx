@@ -420,9 +420,12 @@ function WhalePointCloud(props: { data: PixelData }) {
     const local = new Vector3(smoothedMouseRef.current.x, smoothedMouseRef.current.y, 0).applyMatrix4(inverse)
     u.uMouse.value.set(local.x, local.y)
 
-    // 颜色随汇聚淡入；粒子尺寸跟随窗口与 DPR
+    // 颜色随汇聚淡入；粒子尺寸跟随窗口与 DPR。
+    // 小画布（移动端）下粒子像素尺寸同比缩小、加性混合后存在感偏弱，
+    // 按画布高度分档放大补偿（<420px 视为移动端档）
+    const sizeBoost = stateSize.height < 420 ? 1.5 : 1
     u.uColor.value.setRGB(0.75 * assembly, 0.8 * assembly, 0.9 * assembly)
-    u.uSize.value = PLATE_SIZE * (stateSize.height / viewport.height) * pixelRatio
+    u.uSize.value = PLATE_SIZE * (stateSize.height / viewport.height) * pixelRatio * sizeBoost
 
     // 组运动（参考站 spin=false 分支）
     const t = u.uTime.value
@@ -454,7 +457,8 @@ function WhalePointCloud(props: { data: PixelData }) {
   )
 }
 
-/** 容器：布局沿用参考站 WhaleParticles（全宽、screen 混合、620px 画布居左偏上） */
+/** 容器：布局沿用参考站 WhaleParticles（全宽、screen 混合、620px 画布居左偏上）。
+ * 移动端不再隐藏：画布按视口等比缩小（70vw），鲸鱼完整成形于文案后方 */
 export function WhaleParticles() {
   const [data, setData] = useState<PixelData | null>(null)
 
@@ -471,9 +475,9 @@ export function WhaleParticles() {
   return (
     <div
       aria-hidden="true"
-      className="pointer-events-none absolute inset-0 z-[2] hidden items-center justify-start overflow-hidden mix-blend-screen md:flex"
+      className="pointer-events-none absolute inset-0 z-[2] flex items-center justify-start overflow-hidden mix-blend-screen"
     >
-      <div className="ml-[50px] h-[620px] w-[620px] -translate-y-[120px] shrink-0">
+      <div className="ml-[2vw] h-[92vw] w-[92vw] max-h-[560px] max-w-[560px] -translate-y-[24vw] shrink-0 md:ml-[50px] md:h-[620px] md:w-[620px] md:max-h-none md:max-w-none md:-translate-y-[120px]">
         <Canvas
           camera={{ position: [0, 0, 18], fov: 50 }}
           gl={{ alpha: true, antialias: true }}
