@@ -17,6 +17,10 @@ pub const DSH_CORE_URL: &str =
 /// 仍可做 SHA-256 完整性校验），用作官方直连失败时的兜底镜像。
 pub const DSH_MIRROR_PREFIX: &str = "https://ghfast.top/";
 
+/// 站点自有 Cloudflare 反代前缀（Pages Function `/dl/*`，白名单限域、边缘缓存），
+/// 位于官方直连之后、公益镜像之前——自有域名不受公益镜像限速/停服影响。
+pub const DSH_PROXY_PREFIX: &str = "https://dshdesktop.pages.dev/dl/";
+
 /// 捆绑的 pnpm 版本（与 deepseek-harness-pkg 的 packageManager: pnpm@11.7.0 对齐）
 pub const PNPM_VERSION: &str = "11.7.0";
 /// pnpm 11.7.0 官方 npm tarball 的 SHA-256；升级版本时必须同步更新。

@@ -136,13 +136,16 @@ fn download_client() -> Result<reqwest::Client, String> {
         .map_err(|e| format!("UPDATE_CLIENT: {e}"))
 }
 
-/// 组装安装包下载源列表：官方 GitHub 直连 + （存在可信摘要时）ghfast.top 镜像。
+/// 组装安装包下载源列表：官方 GitHub 直连 + （存在可信摘要时）站点自有反代与
+/// ghfast.top 镜像。
 ///
-/// 安全策略：第三方镜像没有独立信任根，仅在其内容可被 SHA-256 校验（摘要已取得）
-/// 时才提供兜底；否则只允许官方直连，宁可在官方不可用时失败，也不冒投毒风险。
+/// 安全策略：第三方镜像/自有反代都没有独立信任根，仅在其内容可被 SHA-256 校验
+/// （摘要已取得）时才提供兜底；否则只允许官方直连，宁可在官方不可用时失败，
+/// 也不冒投毒风险。自有反代排在前（域名自有，不受公益镜像限速/停服影响）。
 fn download_sources(release: &LatestRelease) -> Vec<String> {
     let mut urls = vec![release.url.clone()];
     if release.digest.is_some() {
+        urls.push(config::proxy_download_url(&release.url));
         urls.push(config::mirror_download_url(&release.url));
     }
     urls
@@ -398,16 +401,25 @@ mod tests {
             ..base.clone()
         };
         let sources = download_sources(&with_digest);
-        assert_eq!(sources.len(), 2);
-        assert!(
-            sources[1].contains("ghfast.top"),
-            "镜像应为 ghfast.top 前缀: {}",
+        assert_eq!(sources.len(), 3);
+        assert_eq!(
+            sources[1],
+            format!(
+                "https://dshdesktop.pages.dev/dl/{}",
+                url.trim_start_matches("https://")
+            ),
+            "自有反代应插在官方直连之后: {}",
             sources[1]
         );
         assert!(
-            sources[1].ends_with("/releases/download/v0.7.4/x.dmg"),
+            sources[2].contains("ghfast.top"),
+            "镜像应为 ghfast.top 前缀: {}",
+            sources[2]
+        );
+        assert!(
+            sources[2].ends_with("/releases/download/v0.7.4/x.dmg"),
             "镜像保留完整资产路径: {}",
-            sources[1]
+            sources[2]
         );
     }
 
