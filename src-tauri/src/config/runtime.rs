@@ -94,6 +94,17 @@ pub fn mirror_download_url(asset_url: &str) -> String {
     format!("{DSH_MIRROR_PREFIX}{asset_url}")
 }
 
+/// 为官方 GitHub Release 资产 URL 生成站点自有反代地址（Pages Function `/dl/*`）。
+///
+/// 反代路由为 `/<owner>/<repo>/<path>`，因此把官方 URL 的 `https://` 剥掉拼到
+/// 前缀后即可；与 ghfast 镜像一样只改传输路径、不改内容，SHA-256 校验不受影响。
+pub fn proxy_download_url(asset_url: &str) -> String {
+    format!(
+        "{DSH_PROXY_PREFIX}{}",
+        asset_url.trim_start_matches("https://")
+    )
+}
+
 /// 指定 tag 的 DeepSeek Harness 发行版下载地址。
 ///
 /// 把 latest 下载地址中的 `releases/latest/download/` 替换为
