@@ -4,9 +4,11 @@ import { If } from 'react-if-lite'
 import { formatCompact, useDownloadCount } from '../hooks/use-download-count'
 import { AppleIcon, ChevronDownIcon, DownloadIcon, WindowsIcon } from './icons'
 
-// 下载地址：GitHub Release 资产直链（latest 模式，跟随最新 release）。
-// 注意：资产文件名含版本号，版本升级后需同步更新。
-const RELEASE_BASE = 'https://github.com/wxhou/deepseek-harness-desktop/releases/latest/download'
+// 下载地址：经站点自有 Cloudflare 反代（functions/dl，中国可达）下载 GitHub Release
+// 资产，不直连 github.com。用同域绝对地址而非相对路径：release zip 等静态托管场景下
+// 按钮仍可用。资产文件名与 tag 均含版本号，版本升级后需同步更新 RELEASE_TAG 与文件名。
+const RELEASE_TAG = 'v0.10.0'
+const RELEASE_BASE = `https://dshdesktop.pages.dev/dl/wxhou/deepseek-harness-desktop/releases/download/${RELEASE_TAG}`
 const DOWNLOAD_MAC_URL = `${RELEASE_BASE}/Deepseek.Harness.Desktop_0.10.0_aarch64.dmg`
 const DOWNLOAD_MAC_INTEL_URL = `${RELEASE_BASE}/Deepseek.Harness.Desktop_0.10.0_x64.dmg`
 const DOWNLOAD_WINDOWS_URL = `${RELEASE_BASE}/Deepseek.Harness.Desktop_0.10.0_x64-setup.exe`
