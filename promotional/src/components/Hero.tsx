@@ -88,8 +88,12 @@ export function Hero(props: {
           {props.copy.downloadWindows}
         </a>
       </div>
-      {/* 累计下载量：接口未就绪时显示 '--' */}
+      {/* 累计下载量：接口未就绪时显示 '--'；版本徽章与下载常量同源，升版自动跟随 */}
       <div className="mt-4 flex w-fit items-center gap-2 text-[13px] text-white/45" aria-live="polite">
+        <span className="rounded-full bg-white/10 px-2.5 py-1 text-[12px] font-medium tabular-nums text-white/75">
+          {props.copy.latestVersionLabel} {RELEASE_TAG}
+        </span>
+        <span className="text-white/25">·</span>
         <DownloadIcon className="size-4 text-white/55" />
         <span>
           {props.copy.totalDownloadsPrefix && <span className="mr-1">{props.copy.totalDownloadsPrefix}</span>}

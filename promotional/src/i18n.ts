@@ -8,6 +8,7 @@ export interface Copy {
   downloadWindows: string
   macChipApple: string
   macChipIntel: string
+  latestVersionLabel: string
   totalDownloadsPrefix: string
   totalDownloadsSuffix: string
   appScreenshotAlt: string
@@ -21,6 +22,7 @@ const zh: Copy = {
   downloadWindows: '下载 Windows 版',
   macChipApple: 'Apple Silicon 芯片',
   macChipIntel: 'Intel 芯片',
+  latestVersionLabel: '最新版本',
   totalDownloadsPrefix: '累计下载',
   totalDownloadsSuffix: '次',
   appScreenshotAlt: 'DeepSeek Harness Desktop 界面',
@@ -34,6 +36,7 @@ const en: Copy = {
   downloadWindows: 'Download for Windows',
   macChipApple: 'Apple Silicon',
   macChipIntel: 'Intel chip',
+  latestVersionLabel: 'Latest version',
   totalDownloadsPrefix: '',
   totalDownloadsSuffix: 'total downloads',
   appScreenshotAlt: 'DeepSeek Harness Desktop interface',
