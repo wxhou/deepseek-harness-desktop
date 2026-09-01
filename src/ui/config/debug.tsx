@@ -5,7 +5,7 @@ import { useMutation, useQuery } from '@tanstack/react-query'
 import { invoke } from '@tauri-apps/api/core'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { If } from 'react-if-lite'
+import { Else, If, Then } from 'react-if-lite'
 import { useStore } from 'valtio-define'
 import { Info } from '@/components/info'
 import { Panel } from '@/components/panel'
@@ -321,18 +321,29 @@ export function ConfigDebug() {
           </div>
           <If cond={cliStatus != null}>
             <div className="flex flex-col">
-              <If
-                cond={!cliStatus?.user_dsh_preserved}
-                else={(
-                  <Description className="text-[10px] text-muted/70">
-                    {t('ui.cli_link_user_dsh_preserved')}
+              {/* 开关已启用但主 shim 未写入（标准 bin 目录不可写）→ 如实呈现
+                  degraded 状态与修复指引；GUI 与插件安装走回退目录不受影响 */}
+              <If cond={cliStatus?.enabled === true && cliStatus?.shim_exists === false}>
+                <Then>
+                  <Description className="text-[10px] text-warning">
+                    {t('ui.cli_link_degraded', { dir: cliStatus?.bin_dir ?? '' })}
                   </Description>
-                )}
-              >
-                <Description className="text-[10px] text-muted/70">{cliStatus?.bin_dir}</Description>
-                <Description className="text-[10px] text-muted/70">
-                  {t('ui.cli_link_hint')}
-                </Description>
+                </Then>
+                <Else>
+                  <If
+                    cond={!cliStatus?.user_dsh_preserved}
+                    else={(
+                      <Description className="text-[10px] text-muted/70">
+                        {t('ui.cli_link_user_dsh_preserved')}
+                      </Description>
+                    )}
+                  >
+                    <Description className="text-[10px] text-muted/70">{cliStatus?.bin_dir}</Description>
+                    <Description className="text-[10px] text-muted/70">
+                      {t('ui.cli_link_hint')}
+                    </Description>
+                  </If>
+                </Else>
               </If>
             </div>
           </If>

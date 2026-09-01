@@ -28,7 +28,10 @@ pub(crate) fn build_plugin_envs(
     // （issue #121 的 "Node.js runtime not found"）。已存在（预检通过）的
     // node 可安全 canonicalize；失败时回退原值。
     let node_abs = dunce::canonicalize(&node).unwrap_or_else(|_| node.clone());
-    let bin_dir = cli::get_bin_dir(app_handle);
+    // 子进程 PATH 首位用「有效 shim 目录」：标准 bin 目录不可写（root 属主
+    // EACCES）时 ensure_shims 已把 shim 写进应用私有回退目录，这里必须跟随，
+    // 否则 dsh CLI 按名 spawnSync("pnpm") 会 ENOENT（插件静默装不上）。
+    let bin_dir = cli::get_effective_bin_dir(app_handle);
     let mut envs = HashMap::from([
         (
             "DSH_HOME".to_string(),

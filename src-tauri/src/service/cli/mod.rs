@@ -28,5 +28,5 @@ mod shim;
 pub use core::{ensure, ensure_shims, get_status, remove, CliLinkStatus};
 #[cfg(windows)]
 pub(crate) use path::find_user_pnpm_executable;
-pub use path::{find_user_pnpm, get_bin_dir, pnpm_env_value};
+pub use path::{find_user_pnpm, get_bin_dir, get_effective_bin_dir, pnpm_env_value};
 pub use shim::is_generated_shim;
