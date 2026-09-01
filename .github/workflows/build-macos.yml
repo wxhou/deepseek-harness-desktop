@@ -112,10 +112,19 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: pnpm tauri build --target ${{ matrix.target }}
+        run: |
+          # 未配置的 secrets 经 env: 注入后是"空字符串变量"，对 tauri-bundler
+          # 而言"存在即签名"——它会拿空证书跑 `security import` 直接失败。
+          # 签名值缺失时把这些变量从环境中彻底移除，让 bundle 走未签名路径。
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            if [ -z "${!name}" ]; then
+              unset "$name"
+            fi
+          done
+          pnpm tauri build --target ${{ matrix.target }}
 
       - name: Verify signature and notarization
-        if: steps.check.outputs.should_run == 'true'
+        if: steps.check.outputs.should_run == 'true' && secrets.APPLE_CERTIFICATE != ''
         shell: bash
         run: |
           app_path="$(find "src-tauri/target/${{ matrix.target }}/release/bundle/macos" -type d -name '*.app' -print -quit)"
