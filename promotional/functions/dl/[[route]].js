@@ -31,8 +31,11 @@ export async function onRequestGet(context) {
 
   // 逐段重新编码后再拼固定前缀：params 已被路由解码，重新编码可中和 `..`、
   // 额外斜杠等注入；asset 允许含 `/`（monorepo 内嵌路径的资产名）。
+  // URL 上的 ns= 为缓存命名空间：GitHub 忽略多余 query，但 edge 会把它计入
+  // fetch 缓存键——上游缓存曾被错误响应固化时递增该值即可整体换键
+  // （2026-09-28：release 被转 draft 期间 fetch 缓存了 404，ns=2 绕开）。
   const asset = segments.slice(5).map(encodeURIComponent).join('/')
-  const upstream = `https://github.com/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/releases/download/${encodeURIComponent(tag)}/${asset}`
+  const upstream = `https://github.com/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/releases/download/${encodeURIComponent(tag)}/${asset}?ns=2`
 
   const headers = { 'User-Agent': 'dshdesktop-promo' }
   const range = request.headers.get('range')
@@ -41,7 +44,11 @@ export async function onRequestGet(context) {
   const upstreamRes = await fetch(upstream, {
     headers,
     redirect: 'follow',
-    cf: { cacheTtl: CACHE_TTL, cacheEverything: true },
+    cf: {
+      cacheEverything: true,
+      // 只缓存成功响应：错误响应进缓存会让上游瞬时故障固化成最长 TTL 的 404
+      cacheTtlByStatus: { '200-299': CACHE_TTL, '400-499': 0, '500-599': 0 },
+    },
   })
   // 上游 4xx/5xx（含 302 目标失效）按 404 对外，不泄露上游细节
   if (!upstreamRes.ok && upstreamRes.status !== 206)
@@ -53,6 +60,7 @@ export async function onRequestGet(context) {
     if (value)
       resHeaders.set(name, value)
   }
+  // 仅成功响应声明可缓存；错误响应 no-store，避免边缘把 404 固化
   resHeaders.set('cache-control', `public, max-age=${CACHE_TTL}`)
   return new Response(upstreamRes.body, { status: upstreamRes.status, headers: resHeaders })
 }
