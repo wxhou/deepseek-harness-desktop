@@ -35,6 +35,15 @@
       content="在桌面上一键运行 DeepSeek Harness —— 无需 Node.js、无需 pnpm、无需 Docker，下载即用。"
     />
     <meta name="twitter:image" content="https://dshdesktop.pages.dev/images/app-preview.png" />
+    <!-- QQ 聊天窗口的链接卡片不读 Open Graph，读 schema.org Microdata 的
+         itemprop 三件套（name/description/image）；缺了这三行 QQ 只显示纯链接
+         （微信聊天窗口则仍需认证域名接 JS-SDK，见上方说明）。 -->
+    <meta itemprop="name" content="DeepSeek Harness Desktop" />
+    <meta
+      itemprop="description"
+      content="在桌面上一键运行 DeepSeek Harness —— 无需 Node.js、无需 pnpm、无需 Docker，下载即用。"
+    />
+    <meta itemprop="image" content="https://dshdesktop.pages.dev/images/app-preview.png" />
   </head>
   <body>
     <div id="root"></div>
