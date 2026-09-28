@@ -38,6 +38,7 @@ test-results/
 seed.spec.ts
 promotional/.wrangler/
 .codegraph/
+.mcp.json
 # openspec-pw: begin managed block
 .claude/
 .cursor/
