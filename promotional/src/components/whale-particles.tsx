@@ -457,8 +457,10 @@ function WhalePointCloud(props: { data: PixelData }) {
   )
 }
 
-/** 容器：布局沿用参考站 WhaleParticles（全宽、screen 混合、620px 画布居左偏上）。
- * 移动端不再隐藏：画布按视口等比缩小（70vw），鲸鱼完整成形于文案后方 */
+/**
+ * 容器：布局沿用参考站 WhaleParticles（全宽、screen 混合、620px 画布居左偏上）。
+ * 移动端不再隐藏：画布按视口等比缩小（70vw），鲸鱼完整成形于文案后方
+ */
 export function WhaleParticles() {
   const [data, setData] = useState<PixelData | null>(null)
 
