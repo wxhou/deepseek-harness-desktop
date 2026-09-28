@@ -105,8 +105,13 @@ jobs:
           for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
             [ -z "${!name}" ] && missing+=("$name")
           done
-          if [ "${#missing[@]}" -ne 0 ]; then
-            echo "::error::Missing macOS signing secrets: ${missing[*]}"
+          if [ "${#missing[@]}" -eq 5 ]; then
+            # fork/社区构建无任何 Apple 签名 secrets：与 build-macos.yml 同一口径，
+            # 警告后继续，产出未签名离线包（tauri 只在 APPLE_CERTIFICATE 存在时
+            # 才签名/公证）。首次启动需右键 -> 打开 绕过 Gatekeeper。
+            echo "::warning::macOS signing secrets not configured; building UNSIGNED offline bundle (Gatekeeper: right-click -> Open on first launch)"
+          elif [ "${#missing[@]}" -ne 0 ]; then
+            echo "::error::macOS signing partially configured, missing: ${missing[*]}"
             exit 1
           fi
 
@@ -124,6 +129,12 @@ jobs:
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
         run: |
           set -euo pipefail
+          # 未配置签名（未签名离线包）时跳过整段随包资源签名；注意 step 级 if
+          # 不能引用 secrets 上下文，故在运行时判断（与 build-macos.yml 一致）
+          if [ -z "$APPLE_CERTIFICATE" ]; then
+            echo "Unsigned build — skipping bundled Mach-O signing"
+            exit 0
+          fi
           keychain="$RUNNER_TEMP/bundle-signing.keychain-db"
           keychain_password="$(openssl rand -base64 32)"
           echo "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/bundle-cert.p12"
@@ -188,12 +199,30 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: pnpm tauri build --target ${{ matrix.target }} --bundles app,dmg
+        run: |
+          # 未配置的 secrets 经 env: 注入后是"空字符串变量"，对 tauri-bundler
+          # 而言"存在即签名"——它会拿空证书跑 `security import` 直接失败。
+          # 签名值缺失时把这些变量从环境中彻底移除，让 bundle 走未签名路径
+          # （与 build-macos.yml 同一套处理）。
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            if [ -z "${!name}" ]; then
+              unset "$name"
+            fi
+          done
+          pnpm tauri build --target ${{ matrix.target }} --bundles app,dmg
 
       - name: Verify signature and notarization
         if: steps.check.outputs.should_run == 'true'
         shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
         run: |
+          # 未配置签名（未签名离线包）时跳过签名/公证校验；注意 step 级 if 不能
+          # 引用 secrets 上下文，故在运行时判断（与 build-macos.yml 一致）
+          if [ -z "$APPLE_CERTIFICATE" ]; then
+            echo "Unsigned build — skipping signature/notarization verification"
+            exit 0
+          fi
           app_path="$(find "src-tauri/target/${{ matrix.target }}/release/bundle/macos" -type d -name '*.app' -print -quit)"
           if [ -z "$app_path" ]; then
             echo '::error::Built macOS app bundle was not found'
