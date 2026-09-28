@@ -37,6 +37,7 @@ test-results/
 .playwright-mcp/
 seed.spec.ts
 promotional/.wrangler/
+.codegraph/
 # openspec-pw: begin managed block
 .claude/
 .cursor/
