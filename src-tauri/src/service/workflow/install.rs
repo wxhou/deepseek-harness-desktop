@@ -3,7 +3,6 @@
 
 use crate::config;
 use crate::service::download;
-use crate::service::download::Installable;
 use tauri::Manager;
 
 use super::process::{has_owned_process, stop, terminate_stale_harness_processes};
@@ -56,8 +55,6 @@ pub async fn install(
         .get_webview_window("main")
         .ok_or("Failed to get main window")?;
     log::debug!("Main window obtained");
-    // 依赖任务清单的唯一构造点在下载层，安装流程与映射回写共用同一组任务。
-    let tasks = download::tasks();
     // 必须在下载前解析 release 元数据：下载地址和摘要必须属于同一固定 tag。
     // 若先下载 latest、再因 API 限流从 Atom/HTML 解析 tag，latest 在两次请求间
     // 发生切换就会把另一份资产拿来匹配摘要，最终触发 INTEGRITY_CHECK_FAILED。
