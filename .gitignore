@@ -32,5 +32,24 @@ test/e2e/.artifacts
 
 source/
 .gitmodules
-.tmp-alpha-inspect
-.dsh.dev
+# 本地验证/会话产物
+test-results/
+.playwright-mcp/
+seed.spec.ts
+promotional/.wrangler/
+# openspec-pw: begin managed block
+.claude/
+.cursor/
+.opencode/
+.cline/
+.pi/
+.omp/
+openspec/
+AGENTS.md
+CLAUDE.md
+app-exploration.md
+opencode.json
+tests/playwright/test-results/
+tests/playwright/credentials.yaml
+tests/playwright/credentials.yaml.bak
+# openspec-pw: end managed block
