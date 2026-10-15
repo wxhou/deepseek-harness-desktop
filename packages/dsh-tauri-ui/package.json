@@ -2,6 +2,7 @@
   "name": "dsh-tauri-ui",
   "type": "module",
   "version": "1.0.0",
+  "description": "DeepSeek Harness 桌面壳的 Tauri UI 定制插件：提供设置侧边栏、设置分区与共享 UI 集成点。",
   "author": "Hairyf <wwu710632@gmail.com>",
   "license": "MIT",
   "homepage": "https://github.com/dsh-tauri-desk/dsh-tauri-plugins#readme",
@@ -30,6 +31,7 @@
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "files": [
+    "THIRD_PARTY_NOTICES.md",
     "cordis.patch.yml",
     "dist"
   ],
@@ -51,22 +53,25 @@
     }
   },
   "scripts": {
-    "build": "tsdown",
-    "dev": "tsdown --watch",
+    "build": "tsx scripts/taiwindcss.ts --minify && tsdown && tsx scripts/taiwindcss.ts",
+    "dev": "tsx scripts/taiwindcss.ts --watch & tsdown --watch",
+    "generate": "tsx scripts/taiwindcss.ts",
     "prepublishOnly": "nr build",
     "start": "tsx src/index.ts",
     "typecheck": "tsc"
   },
   "dependencies": {
-    "dsh-tauri": "workspace:*"
+    "dsh-h3": "catalog:",
+    "dsh-tauri": "workspace:*",
+    "h3": "catalog:"
   },
   "devDependencies": {
     "@css-render/plugin-bem": "catalog:ui",
-    "@deepseek-ai/dsh-client-ui-primitives": "catalog:dsh",
-    "@deepseek-ai/dsh-client-ui-renderer": "catalog:dsh",
     "@gravity-ui/icons": "catalog:runtime",
+    "@tailwindcss/postcss": "catalog:build",
     "css-render": "catalog:ui",
     "dsh-tauri-tsdown": "workspace:*",
+    "postcss": "catalog:build",
     "tsdown": "catalog:cli"
   }
 }

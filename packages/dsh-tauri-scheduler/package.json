@@ -2,6 +2,7 @@
   "name": "dsh-tauri-scheduler",
   "type": "module",
   "version": "1.0.0",
+  "description": "DeepSeek Harness 桌面定时任务：向当前会话投递提醒或启动新会话执行，统一管理计划、会话关联和投递历史。",
   "author": "Hairyf <wwu710632@gmail.com>",
   "license": "MIT",
   "homepage": "https://github.com/dsh-tauri-desk/dsh-tauri-plugins#readme",
@@ -62,18 +63,14 @@
   },
   "dependencies": {
     "cron-schedule": "catalog:utils",
+    "dsh-h3": "catalog:",
     "dsh-tauri": "workspace:*",
     "dsh-tauri-ui": "workspace:*",
+    "h3": "catalog:",
     "lodash-es": "catalog:utils",
     "pathe": "catalog:utils"
   },
   "devDependencies": {
-    "@deepseek-ai/dsh-agent": "catalog:dsh",
-    "@deepseek-ai/dsh-llm": "catalog:dsh",
-    "@deepseek-ai/dsh-session": "catalog:dsh",
-    "@deepseek-ai/dsh-tools": "catalog:dsh",
-    "@deepseek-ai/dsh-user-approval": "catalog:dsh",
-    "@deepseek-ai/dsh-workspace": "catalog:dsh",
     "@types/lodash-es": "catalog:types",
     "dsh-tauri-tsdown": "workspace:*",
     "tsdown": "catalog:cli",

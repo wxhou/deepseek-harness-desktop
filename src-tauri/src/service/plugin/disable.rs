@@ -1,67 +1,32 @@
-//! 插件禁用/启用：从 profile 的 `dsh.profile.bundles` 移除（代码完全不加载），
-//! 并写入 profile 的独立禁用清单。与卸载不同，禁用保留 node_modules 内的包体，
-//! 启用时无需重新下载。
+//! 插件禁用/启用：改写 profile 的 `cordis.patch.yml` 顶层覆盖项的 `disabled` 字段。
 //!
-//! 机制遵循 ADR-0001：禁用 = 从加载列表移除 + 记入独立禁用清单；启用 = 精确逆操作。
+//! 与官方 Plugins 页 / dshmarket 共用同一处状态（patch 层），桌面壳不再维护第二份
+//! 记录。禁用保留 node_modules 内的包体与 `dsh.profile.bundles` 选择，启用无需重新
+//! 下载，也不动组合包开关。
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::path::Path;
 
-use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 
 use crate::service::fs_guard;
 use crate::service::plugin::installed::profile_dir;
+use crate::service::plugin::recovery::{is_core_package, patch_entry_targets};
 use crate::service::plugin::{process, watch};
 
-/// 单条禁用记录（序列化为 camelCase 给前端/磁盘）。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct DisabledEntry {
-    /// 禁用时间（unix 秒级时间戳字符串）。
-    pub disabled_at: String,
-    /// 禁用来源：当前均为 "user"（用户主动操作）。
-    pub reason: String,
-}
+/// profile 层的 patch 覆盖文件。
+const PATCH_FILE: &str = "cordis.patch.yml";
+/// 插件开关在覆盖项里的字段名（官方插件页/dshmarket 同款）。
+const DISABLED_KEY: &str = "disabled";
 
-/// 禁用清单在 profile 目录下的路径。
-fn disabled_path(profile: &Path) -> PathBuf {
-    profile.join("disabled-plugins.json")
-}
-
-/// 读取禁用清单（缺失/损坏按空处理）。
-pub(crate) fn load_disabled(profile: &Path) -> HashMap<String, DisabledEntry> {
-    let Ok(content) = fs::read_to_string(disabled_path(profile)) else {
-        return HashMap::new();
-    };
-    serde_json::from_str(&content).unwrap_or_default()
-}
-
-/// 持久化禁用清单（pretty JSON + 尾部换行）。
-fn save_disabled(profile: &Path, map: &HashMap<String, DisabledEntry>) -> Result<(), String> {
-    let path = disabled_path(profile);
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir).map_err(|e| format!("DISABLED_DIR_CREATE_FAILED: {e}"))?;
-    }
-    let json =
-        serde_json::to_string_pretty(map).map_err(|e| format!("DISABLED_RENDER_FAILED: {e}"))?;
-    fs::write(&path, format!("{json}\n")).map_err(|e| format!("DISABLED_WRITE_FAILED: {e}"))
-}
-
-/// 读取 profile 的 `cordis.patch.yml`，返回「配置层显式禁用」条目的目标集合。
+/// 返回 patch 中「显式禁用」条目的目标名集合。
 ///
-/// 配置覆盖禁用 = 顶层数组条目带真值 `disabled` 字段（`disabled: true` 等）。
-/// 与桌面禁用清单（`disabled-plugins.json`）独立：patch 覆盖优先级更高，
-/// 运行期同样不加载该插件。匹配口径与 `recovery::uninstall::patch_entry_targets`
-/// 一致——把条目的 `id` 与任意字符串键/值都收进集合，由调用方按「包名或
-/// package.json name 命中」判断，兼容 loader 入口 id 与 npm 包名不一致的别名场景。
-///
-/// 文件缺失/无法解析为顶层数组时按空集处理（与 `load_disabled` 一致，
-/// 不阻断插件列表解析）。
+/// 匹配口径与 `recovery::patch_entry_targets` 一致：把条目的 `id` 与任意字符串键/值
+/// 都收进集合，兼容 loader 入口 id 与 npm 包名不一致的别名场景。文件缺失或无法解析
+/// 为顶层数组时按空集处理。
 pub(crate) fn load_patch_disabled(profile: &Path) -> HashSet<String> {
-    let Ok(content) = fs::read_to_string(profile.join("cordis.patch.yml")) else {
+    let Ok(content) = fs::read_to_string(profile.join(PATCH_FILE)) else {
         return HashSet::new();
     };
     let Ok(doc) = serde_yaml::from_str::<serde_yaml::Value>(&content) else {
@@ -90,11 +55,9 @@ pub(crate) fn load_patch_disabled(profile: &Path) -> HashSet<String> {
     targets
 }
 
-/// patch 顶层条目是否带「禁用」语义（`disabled` 字段为真值）。
-///
-/// 兼容 YAML 常见真值写法：布尔 `true`、非零数字、字符串 true/1/yes/on。
+/// 覆盖项是否带「禁用」语义：兼容布尔 `true`、非零数字、字符串 true/1/yes/on。
 fn patch_entry_disabled(map: &serde_yaml::Mapping) -> bool {
-    let Some(value) = map.get(serde_yaml::Value::String("disabled".to_string())) else {
+    let Some(value) = map.get(serde_yaml::Value::String(DISABLED_KEY.to_string())) else {
         return false;
     };
     match value {
@@ -111,8 +74,6 @@ fn patch_entry_disabled(map: &serde_yaml::Mapping) -> bool {
 }
 
 /// 目标插件的匹配候选名：npm 包名（依赖键）+ 包内 package.json 的 `name` 字段。
-///
-/// 覆盖「依赖键即展示名」与「loader 入口 id 用包内 name」两种形态。
 fn plugin_target_names(profile: &Path, id: &str) -> Vec<String> {
     let mut names = vec![id.to_string()];
     if let Ok(content) =
@@ -127,7 +88,7 @@ fn plugin_target_names(profile: &Path, id: &str) -> Vec<String> {
     names
 }
 
-/// 插件是否被 profile 的 `cordis.patch.yml` 配置覆盖禁用。
+/// 插件是否被 profile 的 patch 覆盖禁用。
 pub(crate) fn has_patch_disable(profile: &Path, id: &str) -> bool {
     let names = plugin_target_names(profile, id);
     load_patch_disabled(profile)
@@ -135,17 +96,75 @@ pub(crate) fn has_patch_disable(profile: &Path, id: &str) -> bool {
         .any(|target| names.iter().any(|n| n == target))
 }
 
-/// 从 `cordis.patch.yml` 移除目标插件的显式禁用覆盖，其余配置原样保留。
+/// 在 patch 里为目标插件写入 `disabled: true`。
 ///
-/// 精确语义（对应 issue #399「不删除无关配置」）：
-/// - 纯禁用条目（仅 `id` + `disabled`）→ 整条移除；
-/// - 带其它配置的条目 → 仅摘除 `disabled` 键，其余键原样保留；
-/// - 其它插件的条目一律不动。
+/// 与官方插件开关同款语义：命中最后一条匹配条目就改它的 `disabled`（条目里其它配置
+/// 原样保留），没有匹配条目则追加 `{id, disabled: true}`。已是禁用态时返回
+/// `Ok(false)` 且不写盘。
+pub(crate) fn add_patch_disable(profile: &Path, id: &str) -> Result<bool, String> {
+    let path = profile.join(PATCH_FILE);
+    let content = match fs::read_to_string(&path) {
+        Ok(content) => content,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(format!("DISABLE_PATCH_READ_FAILED: {e}")),
+    };
+    let mut entries = match content.trim() {
+        "" => Vec::new(),
+        raw => match serde_yaml::from_str::<serde_yaml::Value>(raw)
+            .map_err(|e| format!("DISABLE_PATCH_PARSE_FAILED: {e}"))?
+        {
+            serde_yaml::Value::Sequence(seq) => seq,
+            serde_yaml::Value::Null => Vec::new(),
+            _ => {
+                return Err(
+                    "DISABLE_PATCH_UNSUPPORTED_SHAPE: cordis.patch.yml top level is not a list"
+                        .to_string(),
+                )
+            }
+        },
+    };
+    let names = plugin_target_names(profile, id);
+    let key = serde_yaml::Value::String(DISABLED_KEY.to_string());
+    let mut hit: Option<&mut serde_yaml::Mapping> = None;
+    for entry in entries.iter_mut().rev() {
+        if !names.iter().any(|name| patch_entry_targets(entry, name)) {
+            continue;
+        }
+        if let serde_yaml::Value::Mapping(map) = entry {
+            hit = Some(map);
+            break;
+        }
+    }
+    match hit {
+        Some(map) => {
+            if patch_entry_disabled(map) {
+                return Ok(false);
+            }
+            map.insert(key, serde_yaml::Value::Bool(true));
+        }
+        None => {
+            let mut map = serde_yaml::Mapping::new();
+            map.insert(
+                serde_yaml::Value::String("id".to_string()),
+                serde_yaml::Value::String(id.to_string()),
+            );
+            map.insert(key, serde_yaml::Value::Bool(true));
+            entries.push(serde_yaml::Value::Mapping(map));
+        }
+    }
+    let rendered = serde_yaml::to_string(&serde_yaml::Value::Sequence(entries))
+        .map_err(|e| format!("DISABLE_PATCH_RENDER_FAILED: {e}"))?;
+    fs::write(&path, rendered).map_err(|e| format!("DISABLE_PATCH_WRITE_FAILED: {e}"))?;
+    log::info!("Disabled plugin {id} via cordis.patch.yml override");
+    Ok(true)
+}
+
+/// 从 patch 移除目标插件的显式禁用覆盖，其余配置原样保留（issue #399）：
+/// 纯禁用条目（仅 `id` + `disabled`）整条移除，带其它配置的条目只摘 `disabled` 键。
 ///
-/// 幂等：无 patch 文件 / 无法解析 / 无目标禁用条目时返回 `Ok(false)` 且不写盘；
-/// 实际修改时返回 `Ok(true)`。
+/// 幂等：无 patch 文件 / 无法解析 / 无目标禁用条目时返回 `Ok(false)` 且不写盘。
 pub(crate) fn strip_patch_disable(profile: &Path, id: &str) -> Result<bool, String> {
-    let path = profile.join("cordis.patch.yml");
+    let path = profile.join(PATCH_FILE);
     let Ok(content) = fs::read_to_string(&path) else {
         return Ok(false);
     };
@@ -162,19 +181,13 @@ pub(crate) fn strip_patch_disable(profile: &Path, id: &str) -> Result<bool, Stri
             kept.push(entry);
             continue;
         };
-        let targeted = map.iter().any(|(k, v)| {
-            names
-                .iter()
-                .any(|n| k.as_str() == Some(n.as_str()) || v.as_str() == Some(n.as_str()))
-        });
+        let targeted = names.iter().any(|name| patch_entry_targets(&entry, name));
         if !targeted || !patch_entry_disabled(&map) {
             kept.push(entry);
             continue;
         }
         changed = true;
-        map.remove(serde_yaml::Value::String("disabled".to_string()));
-        // 摘除 disabled 后仅剩 id（或为空）→ 纯禁用条目，整条丢弃；
-        // 还有其它键 → 保留该条目的其余配置。
+        map.remove(serde_yaml::Value::String(DISABLED_KEY.to_string()));
         let keeps_other_config = map.iter().any(|(k, _)| k.as_str() != Some("id"));
         if keeps_other_config {
             kept.push(serde_yaml::Value::Mapping(map));
@@ -190,45 +203,6 @@ pub(crate) fn strip_patch_disable(profile: &Path, id: &str) -> Result<bool, Stri
     Ok(true)
 }
 
-/// 仅从 `dsh.profile.bundles` 移除指定插件（不动 `dependencies`）。
-/// 返回是否实际移除了条目。
-fn remove_from_bundles(manifest: &mut serde_json::Value, id: &str) -> bool {
-    let Some(bundles) = manifest
-        .get_mut("dsh")
-        .and_then(|d| d.get_mut("profile"))
-        .and_then(|p| p.get_mut("bundles"))
-        .and_then(|b| b.as_array_mut())
-    else {
-        return false;
-    };
-    let before = bundles.len();
-    bundles.retain(|b| b.as_str() != Some(id));
-    bundles.len() != before
-}
-
-/// 把插件加回 `dsh.profile.bundles`（若已存在则不重复添加）。
-/// 返回是否实际新增了条目。
-fn add_to_bundles(manifest: &mut serde_json::Value, id: &str) -> bool {
-    let Some(bundles) = manifest
-        .get_mut("dsh")
-        .and_then(|d| d.get_mut("profile"))
-        .and_then(|p| p.get_mut("bundles"))
-        .and_then(|b| b.as_array_mut())
-    else {
-        return false;
-    };
-    if bundles.iter().any(|b| b.as_str() == Some(id)) {
-        return false;
-    }
-    bundles.push(serde_json::Value::String(id.to_string()));
-    true
-}
-
-/// 是否为官方/核心包（`@deepseek-ai/` 前缀）。与 recovery 模块的保护名单一致。
-fn is_core_package(id: &str) -> bool {
-    id.starts_with("@deepseek-ai/")
-}
-
 /// 检查插件是否已安装（dependencies 中存在）。
 fn is_in_dependencies(manifest: &serde_json::Value, id: &str) -> bool {
     manifest
@@ -238,153 +212,50 @@ fn is_in_dependencies(manifest: &serde_json::Value, id: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn now_seconds_string() -> String {
-    SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|d| d.as_secs().to_string())
-        .unwrap_or_default()
-}
-
-/// 回滚禁用清单到操作前的状态。
-///
-/// 当 manifest 写入失败时，把已加入禁用清单的条目移除，使两个持久化文件
-/// 恢复一致（插件仍在 bundles 中，禁用清单无记录），避免留下
-/// 「已从 bundles 移除但未记入禁用清单」的不可恢复状态。
-fn rollback_disable(profile: &Path, id: &str) {
-    let mut map = load_disabled(profile);
-    map.remove(id);
-    // 回滚写入也失败时，只能静默——此时清单多一条目但插件仍在 bundles，
-    // 下次禁用会覆盖该条目，不会阻塞用户操作。
-    let _ = save_disabled(profile, &map);
+/// 读取并解析 profile 的 package.json。
+fn read_manifest(profile: &Path, prefix: &str) -> Result<serde_json::Value, String> {
+    let content = fs::read_to_string(profile.join("package.json"))
+        .map_err(|e| format!("{prefix}_READ_MANIFEST: {e}"))?;
+    serde_json::from_str(&content).map_err(|e| format!("{prefix}_PARSE_MANIFEST: {e}"))
 }
 
 /// 禁用插件的纯逻辑（不依赖 AppHandle，便于单元测试）。
 ///
-/// 1. `fs_guard::validate_id(id)`（路径穿越防护）
-/// 2. 拒绝官方/核心包
-/// 3. 读取 profile package.json
-/// 4. 校验插件已安装（dependencies 中存在）
-/// 5. 先写入禁用清单（加入条目）
-/// 6. 仅从 bundles 移除（不动 dependencies）并写回 manifest
-///
-/// 写入顺序保证：若步骤 6 失败，通过回滚步骤 5 使两文件恢复一致，
-/// 避免插件从 bundles 移除却未记入禁用清单（否则启用会返回
-/// `ENABLE_NOT_DISABLED`，用户无法通过正常流程恢复）。
+/// 只写 patch 覆盖：不再改 `dsh.profile.bundles`（组合包开关归官方插件页），也不写任何
+/// 桌面侧清单。
 pub(crate) fn disable_plugin_at(profile: &Path, id: &str) -> Result<(), String> {
-    // 先做官方/核心包语义校验（优先级高于字符集校验）：官方包 id 含 `/`，
-    // 必须先于 validate_id 拦截，否则会被字符集校验误判为 INVALID_ID。
+    // 官方/核心包 id 含 `/`，必须先于 validate_id 拦截，否则会被字符集校验误判。
     if is_core_package(id) {
         return Err(format!(
             "DISABLE_INTERNAL_PLUGIN: refusing to disable internal/official plugin {id}"
         ));
     }
     fs_guard::validate_id(id)?;
-    let manifest_path = profile.join("package.json");
-    let content =
-        fs::read_to_string(&manifest_path).map_err(|e| format!("DISABLE_READ_MANIFEST: {e}"))?;
-    let mut manifest: serde_json::Value =
-        serde_json::from_str(&content).map_err(|e| format!("DISABLE_PARSE_MANIFEST: {e}"))?;
+    let manifest = read_manifest(profile, "DISABLE")?;
     if !is_in_dependencies(&manifest, id) {
         return Err(format!(
             "DISABLE_NOT_INSTALLED: plugin {id} is not installed"
         ));
     }
-    // 先写禁用清单，确保 manifest 写入失败时可回滚该条目。
-    let mut map = load_disabled(profile);
-    map.insert(
-        id.to_string(),
-        DisabledEntry {
-            disabled_at: now_seconds_string(),
-            reason: "user".to_string(),
-        },
-    );
-    save_disabled(profile, &map)?;
-    remove_from_bundles(&mut manifest, id);
-    let rendered = serde_json::to_string_pretty(&manifest)
-        .map_err(|e| format!("DISABLE_RENDER_MANIFEST: {e}"))?;
-    if let Err(e) = fs::write(&manifest_path, format!("{rendered}\n")) {
-        rollback_disable(profile, id);
-        return Err(format!("DISABLE_WRITE_MANIFEST: {e}"));
-    }
+    add_patch_disable(profile, id)?;
     Ok(())
 }
 
-/// 回滚启用前的禁用清单状态。
-///
-/// 当 manifest 写入失败时，把已移除的禁用条目加回，使两个持久化文件
-/// 恢复一致（插件仍在禁用清单中，bundles 未记录），避免留下
-/// 「已加回 bundles 但禁用清单仍缺条目」的不可恢复状态。
-fn rollback_enable(profile: &Path, id: &str) {
-    let mut map = load_disabled(profile);
-    map.entry(id.to_string()).or_insert_with(|| DisabledEntry {
-        disabled_at: now_seconds_string(),
-        reason: "user".to_string(),
-    });
-    let _ = save_disabled(profile, &map);
-}
-
-/// 启用插件的纯逻辑（不依赖 AppHandle，便于单元测试）。
-///
-/// 1. `fs_guard::validate_id(id)`
-/// 2. 读取 manifest
-/// 3. 校验插件仍安装
-/// 4. 校验插件处于禁用态：桌面禁用清单或 `cordis.patch.yml` 配置覆盖（二选一）
-/// 5. 配置覆盖禁用时，**必须**显式传 `clear_config_override=true`（前端已确认）
-///    才会移除该覆盖；否则返回 `ENABLE_CONFIG_OVERRIDE`——避免「声称启用成功、
-///    运行期却仍被更高优先级配置覆盖禁用」的虚假成功（issue #399）
-/// 6. 从桌面禁用清单移除条目
-/// 7. 加回 bundles 并写回 manifest
-///
-/// 写入顺序保证：若最后一步失败，通过回滚使持久化文件恢复一致，
-/// 避免插件加回 bundles 后禁用清单缺条目（否则再次启用会返回
-/// `ENABLE_NOT_DISABLED`，用户无法通过正常流程恢复）。
-pub(crate) fn enable_plugin_at(
-    profile: &Path,
-    id: &str,
-    clear_config_override: bool,
-) -> Result<(), String> {
+/// 启用插件的纯逻辑（不依赖 AppHandle，便于单元测试）：仅摘除 patch 里的禁用覆盖。
+pub(crate) fn enable_plugin_at(profile: &Path, id: &str) -> Result<(), String> {
     fs_guard::validate_id(id)?;
-    let manifest_path = profile.join("package.json");
-    let content =
-        fs::read_to_string(&manifest_path).map_err(|e| format!("ENABLE_READ_MANIFEST: {e}"))?;
-    let mut manifest: serde_json::Value =
-        serde_json::from_str(&content).map_err(|e| format!("ENABLE_PARSE_MANIFEST: {e}"))?;
+    let manifest = read_manifest(profile, "ENABLE")?;
     if !is_in_dependencies(&manifest, id) {
         return Err(format!(
             "ENABLE_NOT_INSTALLED: plugin {id} is not installed"
         ));
     }
-    let mut map = load_disabled(profile);
-    let desktop_disabled = map.contains_key(id);
-    let config_disabled = has_patch_disable(profile, id);
-    if !desktop_disabled && !config_disabled {
+    if !has_patch_disable(profile, id) {
         return Err(format!(
-            "ENABLE_NOT_DISABLED: plugin {id} is not in the disabled list"
+            "ENABLE_NOT_DISABLED: plugin {id} has no disable override in cordis.patch.yml"
         ));
     }
-    // 存在配置覆盖但未显式确认：拒绝并给出来源指引，让前端提示用户查看
-    // `cordis.patch.yml`；绝不静默绕过高优先级覆盖。
-    if config_disabled && !clear_config_override {
-        return Err(format!(
-            "ENABLE_CONFIG_OVERRIDE: plugin {id} is disabled by the cordis.patch.yml config override; confirm removing the override to enable"
-        ));
-    }
-    // 确认后先移除配置覆盖（幂等，只摘该插件的禁用条目，其余配置保留），
-    // 再清理桌面禁用清单，最后写回 manifest——任一步失败都保持可恢复状态。
-    if config_disabled {
-        strip_patch_disable(profile, id)?;
-    }
-    if desktop_disabled {
-        map.remove(id);
-        save_disabled(profile, &map)?;
-    }
-    add_to_bundles(&mut manifest, id);
-    let rendered = serde_json::to_string_pretty(&manifest)
-        .map_err(|e| format!("ENABLE_RENDER_MANIFEST: {e}"))?;
-    if let Err(e) = fs::write(&manifest_path, format!("{rendered}\n")) {
-        rollback_enable(profile, id);
-        return Err(format!("ENABLE_WRITE_MANIFEST: {e}"));
-    }
+    strip_patch_disable(profile, id)?;
     Ok(())
 }
 
@@ -399,13 +270,10 @@ pub fn disable(app_handle: &AppHandle, id: &str) -> Result<(), String> {
 }
 
 /// 启用插件（AppHandle 入口）：获取 profile 目录 → 持有操作锁 → 执行纯逻辑 → 推送变更。
-///
-/// `clear_config_override`：插件被 `cordis.patch.yml` 配置覆盖禁用时，是否
-/// 移除该覆盖（需用户在前端明确确认后才为 true）。
-pub fn enable(app_handle: &AppHandle, id: &str, clear_config_override: bool) -> Result<(), String> {
+pub fn enable(app_handle: &AppHandle, id: &str) -> Result<(), String> {
     let profile = profile_dir(app_handle);
     let _guard = tauri::async_runtime::block_on(process::acquire_operation_lock());
-    let result = enable_plugin_at(&profile, id, clear_config_override);
+    let result = enable_plugin_at(&profile, id);
     drop(_guard);
     watch::force_emit(app_handle);
     result
@@ -414,8 +282,9 @@ pub fn enable(app_handle: &AppHandle, id: &str, clear_config_override: bool) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
-    /// 构造临时 profile 目录并写入 package.json 清单。
+    /// 构造临时 profile 目录并写入 package.json 清单（不含 patch 文件）。
     fn build_profile(test_name: &str, id: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "dsh-disable-test-{}-{}-{}",
@@ -443,163 +312,202 @@ mod tests {
         dir
     }
 
-    fn read_manifest(profile: &Path) -> serde_json::Value {
-        let content = fs::read_to_string(profile.join("package.json")).unwrap();
-        serde_json::from_str(&content).unwrap()
+    fn read_patch(profile: &Path) -> String {
+        fs::read_to_string(profile.join(PATCH_FILE)).unwrap_or_default()
+    }
+
+    fn write_patch(profile: &Path, content: &str) {
+        fs::write(profile.join(PATCH_FILE), content).unwrap();
     }
 
     #[test]
-    fn disable_removes_from_bundles_only() {
-        let profile = build_profile("bundles-only", "a");
+    fn disable_writes_patch_override_and_keeps_bundles() {
+        let profile = build_profile("write-patch", "a");
+        let before = fs::read_to_string(profile.join("package.json")).unwrap();
         disable_plugin_at(&profile, "dsh-better-sidebar").unwrap();
 
-        let manifest = read_manifest(&profile);
-        // dependencies 不变
-        assert!(manifest["dependencies"]["dsh-better-sidebar"].is_string());
-        assert!(manifest["dependencies"]["dshmarket"].is_string());
-        // bundles 中已移除
-        let bundles = manifest["dsh"]["profile"]["bundles"].as_array().unwrap();
-        assert!(!bundles
-            .iter()
-            .any(|b| b.as_str() == Some("dsh-better-sidebar")));
-        assert!(bundles.iter().any(|b| b.as_str() == Some("dshmarket")));
+        assert!(has_patch_disable(&profile, "dsh-better-sidebar"));
+        assert!(read_patch(&profile).contains("disabled: true"));
+        // 组合包选择与依赖一律不动
+        assert_eq!(
+            fs::read_to_string(profile.join("package.json")).unwrap(),
+            before
+        );
+
+        // 重复禁用：幂等，第二次不再写盘
+        assert!(!add_patch_disable(&profile, "dsh-better-sidebar").unwrap());
 
         let _ = fs::remove_dir_all(&profile);
     }
 
     #[test]
-    fn disable_writes_disabled_json() {
-        let profile = build_profile("disabled-json", "b");
+    fn disable_rejects_non_sequence_patch_without_overwriting() {
+        let profile = build_profile("unsupported-shape", "m");
+        for original in [
+            "logLevel: debug\n",
+            "{}\n",
+            "existing patch content\n",
+            "true\n",
+            "42\n",
+            "!custom {config: keep}\n",
+        ] {
+            write_patch(&profile, original);
+            let result = disable_plugin_at(&profile, "dsh-better-sidebar");
+            assert_eq!(
+                fs::read(profile.join(PATCH_FILE)).unwrap(),
+                original.as_bytes(),
+                "patch was overwritten for {original:?}"
+            );
+            assert_eq!(
+                result.unwrap_err(),
+                "DISABLE_PATCH_UNSUPPORTED_SHAPE: cordis.patch.yml top level is not a list"
+            );
+        }
+        fs::remove_dir_all(&profile).unwrap();
+    }
+
+    #[test]
+    fn disable_rejects_unreadable_patch_without_overwriting() {
+        let profile = build_profile("unreadable-patch", "o");
+        let original = [0xff, 0xfe];
+        fs::write(profile.join(PATCH_FILE), original).unwrap();
+        let result = disable_plugin_at(&profile, "dsh-better-sidebar");
+        assert_eq!(fs::read(profile.join(PATCH_FILE)).unwrap(), original);
+        assert!(result
+            .unwrap_err()
+            .starts_with("DISABLE_PATCH_READ_FAILED:"));
+        fs::remove_dir_all(&profile).unwrap();
+    }
+
+    #[test]
+    fn disable_initializes_empty_patch_documents() {
+        let profile = build_profile("empty-documents", "n");
+        let expected: serde_yaml::Value =
+            serde_yaml::from_str("- id: dsh-better-sidebar\n  disabled: true\n").unwrap();
+        for original in [
+            "",
+            " \n",
+            "# empty patch\n",
+            "null\n",
+            "~\n",
+            "---\n",
+            "[]\n",
+        ] {
+            write_patch(&profile, original);
+            disable_plugin_at(&profile, "dsh-better-sidebar").unwrap();
+            let actual: serde_yaml::Value = serde_yaml::from_str(&read_patch(&profile)).unwrap();
+            assert_eq!(actual, expected, "unexpected patch for {original:?}");
+        }
+        fs::remove_dir_all(&profile).unwrap();
+    }
+
+    #[test]
+    fn disable_keeps_other_config_of_matching_entry() {
+        let profile = build_profile("patch-update", "b");
+        write_patch(
+            &profile,
+            "- id: dsh-better-sidebar\n  disabled: false\n  logLevel: debug\n",
+        );
+        assert!(add_patch_disable(&profile, "dsh-better-sidebar").unwrap());
+
+        let content = read_patch(&profile);
+        assert!(content.contains("logLevel: debug"));
+        assert!(has_patch_disable(&profile, "dsh-better-sidebar"));
+        // 命中条目而不是追加新条目
+        assert_eq!(content.matches("dsh-better-sidebar").count(), 1);
+        assert!(!content.contains("disabled: false"));
+
+        let _ = fs::remove_dir_all(&profile);
+    }
+
+    #[test]
+    fn disable_appends_entry_after_unrelated_ones() {
+        let profile = build_profile("patch-append", "c");
+        write_patch(&profile, "- id: dshmarket\n  foo: bar\n");
         disable_plugin_at(&profile, "dsh-better-sidebar").unwrap();
 
-        let map = load_disabled(&profile);
-        let entry = map
-            .get("dsh-better-sidebar")
-            .expect("disabled entry exists");
-        assert_eq!(entry.reason, "user");
-        assert!(!entry.disabled_at.is_empty());
-        // 时间戳是纯数字字符串
-        assert!(entry.disabled_at.parse::<u64>().is_ok());
+        let content = read_patch(&profile);
+        assert!(content.contains("dshmarket"));
+        assert!(content.contains("foo: bar"));
+        let targets = load_patch_disabled(&profile);
+        assert!(targets.contains("dsh-better-sidebar"));
+        assert!(!targets.contains("dshmarket"));
 
         let _ = fs::remove_dir_all(&profile);
     }
 
     #[test]
-    fn enable_restores_to_bundles() {
-        let profile = build_profile("enable-restore", "c");
-        disable_plugin_at(&profile, "dsh-better-sidebar").unwrap();
-        enable_plugin_at(&profile, "dsh-better-sidebar", false).unwrap();
+    fn enable_strips_disable_and_keeps_other_config() {
+        let profile = build_profile("patch-strip", "d");
+        write_patch(
+            &profile,
+            "- id: dsh-better-sidebar\n  disabled: true\n- id: dshmarket\n  disabled: true\n- id: dsh-tauri-pet\n  foo: bar\n",
+        );
+        enable_plugin_at(&profile, "dsh-better-sidebar").unwrap();
 
-        let manifest = read_manifest(&profile);
-        let bundles = manifest["dsh"]["profile"]["bundles"].as_array().unwrap();
-        assert!(bundles
-            .iter()
-            .any(|b| b.as_str() == Some("dsh-better-sidebar")));
-
-        let _ = fs::remove_dir_all(&profile);
-    }
-
-    #[test]
-    fn enable_removes_from_disabled_json() {
-        let profile = build_profile("enable-rm-json", "d");
-        disable_plugin_at(&profile, "dsh-better-sidebar").unwrap();
-        enable_plugin_at(&profile, "dsh-better-sidebar", false).unwrap();
-
-        let map = load_disabled(&profile);
-        assert!(!map.contains_key("dsh-better-sidebar"));
-
-        let _ = fs::remove_dir_all(&profile);
-    }
-
-    #[test]
-    fn disable_internal_plugin_is_rejected() {
-        let profile = build_profile("internal-reject", "e");
-        let err = disable_plugin_at(&profile, "@deepseek-ai/dsh-base").unwrap_err();
-        assert!(err.contains("DISABLE_INTERNAL_PLUGIN"));
-
-        // manifest 未被修改
-        let manifest = read_manifest(&profile);
-        let bundles = manifest["dsh"]["profile"]["bundles"].as_array().unwrap();
-        assert_eq!(bundles.len(), 3);
-
-        let _ = fs::remove_dir_all(&profile);
-    }
-
-    #[test]
-    fn disable_not_installed_is_rejected() {
-        let profile = build_profile("not-installed", "f");
-        let err = disable_plugin_at(&profile, "dsh-not-exist").unwrap_err();
-        assert!(err.contains("DISABLE_NOT_INSTALLED"));
-
-        let _ = fs::remove_dir_all(&profile);
-    }
-
-    #[test]
-    fn enable_not_disabled_is_rejected() {
-        let profile = build_profile("not-disabled", "g");
-        // 未禁用就启用 → 拒绝
-        let err = enable_plugin_at(&profile, "dsh-better-sidebar", false).unwrap_err();
+        let content = read_patch(&profile);
+        assert!(!content.contains("dsh-better-sidebar"));
+        assert!(content.contains("foo: bar"));
+        let targets = load_patch_disabled(&profile);
+        assert!(targets.contains("dshmarket"));
+        assert!(!targets.contains("dsh-better-sidebar"));
+        // 幂等
+        let err = enable_plugin_at(&profile, "dsh-better-sidebar").unwrap_err();
         assert!(err.contains("ENABLE_NOT_DISABLED"));
 
         let _ = fs::remove_dir_all(&profile);
     }
 
     #[test]
-    fn round_trip_preserves_other_bundles() {
-        let profile = build_profile("round-trip", "h");
+    fn disable_enable_round_trip_restores_original_patch() {
+        let profile = build_profile("round-trip", "e");
+        write_patch(&profile, "- id: dshmarket\n  foo: bar\n");
+        let before = read_patch(&profile);
         disable_plugin_at(&profile, "dsh-better-sidebar").unwrap();
-        enable_plugin_at(&profile, "dsh-better-sidebar", false).unwrap();
+        assert!(has_patch_disable(&profile, "dsh-better-sidebar"));
+        enable_plugin_at(&profile, "dsh-better-sidebar").unwrap();
 
-        let manifest = read_manifest(&profile);
-        let bundles = manifest["dsh"]["profile"]["bundles"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter_map(|b| b.as_str())
-            .collect::<Vec<_>>();
-        // 恢复原始顺序可能不同，但内容一致
-        assert_eq!(bundles.len(), 3);
-        assert!(bundles.contains(&"dsh-better-sidebar"));
-        assert!(bundles.contains(&"dshmarket"));
-        assert!(bundles.contains(&"@deepseek-ai/dsh-base"));
-        // dependencies 完全不变
-        assert!(manifest["dependencies"]["dsh-better-sidebar"].is_string());
-        assert!(manifest["dependencies"]["dshmarket"].is_string());
-        assert!(manifest["dependencies"]["@deepseek-ai/dsh-base"].is_string());
+        let doc: serde_yaml::Value = serde_yaml::from_str(&read_patch(&profile)).unwrap();
+        let expected: serde_yaml::Value = serde_yaml::from_str(&before).unwrap();
+        assert_eq!(doc, expected);
 
         let _ = fs::remove_dir_all(&profile);
     }
 
     #[test]
-    fn disabled_list_persists_to_disk() {
-        let profile = build_profile("persist", "i");
-        disable_plugin_at(&profile, "dsh-better-sidebar").unwrap();
-
-        // 重新从磁盘读取（不依赖内存）
-        let map = load_disabled(&profile);
-        assert!(map.contains_key("dsh-better-sidebar"));
-
-        // 文件确实存在且可解析
-        let path = disabled_path(&profile);
-        assert!(path.exists());
-        let content = fs::read_to_string(&path).unwrap();
-        assert!(content.contains("dsh-better-sidebar"));
-        assert!(content.contains("\"disabledAt\""));
-        assert!(content.contains("\"reason\""));
+    fn disable_internal_plugin_is_rejected() {
+        let profile = build_profile("internal-reject", "f");
+        let err = disable_plugin_at(&profile, "@deepseek-ai/dsh-base").unwrap_err();
+        assert!(err.contains("DISABLE_INTERNAL_PLUGIN"));
+        assert!(!profile.join(PATCH_FILE).exists());
 
         let _ = fs::remove_dir_all(&profile);
     }
 
-    /// 写入配置覆盖禁用条目的测试用 patch 文件。
-    fn write_patch(profile: &Path, content: &str) {
-        fs::write(profile.join("cordis.patch.yml"), content).unwrap();
+    #[test]
+    fn disable_not_installed_is_rejected() {
+        let profile = build_profile("not-installed", "g");
+        let err = disable_plugin_at(&profile, "dsh-not-exist").unwrap_err();
+        assert!(err.contains("DISABLE_NOT_INSTALLED"));
+        assert!(!profile.join(PATCH_FILE).exists());
+
+        let _ = fs::remove_dir_all(&profile);
+    }
+
+    #[test]
+    fn enable_not_disabled_is_rejected() {
+        let profile = build_profile("not-disabled", "h");
+        let err = enable_plugin_at(&profile, "dsh-better-sidebar").unwrap_err();
+        assert!(err.contains("ENABLE_NOT_DISABLED"));
+
+        let _ = fs::remove_dir_all(&profile);
     }
 
     /// `load_patch_disabled` 只收集带真值 `disabled` 字段的条目目标；
     /// `disabled: false`、无 disabled 字段、非映射条目都不算禁用。
     #[test]
     fn load_patch_disabled_collects_only_true_disables() {
-        let profile = build_profile("patch-collect", "j");
+        let profile = build_profile("patch-collect", "i");
         write_patch(
             &profile,
             "- id: dshmarket\n  disabled: true\n- id: dsh-better-sidebar\n  disabled: false\n- id: dsh-tauri-pet\n  config: 1\n- plain-string\n",
@@ -609,9 +517,8 @@ mod tests {
         assert!(!targets.contains("dsh-better-sidebar"));
         assert!(!targets.contains("dsh-tauri-pet"));
 
-        // 缺文件/非法 YAML/非数组 → 空集
         assert!(load_patch_disabled(&std::env::temp_dir()).is_empty());
-        let broken = build_profile("patch-broken", "k");
+        let broken = build_profile("patch-broken", "j");
         write_patch(&broken, "not: [valid");
         assert!(load_patch_disabled(&broken).is_empty());
         fs::remove_dir_all(&broken).ok();
@@ -619,75 +526,31 @@ mod tests {
         fs::remove_dir_all(&profile).ok();
     }
 
-    /// 配置覆盖禁用但未显式确认 → ENABLE_CONFIG_OVERRIDE（绝不静默绕过）。
     #[test]
-    fn enable_without_override_confirmation_is_rejected() {
-        let profile = build_profile("patch-reject", "l");
-        write_patch(&profile, "- id: dsh-better-sidebar\n  disabled: true\n");
-        let err = enable_plugin_at(&profile, "dsh-better-sidebar", false).unwrap_err();
-        assert!(err.contains("ENABLE_CONFIG_OVERRIDE"));
-
-        // 覆盖条目原样保留
-        let content = fs::read_to_string(profile.join("cordis.patch.yml")).unwrap();
-        assert!(content.contains("disabled: true"));
-
-        fs::remove_dir_all(&profile).ok();
-    }
-
-    /// 确认后启用：仅移除目标插件的禁用覆盖、清桌面记录、加回 bundles，
-    /// 其它插件的 patch 条目原样保留。
-    #[test]
-    fn enable_with_override_confirmation_strips_only_target() {
-        let profile = build_profile("patch-strip", "m");
+    fn strip_patch_disable_preserves_non_mapping_and_false_or_nested_targets() {
+        let profile = build_profile("patch-boundaries", "k");
         write_patch(
             &profile,
-            "- id: dsh-better-sidebar\n  disabled: true\n- id: dshmarket\n  disabled: true\n- id: dsh-tauri-pet\n  foo: bar\n",
+            "- dsh-better-sidebar\n- [dsh-better-sidebar]\n- id: other\n  config: {id: dsh-better-sidebar}\n  disabled: true\n- id: dsh-better-sidebar\n  disabled: false\n- dsh-better-sidebar: alias\n  disabled: true\n",
         );
-        enable_plugin_at(&profile, "dsh-better-sidebar", true).unwrap();
-
-        let content = fs::read_to_string(profile.join("cordis.patch.yml")).unwrap();
-        assert!(!content.contains("dsh-better-sidebar"));
-        assert!(content.contains("dshmarket"));
-        assert!(content.contains("dsh-tauri-pet"));
-        assert!(content.contains("foo: bar"));
-        // 其余禁用条目仍是禁用态
-        let targets = load_patch_disabled(&profile);
-        assert!(targets.contains("dshmarket"));
-        assert!(!targets.contains("dsh-better-sidebar"));
-
-        // bundles 已加回
-        let manifest = read_manifest(&profile);
-        let bundles = manifest["dsh"]["profile"]["bundles"].as_array().unwrap();
-        assert!(bundles
-            .iter()
-            .any(|b| b.as_str() == Some("dsh-better-sidebar")));
-
-        fs::remove_dir_all(&profile).ok();
-    }
-
-    /// 带其它配置的禁用条目：只摘 `disabled` 键，其余配置保留（不删除无关配置）。
-    #[test]
-    fn strip_patch_disable_keeps_other_config_keys() {
-        let profile = build_profile("patch-keep", "n");
-        write_patch(
-            &profile,
-            "- id: dsh-better-sidebar\n  disabled: true\n  logLevel: debug\n",
-        );
-        enable_plugin_at(&profile, "dsh-better-sidebar", true).unwrap();
-
-        let content = fs::read_to_string(profile.join("cordis.patch.yml")).unwrap();
-        assert!(!content.contains("disabled"));
-        assert!(content.contains("logLevel: debug"));
-        assert!(content.contains("dsh-better-sidebar"));
-
-        fs::remove_dir_all(&profile).ok();
+        assert!(strip_patch_disable(&profile, "dsh-better-sidebar").unwrap());
+        let patch = profile.join(PATCH_FILE);
+        let content = fs::read_to_string(&patch).unwrap();
+        let doc: serde_yaml::Value = serde_yaml::from_str(&content).unwrap();
+        let expected: serde_yaml::Value = serde_yaml::from_str(
+            "- dsh-better-sidebar\n- [dsh-better-sidebar]\n- id: other\n  config: {id: dsh-better-sidebar}\n  disabled: true\n- id: dsh-better-sidebar\n  disabled: false\n- dsh-better-sidebar: alias\n",
+        )
+        .unwrap();
+        assert_eq!(doc, expected);
+        assert!(!strip_patch_disable(&profile, "dsh-better-sidebar").unwrap());
+        assert_eq!(fs::read_to_string(&patch).unwrap(), content);
+        fs::remove_dir_all(&profile).unwrap();
     }
 
     /// 别名匹配：patch 条目的 id 用包内 `name`（非依赖键）时同样命中。
     #[test]
     fn patch_disable_matches_package_json_name_alias() {
-        let profile = build_profile("patch-alias", "o");
-        // 依赖键 dsh-better-sidebar，但包内 name 为 better-sidebar（loader 别名形态）
+        let profile = build_profile("patch-alias", "l");
         let pkg_dir = profile.join("node_modules").join("dsh-better-sidebar");
         fs::create_dir_all(&pkg_dir).unwrap();
         fs::write(
@@ -698,11 +561,8 @@ mod tests {
         write_patch(&profile, "- id: better-sidebar\n  disabled: true\n");
 
         assert!(has_patch_disable(&profile, "dsh-better-sidebar"));
-
-        // 确认后启用：别名条目被移除
-        enable_plugin_at(&profile, "dsh-better-sidebar", true).unwrap();
-        let content = fs::read_to_string(profile.join("cordis.patch.yml")).unwrap();
-        assert!(!content.contains("better-sidebar"));
+        enable_plugin_at(&profile, "dsh-better-sidebar").unwrap();
+        assert!(!read_patch(&profile).contains("better-sidebar"));
 
         fs::remove_dir_all(&profile).ok();
     }

@@ -1,25 +1,23 @@
 import type { ChipVariant, UiComponentEntry } from 'dsh-tauri-ui/client'
 import type { ReactElement, ReactNode } from 'react'
 import {
+  Action,
   ArrowRightFromSquare,
   Button,
-  ChevronDown,
-  Chip,
   CircleTree,
   Comments,
+  ConversationBar,
+  ConversationBarAction,
   Dot,
   Gear,
-  GoalBar,
-  GoalBarAction,
   Icon,
-  IconButton,
   Input,
   Magnifier,
-  Menu,
   Person,
   Pill,
   Plus,
   Puzzle,
+  Select,
   Switch,
   Tag,
   TerminalLine,
@@ -37,59 +35,32 @@ const BUTTON_VARIANTS = ['primary', 'outline', 'ghost', 'toolbar'] as const
 const BUTTON_SIZES = ['md', 'sm'] as const
 const TAG_TONES = ['outline', 'solid', 'neutral', 'quiet', 'success', 'info', 'warning', 'danger'] as const
 
-interface SampleOption { id: string, label: string }
+interface SampleOption { value: string, label: string }
 
 const SEAT_OPTIONS: readonly SampleOption[] = [
-  { id: 'default', label: '默认' },
-  { id: 'plan', label: '计划模式' },
-  { id: 'review', label: '评审模式' },
+  { value: 'default', label: '默认' },
+  { value: 'plan', label: '计划模式' },
+  { value: 'review', label: '评审模式' },
 ]
 const PERMISSION_OPTIONS: readonly SampleOption[] = [
-  { id: 'default', label: '默认权限' },
-  { id: 'acceptEdits', label: '接受编辑' },
-  { id: 'bypass', label: '跳过确认' },
+  { value: 'default', label: '默认权限' },
+  { value: 'acceptEdits', label: '接受编辑' },
+  { value: 'bypass', label: '跳过确认' },
 ]
 const THEME_OPTIONS: readonly SampleOption[] = [
-  { id: 'system', label: '跟随系统' },
-  { id: 'light', label: '浅色' },
-  { id: 'dark', label: '深色' },
+  { value: 'system', label: '跟随系统' },
+  { value: 'light', label: '浅色' },
+  { value: 'dark', label: '深色' },
 ]
 
-/** 这三个 chip 在应用里是 select 触发按钮，接上官方 `Menu` 才能调试选中态、chevron 旋转与弹层位置。 */
+/** 通用的 `Select` 把三个 chip 变体都铺成触发器，这里逐档演示（选中态/chevron 旋转/弹层位置由它自管）。 */
 function SelectSample({ variant, icon, options }: {
   variant: ChipVariant
   icon?: ReactNode
   options: readonly SampleOption[]
 }): ReactElement {
-  const [open, setOpen] = useState(false)
-  const [value, setValue] = useState(options[0]?.id ?? '')
-  return (
-    <Menu
-      open={open}
-      onClose={() => setOpen(false)}
-      onSelect={(id) => {
-        setOpen(false)
-        setValue(id)
-      }}
-      items={options.map(option => ({ id: option.id, label: option.label }))}
-      selectedId={value}
-      portal
-      align="end"
-      anchor={(
-        <Chip
-          aria-expanded={open}
-          aria-haspopup="menu"
-          chevron={<Icon as={ChevronDown} size={14} />}
-          icon={icon}
-          open={open}
-          variant={variant}
-          onClick={() => setOpen(openState => !openState)}
-        >
-          {options.find(option => option.id === value)?.label ?? value}
-        </Chip>
-      )}
-    />
-  )
+  const [value, setValue] = useState(options[0]?.value ?? '')
+  return <Select icon={icon} options={options} value={value} variant={variant} onChange={setValue} />
 }
 
 function SourceCard({ entry }: { entry: UiComponentEntry }): ReactElement {
@@ -167,58 +138,58 @@ export function UiComponentsPanel(): ReactElement {
             <Button icon={<TrashBin width={16} height={16} />} variant="danger">删除</Button>
             <Button icon={<TrashBin width={16} height={16} />} size="sm" variant="danger">删除 / sm</Button>
           </div>
-          <IconButton aria-label="搜索" icon={<Magnifier width={16} height={16} />} variant="search" />
-          <IconButton aria-label="工具栏" icon={<Gear width={16} height={16} />} variant="toolbar" />
-          <IconButton aria-label="模型" icon={<Puzzle width={16} height={16} />} variant="model" />
-          <IconButton aria-label="圆形" icon={<Plus width={16} height={16} />} variant="round" />
-          <IconButton aria-label="行内" icon={<TrashBin width={16} height={16} />} variant="row" />
-          <IconButton aria-expanded aria-label="帮助" icon={<Person width={16} height={16} />} variant="help" />
-          <IconButton aria-label="消息动作" icon={<Comments width={16} height={16} />} variant="action" />
+          <Action aria-label="搜索" icon={<Magnifier width={16} height={16} />} variant="search" />
+          <Action aria-label="工具栏" icon={<Gear width={16} height={16} />} variant="toolbar" />
+          <Action aria-label="模型" icon={<Puzzle width={16} height={16} />} variant="model" />
+          <Action aria-label="圆形" icon={<Plus width={16} height={16} />} variant="round" />
+          <Action aria-label="行内" icon={<TrashBin width={16} height={16} />} variant="row" />
+          <Action aria-expanded aria-label="帮助" icon={<Person width={16} height={16} />} variant="help" />
+          <Action aria-label="消息动作" icon={<Comments width={16} height={16} />} variant="action" />
         </div>
         <div className="dshp-ui-components__sample">
           <div className="dshp-ui-components__stack">
-            <GoalBar
+            <ConversationBar
               actions={(
                 <>
-                  <GoalBarAction
+                  <ConversationBarAction
                     aria-label="检出本地"
                     iconOnly
                     title="检出本地"
                   >
                     <Icon as={ArrowRightFromSquare} size={14} />
-                  </GoalBarAction>
-                  <GoalBarAction
+                  </ConversationBarAction>
+                  <ConversationBarAction
                     aria-label="放弃"
                     iconOnly
                     title="放弃"
                   >
                     <Icon as={TrashBin} size={14} />
-                  </GoalBarAction>
+                  </ConversationBarAction>
                 </>
               )}
               glyph={<Icon as={CircleTree} size={14} />}
               label="工作树"
               objective="deepseek-harness-desktop · worktree 5a25420f"
             >
-              <GoalBarAction
+              <ConversationBarAction
                 aria-label="日志"
                 iconOnly
                 title="日志"
               >
                 <Icon as={TerminalLine} size={14} />
-              </GoalBarAction>
-            </GoalBar>
-            <GoalBar
+              </ConversationBarAction>
+            </ConversationBar>
+            <ConversationBar
               actions={(
                 <>
-                  <GoalBarAction
+                  <ConversationBarAction
                     aria-label="关闭"
                     iconOnly
                     title="关闭"
                   >
                     <Icon as={Xmark} size={14} />
-                  </GoalBarAction>
-                  <GoalBarAction>文本动作</GoalBarAction>
+                  </ConversationBarAction>
+                  <ConversationBarAction>文本动作</ConversationBarAction>
                 </>
               )}
               error="worktree create failed: exit 128"

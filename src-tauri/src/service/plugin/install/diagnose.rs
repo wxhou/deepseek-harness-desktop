@@ -1,7 +1,7 @@
 //! 失败输出解析：识别网络错误（代理/DNS/连接/TLS）、git 传输层失败
 //! （HTTPS→SSH 回退提示）、pnpm store 布局不兼容（`ERR_PNPM_UNEXPECTED_STORE`
-//! 一族），并从输出中挑选可展示的错误消息（ANSI 清洗、命中错误标记的行优先、
-//! 截断）。
+//! 一族）、dsh 版本兼容性拒绝（逐条精确 `包名@版本` + 运行时版本，供用户授权），
+//! 并从输出中挑选可展示的错误消息（ANSI 清洗、命中错误标记的行优先、截断）。
 
 /// 给非空诊断文本加 `: ` 前缀，便于直接拼进错误消息（空文本返回空串）。
 pub(super) fn diagnostic_suffix(detail: &str) -> String {
@@ -49,7 +49,22 @@ pub(super) fn pick_error_message(output: &str, hint: Option<&str>) -> String {
             let trimmed = trimmed.trim();
             (!trimmed.is_empty()).then(|| trimmed.to_string())
         })
-        .filter(|line| ERROR_MARKERS.iter().any(|marker| line.contains(marker)))
+        .filter(|line| {
+            ERROR_MARKERS.iter().any(|marker| line.contains(marker))
+                || line.split_whitespace().any(|word| {
+                    let code = word
+                        .strip_prefix('[')
+                        .and_then(|word| word.strip_suffix(']'))
+                        .or_else(|| word.strip_suffix(':'));
+                    code.is_some_and(|code| {
+                        code.len() > 1
+                            && code.starts_with('E')
+                            && code.bytes().all(|byte| {
+                                byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_'
+                            })
+                    })
+                })
+        })
         .take(8)
         .collect();
     let base = if cleaned.is_empty() {
@@ -82,6 +97,121 @@ fn strip_ansi(s: &str) -> String {
         }
     }
     out
+}
+
+/// 真实的发布时长策略违规里的一条记录（[`policy_blocked_versions`] 的解析结果）。
+///
+/// 与 [`IncompatibleVersion`] 区分：这里说的是 pnpm 的 `minimumReleaseAge` 门禁，不是
+/// dsh 的版本兼容性。豁免写入档案的 `minimumReleaseAgeExclude`（精确 `包名@版本`），
+/// 因此授权键只需要这两个字段，运行时版本与之无关。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PolicyBlockedVersion {
+    /// `package.json` 的包名（scoped 包含 `@scope/` 前缀）
+    pub name: String,
+    pub version: String,
+}
+
+/// 从失败输出里提取**真实**的发布时长策略违规条目。
+///
+/// pnpm 11 有两种 `ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION`：
+/// - 解析阶段（`<包名>@<版本> was published recently (released …; minimumReleaseAge is …)`）
+///   —— pnpm 自己挑中了太新的版本，回落到旧版本即可，通常不报错；
+/// - lockfile 校验阶段（`<包名>@<版本> was published at <时间>, within the minimumReleaseAge
+///   cutoff (<时间>)`）—— 档案已经声明/装了这个版本，而策略不接受它，于是**每一次**
+///   插件操作都在这里硬失败（issue #222 的另一面）。
+///
+/// 只认后一种：它带了 pnpm **真的拿到**的发布时间（`was published at <ISO>`），因此能
+/// 确定不是「元数据拉不到被误判」——那种情况见 [`policy_verification_network_failure`]，
+/// 属于可重试的网络问题。解析结果用于给用户一条可操作的出路（授权这些精确版本），
+/// 解析失败一律返回空，退回普通失败展示。
+pub(super) fn policy_blocked_versions(output: &str) -> Vec<PolicyBlockedVersion> {
+    let mut found: Vec<PolicyBlockedVersion> = Vec::new();
+    for line in output.split('\n') {
+        let stripped = strip_ansi(line);
+        let Some((key, rest)) = stripped.split_once(" was published at ") else {
+            continue;
+        };
+        // 必须同时是「按发布时间判定的违规」：缺了这句说明不是时间门禁（文案改版也走这里）
+        if !rest.contains("within the minimumReleaseAge cutoff") {
+            continue;
+        }
+        // 版本号自身不含 `@`，按最后一个 `@` 切开包名与版本（scoped 包名以 `@` 开头）
+        let Some((name, version)) = key.trim().rsplit_once('@') else {
+            continue;
+        };
+        let name = name.trim();
+        let version = version.trim();
+        if name.is_empty() || version.is_empty() {
+            continue;
+        }
+        let entry = PolicyBlockedVersion {
+            name: name.to_string(),
+            version: version.to_string(),
+        };
+        if !found.contains(&entry) {
+            found.push(entry);
+        }
+    }
+    found
+}
+
+/// dsh 版本兼容性拒绝里的一条记录（[[`incompatible_versions`]] 的解析结果）。
+///
+/// 授权（`dsh plugin allow-version`）只认**精确**的包名 + 版本 + 运行时版本三元组，
+/// 因此三者都必须原样带出，前端据此逐项向用户确认风险后再授权。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct IncompatibleVersion {
+    /// `package.json` 的包名（scoped 包含 `@scope/` 前缀）
+    pub name: String,
+    pub version: String,
+    /// 被拒时所处的 dsh 运行时精确版本：授权必须与它完全一致，否则 dsh 拒绝写入
+    pub runtime_version: String,
+}
+
+/// 从安装失败输出里提取版本兼容性拒绝条目。
+///
+/// dsh 在 pnpm 之前核对每个待装插件声明的 DSH peer 依赖，未授权精确版本时整批拒绝
+/// （不下载、不构建），输出里逐条印出
+/// `Plugin <包名>@<版本> is incompatible with dsh <运行时版本>: peerDependencies …`。
+/// 这是唯一同时给出三者（可授权键）的地方：`pick_error_message` 的行标记过滤会把它
+/// 并进一大段纯文本，用户只能自己从中抄出版本去敲 CLI。解析失败一律返回空——空结果
+/// 只是退回原来的「安装失败」展示，绝不误报成可授权项。
+pub(super) fn incompatible_versions(output: &str) -> Vec<IncompatibleVersion> {
+    let mut found: Vec<IncompatibleVersion> = Vec::new();
+    for line in output.split('\n') {
+        let stripped = strip_ansi(line);
+        // 第一条警告与 `dsh: installation rejected: ` 同处一行（dsh 用同一个模板拼出
+        // 整段拒绝说明），因此只能在行内定位而不能要求行首匹配；后续条目各自成行。
+        let Some(start) = stripped.find("Plugin ") else {
+            continue;
+        };
+        let Some((key, rest)) = stripped[start + "Plugin ".len()..].split_once(" is incompatible with dsh ")
+        else {
+            continue;
+        };
+        // 版本号自身不含 `@`，按最后一个 `@` 切开包名与版本（scoped 包名以 `@` 开头）
+        let Some((name, version)) = key.rsplit_once('@') else {
+            continue;
+        };
+        let runtime_version = rest.split(':').next().unwrap_or_default().trim();
+        // 运行时版本必须以数字开头：这样即使后续文案改用别的分隔符，也不会把
+        // 冒号后的说明文字当成版本号带进授权命令
+        if name.is_empty()
+            || version.is_empty()
+            || !runtime_version.starts_with(|c: char| c.is_ascii_digit())
+        {
+            continue;
+        }
+        let entry = IncompatibleVersion {
+            name: name.to_string(),
+            version: version.to_string(),
+            runtime_version: runtime_version.to_string(),
+        };
+        if !found.contains(&entry) {
+            found.push(entry);
+        }
+    }
+    found
 }
 
 /// 从 pnpm 失败输出里识别网络错误，返回稳定提示，避免把网络问题误报为 dsh
@@ -121,10 +251,17 @@ pub(super) fn network_error_hint(output: &str) -> Option<&'static str> {
 /// 真·发布时间违规（版本确实太新）不带任何拉取失败信号，绝不命中：那种失败重试无用，
 /// 也不该把供应链信号降级成网络问题。
 ///
+/// 判据收紧到「拿不到真实发布时间」：输出里已经能解析出违规条目与它的发布时间
+/// （[`policy_blocked_versions`]）时直接返回 false——那说明 pnpm 拿到了元数据、判定是
+/// 真的，重跑同一条命令只会再失败一次，而且每次都要停服/重启。
+///
 /// 传入的必须是**单次尝试**的输出（`run_plugin_with_allow_build_retry` 为此额外返回
 /// 最后一次尝试的输出）：把历次重试拼接起来判断时，早先一次的网络字样会给最终一次的真·
 /// 违规「背书」，正好破坏上面这条边界。
 pub(super) fn policy_verification_network_failure(output: &str) -> bool {
+    if !policy_blocked_versions(output).is_empty() {
+        return false;
+    }
     let lower = output.to_ascii_lowercase();
     if !lower.contains("err_pnpm_minimum_release_age_violation") {
         return false;
@@ -249,12 +386,121 @@ mod tests {
     use super::*;
 
     #[test]
+    fn pick_error_message_preserves_filesystem_cause_before_cli_summary() {
+        for cause in [
+            "[EISDIR] EISDIR: illegal operation on a directory, readlink 'F:/apps/.dsh/profiles/tauri/node_modules/dsh-tauri'",
+            "EPERM: operation not permitted, unlink 'C:/apps/plugin/package.json'",
+            "[ENOTEMPTY] ENOTEMPTY: directory not empty, rmdir 'C:/apps/plugin'",
+            "EACCES: permission denied, open '/tmp/profile/package.json'",
+            "ENOSPC: no space left on device, write",
+        ] {
+            let output = format!(
+                "Progress: resolved 1, reused 0\n\u{1b}[31m{cause}\u{1b}[0m\ndsh: plugin command failed; diagnostics: C:/profile/.plugin-manager/logs/operation-test/pnpm.log\n"
+            );
+            assert_eq!(
+                pick_error_message(&output, None),
+                format!("{cause}\ndsh: plugin command failed; diagnostics: C:/profile/.plugin-manager/logs/operation-test/pnpm.log")
+            );
+        }
+    }
+
+    #[test]
+    fn pick_error_message_does_not_promote_errno_in_progress_paths() {
+        let output = "Progress: unpacking C:/EISDIR/cache\nResolved EACCES-helper@1.0.0\ndsh: plugin command failed; diagnostics: C:/profile/pnpm.log\n";
+        assert_eq!(
+            pick_error_message(output, None),
+            "dsh: plugin command failed; diagnostics: C:/profile/pnpm.log"
+        );
+    }
+
+    #[test]
     fn diagnostic_suffix_preserves_non_allowbuilds_failure() {
         assert_eq!(diagnostic_suffix(""), "");
         assert_eq!(
             diagnostic_suffix("ERR_PNPM_LINKING_FAILED: stale symlink"),
             ": ERR_PNPM_LINKING_FAILED: stale symlink"
         );
+    }
+
+    // ---- dsh 版本兼容性拒绝：逐条精确版本授权 ----
+
+    /// 用户实测拒绝输出（dsh 0.2.0-rc.1，预装引导一次装两个插件、双双被拒）。
+    const INCOMPATIBLE_OUTPUT: &str = "\ndsh: installation rejected: Plugin dsh-better-sidebar@0.22.1 is incompatible with dsh 0.2.0-rc.1: peerDependencies {\"@deepseek-ai/dsh-llm\":\"^0.1.7-rc.1\"}. Running it may cause crashes or data loss. Update the plugin or install a plugin version compatible with this dsh runtime.\ndsh: nothing was installed.\ndsh: to accept the risk, run: dsh plugin --profile core-020 allow-version dsh-better-sidebar@0.22.1 --dsh-version 0.2.0-rc.1 --accept-risk\n";
+
+    #[test]
+    fn incompatible_versions_extracts_exact_grantable_triple() {
+        assert_eq!(
+            incompatible_versions(INCOMPATIBLE_OUTPUT),
+            vec![IncompatibleVersion {
+                name: "dsh-better-sidebar".to_string(),
+                version: "0.22.1".to_string(),
+                runtime_version: "0.2.0-rc.1".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn incompatible_versions_reads_header_line_and_own_lines_together() {
+        // 真实形状：dsh 把第一条警告与 `installation rejected: ` 拼在同一行，其余各自成行
+        let out = concat!(
+            "\ndsh: installation rejected: Plugin dsh-better-sidebar@0.22.1 is incompatible with dsh 0.2.0-rc.1: peerDependencies {\"@deepseek-ai/dsh-llm\":\"^0.1.7-rc.1\"}. Running it may cause crashes or data loss.\n",
+            "Plugin dsh-rewind-plugin@0.14.0 is incompatible with dsh 0.2.0-rc.1: peerDependencies {\"@deepseek-ai/dsh-fs\":\"^0.1.7-rc.2\"}. Running it may cause crashes or data loss.\n",
+            "dsh: nothing was installed.\n",
+        );
+        assert_eq!(
+            incompatible_versions(out),
+            vec![
+                IncompatibleVersion {
+                    name: "dsh-better-sidebar".to_string(),
+                    version: "0.22.1".to_string(),
+                    runtime_version: "0.2.0-rc.1".to_string(),
+                },
+                IncompatibleVersion {
+                    name: "dsh-rewind-plugin".to_string(),
+                    version: "0.14.0".to_string(),
+                    runtime_version: "0.2.0-rc.1".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn incompatible_versions_keeps_scoped_package_name() {
+        let out = "dsh: installation rejected: Plugin @wenbin_wb/dsh-bridge@1.2.3 is incompatible with dsh 0.2.0-rc.1: peerDependencies {}.\n";
+        assert_eq!(
+            incompatible_versions(out),
+            vec![IncompatibleVersion {
+                name: "@wenbin_wb/dsh-bridge".to_string(),
+                version: "1.2.3".to_string(),
+                runtime_version: "0.2.0-rc.1".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn incompatible_versions_dedupes_repeated_refusals() {
+        // 重试拼接的整串里同一插件会出现多次：授权列表只应留一条
+        let repeated = format!("{INCOMPATIBLE_OUTPUT}{INCOMPATIBLE_OUTPUT}");
+        assert_eq!(incompatible_versions(&repeated).len(), 1);
+    }
+
+    #[test]
+    fn incompatible_versions_ignores_other_failures_and_malformed_lines() {
+        assert!(incompatible_versions("ERR_PNPM_FETCH_404 registry error").is_empty());
+        assert!(incompatible_versions("").is_empty());
+        assert!(incompatible_versions(
+            "dsh: plugin command failed; diagnostics: /tmp/pnpm.log\n"
+        )
+        .is_empty());
+        // 运行时版本不是版本号（文案改版）时宁可放弃解析，也不把说明文字当版本带进授权
+        assert!(incompatible_versions(
+            "Plugin foo@1.0.0 is incompatible with dsh unknown-runtime: peerDependencies {}."
+        )
+        .is_empty());
+        assert!(incompatible_versions(
+            "Plugin foo is incompatible with dsh 0.2.0-rc.1: peerDependencies {}."
+        )
+        .is_empty());
     }
 
     // ---- git 传输层错误识别（区别于 allowBuilds 门禁）----
@@ -341,6 +587,49 @@ mod tests {
             "ERR_PNPM_FETCH_404 registry error"
         ));
         assert!(!policy_verification_network_failure(""));
+    }
+
+    // ---- 真实的发布时长违规（档案已声明太新的版本 → 每次插件操作都硬失败）----
+
+    /// 用户实测（pnpm 11.7.0，档案 spec 被升到 `^2.11.2`）：违规条目带的是 pnpm **真的
+    /// 拿到**的发布时间；后面那些 `UND_ERR_DESTROYED` 拉取失败是进程被 kill 的后果，
+    /// 不是原因。
+    const REAL_POLICY_VIOLATION: &str = "? Verifying lockfile against supply-chain policies (201 entries)...\n✗ Lockfile failed supply-chain policy check (201 entries in 1.5s)\n[ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION] 1 lockfile entries failed verification:\n@wenbin_wb/dsh-bridge@2.11.2 was published at 2026-09-28T14:14:07.937Z, within the minimumReleaseAge cutoff (2026-09-27T15:50:11.385Z)\n\nProgress: resolved 48, reused 0, downloaded 0, added 0\n[WARN] GET https://registry.npmjs.org/axios error (UND_ERR_DESTROYED). Will retry in 10 seconds. 2 retries left.\n";
+
+    #[test]
+    fn policy_blocked_versions_reads_the_real_lockfile_violation() {
+        let blocked = policy_blocked_versions(REAL_POLICY_VIOLATION);
+
+        assert_eq!(blocked.len(), 1);
+        assert_eq!(blocked[0].name, "@wenbin_wb/dsh-bridge");
+        assert_eq!(blocked[0].version, "2.11.2");
+    }
+
+    #[test]
+    fn policy_blocked_versions_dedupes_and_ignores_other_output() {
+        let output = format!(
+            "{REAL_POLICY_VIOLATION}{}\n",
+            "lodash@4.17.21 was published at 2026-09-28T10:00:00.000Z, within the minimumReleaseAge cutoff (2026-09-27T15:50:11.385Z)"
+        );
+        let blocked = policy_blocked_versions(&output);
+
+        assert_eq!(blocked.len(), 2);
+        assert_eq!(blocked[1].name, "lodash");
+        assert_eq!(blocked[1].version, "4.17.21");
+
+        // 解析阶段那种「pnpm 自己挑中太新版本」的文案：没有精确发布时间，不作为可授权项
+        let resolution_form = "[ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION] undici@7.29.1 was published recently (released 5 minutes ago; minimumReleaseAge is 1440)";
+        assert!(policy_blocked_versions(resolution_form).is_empty());
+        // 有时间但没有门禁判据（文案改版）时宁可退回普通失败
+        let no_cutoff = "undici@7.29.1 was published at 2026-09-28T10:00:00.000Z";
+        assert!(policy_blocked_versions(no_cutoff).is_empty());
+    }
+
+    #[test]
+    fn genuine_policy_violation_is_not_retried_as_a_network_failure() {
+        // 关键回归：真违规后面跟着的拉取失败（进程被 kill 的后果）不能把它改判成网络问题，
+        // 否则每次插件操作都会白停服重试 4 轮，还给出「registry 元数据拉取失败」的错因。
+        assert!(!policy_verification_network_failure(REAL_POLICY_VIOLATION));
     }
 
     // ---- pnpm store 布局不兼容（ERR_PNPM_UNEXPECTED_STORE 一族）----

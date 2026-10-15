@@ -39,15 +39,24 @@ pub struct PreinstallLogPayload {
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct ProcessOwner(u64);
 
+#[derive(Clone)]
+pub(crate) struct ActivePluginProcess {
+    pub(crate) pid: u32,
+    pub(crate) child: Option<Arc<Mutex<std::process::Child>>>,
+}
+
 static NEXT_PROCESS_OWNER: AtomicU64 = AtomicU64::new(1);
-static ACTIVE_PLUGIN_PIDS: OnceLock<Mutex<HashMap<ProcessOwner, u32>>> = OnceLock::new();
+static ACTIVE_PLUGIN_PIDS: OnceLock<Mutex<HashMap<ProcessOwner, ActivePluginProcess>>> =
+    OnceLock::new();
 static PLUGIN_PROCESS_LOCK: OnceLock<Arc<tokio::sync::Mutex<()>>> = OnceLock::new();
 static PLUGIN_OPERATION_LOCK: OnceLock<Arc<tokio::sync::Mutex<()>>> = OnceLock::new();
+#[cfg(test)]
+pub(crate) static TEST_PROCESS_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 static PLUGIN_CLEANUP_FAILURE: OnceLock<
     tokio::sync::watch::Sender<Option<(ProcessOwner, String)>>,
 > = OnceLock::new();
 
-fn active_pid_lock() -> &'static Mutex<HashMap<ProcessOwner, u32>> {
+fn active_pid_lock() -> &'static Mutex<HashMap<ProcessOwner, ActivePluginProcess>> {
     ACTIVE_PLUGIN_PIDS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -60,19 +69,23 @@ pub(crate) fn new_process_owner() -> ProcessOwner {
 }
 
 pub(crate) fn active_plugin_pid(owner: ProcessOwner) -> Option<u32> {
+    active_plugin_process(owner).map(|process| process.pid)
+}
+
+pub(crate) fn active_plugin_process(owner: ProcessOwner) -> Option<ActivePluginProcess> {
     active_pid_lock()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .get(&owner)
-        .copied()
+        .cloned()
 }
 
-pub(crate) fn active_plugin_processes() -> Vec<(ProcessOwner, u32)> {
+pub(crate) fn active_plugin_processes() -> Vec<(ProcessOwner, ActivePluginProcess)> {
     active_pid_lock()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .iter()
-        .map(|(owner, pid)| (*owner, *pid))
+        .map(|(owner, process)| (*owner, process.clone()))
         .collect()
 }
 
@@ -151,8 +164,39 @@ pub(crate) fn clear_orphan_plugin_writer_lock(profile_dir: &Path) -> bool {
     true
 }
 
+pub(crate) fn process_cleanup_failure(owner: ProcessOwner) -> Option<String> {
+    cleanup_failure_sender()
+        .borrow()
+        .as_ref()
+        .filter(|(active, _)| *active == owner)
+        .map(|(_, reason)| reason.clone())
+}
+
+pub(crate) fn is_process_cleanup_failure(error: &str) -> bool {
+    [
+        // 不能整段匹配 `PNPM_PROBE_`：锁被正常安装占住时的 `PNPM_PROBE_LOCK_TIMEOUT`
+        // 只是竞争，不代表上一次清理未确认。
+        "PNPM_PROBE_TREE_CLEANUP_FAILED:",
+        "PNPM_PROBE_CLEANUP_",
+        "PLUGIN_PROCESS_",
+        "PREINSTALL_WAIT:",
+        "INTERNAL_PLUGIN_PROCESS_REAP_TIMEOUT:",
+        "INTERNAL_PLUGIN_ENSURE_DROPPED:",
+    ]
+    .iter()
+    .any(|prefix| error.starts_with(prefix))
+}
+
 pub(crate) fn mark_process_cleanup_failed(owner: ProcessOwner, reason: String) {
-    cleanup_failure_sender().send_replace(Some((owner, reason)));
+    cleanup_failure_sender().send_if_modified(|failure| {
+        if failure.as_ref().is_some_and(|(active, current)| {
+            *active == owner && current.starts_with("PNPM_PROBE_TREE_CLEANUP_FAILED:")
+        }) {
+            return false;
+        }
+        *failure = Some((owner, reason));
+        true
+    });
 }
 
 pub(crate) fn clear_process_cleanup_failed(owner: ProcessOwner) {
@@ -224,7 +268,22 @@ impl PidGuard {
         active_pid_lock()
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(owner, pid);
+            .insert(owner, ActivePluginProcess { pid, child: None });
+        Self { owner, pid }
+    }
+
+    pub(crate) fn set_child(owner: ProcessOwner, child: &Arc<Mutex<std::process::Child>>) -> Self {
+        let pid = child.lock().unwrap_or_else(|error| error.into_inner()).id();
+        active_pid_lock()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(
+                owner,
+                ActivePluginProcess {
+                    pid,
+                    child: Some(child.clone()),
+                },
+            );
         Self { owner, pid }
     }
 }
@@ -232,7 +291,10 @@ impl PidGuard {
 impl Drop for PidGuard {
     fn drop(&mut self) {
         let mut active = active_pid_lock().lock().unwrap_or_else(|e| e.into_inner());
-        if active.get(&self.owner) == Some(&self.pid) {
+        if active
+            .get(&self.owner)
+            .is_some_and(|process| process.pid == self.pid)
+        {
             active.remove(&self.owner);
         }
     }
@@ -344,7 +406,7 @@ pub(crate) async fn run_plugin_process(
 }
 
 /// 取出（并清空）共享缓冲区中的全部捕获输出。
-fn drain_captured(captured: Arc<Mutex<String>>) -> String {
+pub(super) fn drain_captured(captured: Arc<Mutex<String>>) -> String {
     captured
         .lock()
         .map(|mut buf| std::mem::take(&mut *buf))
@@ -404,7 +466,45 @@ mod tests {
     use super::*;
 
     #[test]
-    fn stale_guard_cannot_clear_a_new_process_for_the_same_owner() {
+    fn drain_captured_preserves_exact_output_and_clears_shared_buffer() {
+        let captured = Arc::new(Mutex::new(
+            "stdout  \r\n\tstderr\0中文\npartial\r".to_string(),
+        ));
+
+        assert_eq!(
+            drain_captured(captured.clone()),
+            "stdout  \r\n\tstderr\0中文\npartial\r"
+        );
+        assert_eq!(*captured.lock().unwrap(), "");
+        assert_eq!(drain_captured(captured.clone()), "");
+
+        captured.lock().unwrap().push_str("late stderr");
+        assert_eq!(drain_captured(captured.clone()), "late stderr");
+        assert_eq!(*captured.lock().unwrap(), "");
+    }
+
+    #[test]
+    fn drain_captured_returns_empty_without_recovering_poisoned_buffer() {
+        let captured = Arc::new(Mutex::new("retained output".to_string()));
+        let writer = captured.clone();
+        assert!(std::thread::spawn(move || {
+            let _guard = writer.lock().unwrap();
+            panic!("poison isolated capture buffer");
+        })
+        .join()
+        .is_err());
+
+        assert_eq!(drain_captured(captured.clone()), "");
+        assert!(captured.is_poisoned());
+        assert_eq!(
+            *captured.lock().unwrap_err().into_inner(),
+            "retained output"
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_guard_cannot_clear_a_new_process_for_the_same_owner() {
+        let _test_guard = TEST_PROCESS_LOCK.lock().await;
         let owner = new_process_owner();
         let stale = PidGuard::set(owner, 100);
         let current = PidGuard::set(owner, 200);
@@ -418,6 +518,7 @@ mod tests {
 
     #[tokio::test]
     async fn cleanup_failure_clears_before_lock_handoff_and_preserves_other_owner() {
+        let _test_guard = TEST_PROCESS_LOCK.lock().await;
         let guard = acquire_process_lock().await.unwrap();
         let owner = new_process_owner();
         let pid_guard = PidGuard::set(owner, 100);
@@ -458,6 +559,45 @@ mod tests {
             "clearing a stale owner must not remove another owner's failure"
         );
         clear_process_cleanup_failed(other_owner);
+
+        let tree_reason = "PNPM_PROBE_TREE_CLEANUP_FAILED: tree exit is unconfirmed".to_string();
+        mark_process_cleanup_failed(owner, tree_reason.clone());
+        mark_process_cleanup_failed(owner, "PNPM_PROBE_TIMEOUT: cleanup started".to_string());
+        let retained = cleanup_failure_sender().borrow().clone();
+        assert_eq!(process_cleanup_failure(owner), Some(tree_reason.clone()));
+        clear_process_cleanup_failed(owner);
+        assert_eq!(retained, Some((owner, tree_reason)));
+    }
+
+    #[test]
+    fn cleanup_classifier_keeps_ordinary_install_failures_best_effort() {
+        for blocked in [
+            "PNPM_PROBE_TREE_CLEANUP_FAILED: tree exit is unconfirmed",
+            "PNPM_PROBE_CLEANUP_TIMEOUT: pnpm version probe cleanup did not finish within 5 seconds",
+            "PLUGIN_PROCESS_CLEANUP_FAILED: test process is still active",
+            "PLUGIN_PROCESS_COORDINATOR_DROPPED: cleanup coordinator ended unexpectedly",
+            "PREINSTALL_WAIT: wait task failed",
+            "INTERNAL_PLUGIN_PROCESS_REAP_TIMEOUT: owner remained active",
+        ] {
+            assert!(
+                is_process_cleanup_failure(blocked),
+                "{blocked} must terminate startup instead of warning"
+            );
+        }
+        for best_effort in [
+            "PNPM_PROBE_LOCK_TIMEOUT: timed out waiting for the process lock",
+            "PNPM_PROBE_TIMEOUT: pnpm version probe timed out but the process was recycled",
+            "PNPM_PROBE_TASK_FAILED: task panicked",
+            "PNPM_INSTALL_FAILED: exit code 1: ERR_PNPM_UNEXPECTED_STORE",
+            "INTERNAL_PLUGIN_INSTALL_FAILED: pnpm add failed",
+            "DEPRECATED_PLUGIN_UNINSTALL_FAILED: dshmarket: missing",
+            "PRESET_PLUGIN_STILL_MISSING: 修复后仍缺失以下插件产物",
+        ] {
+            assert!(
+                !is_process_cleanup_failure(best_effort),
+                "{best_effort} must stay best-effort"
+            );
+        }
     }
 
     #[test]

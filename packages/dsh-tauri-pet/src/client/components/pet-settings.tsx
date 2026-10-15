@@ -1,6 +1,6 @@
 import type { ChangeEvent, ReactElement } from 'react'
-import type { PetSettingsProps } from './pet-settings.types'
-import { ArrowRightFromSquare, Button, Icon, Plus, SegmentedControl } from 'dsh-tauri-ui/client'
+import type { PetActionResult, PetListItem } from '../service/pet.types'
+import { ArrowRightFromSquare, Button, Globe, Icon, Input, Modal, Plus, SegmentedControl, Switch } from 'dsh-tauri-ui/client'
 import { useStore, useWatchImmediate } from 'dsh-tauri/client'
 import { useEffect, useId, useRef, useState } from 'react'
 import { PET_DEFAULT_SIZE, PET_SIZE_MAX, PET_SIZE_MIN, PET_SIZE_STEP } from '../constants'
@@ -8,14 +8,20 @@ import { locale } from '../locales'
 import {
   choosePet,
   clearPetSelection,
+  deletePet,
   enablePet,
   importPetArchive,
+  importPetRepository,
   loadForceXwayland,
   loadPetCatalog,
   loadPetOverlaySupported,
+  loadPetUpdates,
+  openCommunityShare,
   resizePet,
   toggleForceXwayland,
   togglePet,
+  togglePetThrow,
+  updatePetRepository,
 } from '../service/pet'
 import { store } from '../store'
 import { PetCard } from './pet-card'
@@ -24,6 +30,12 @@ const TAB_OPTIONS = [
   { value: 'pets', label: 'Pets' },
   { value: 'codex', label: 'Codex' },
 ] as const
+
+/** settings.section 槽位注入给设置分区的属性。 */
+export interface PetSettingsProps {
+  close?: () => void
+  onCreate: (close?: () => void) => Promise<PetActionResult>
+}
 
 /** 读取 .zip 归档为 base64（桌面端命令按字符串收包）。 */
 function readAsBase64(file: File): Promise<string> {
@@ -42,10 +54,15 @@ function readAsBase64(file: File): Promise<string> {
 /** 桌宠设置页：预设 / Chat / Codex 三类宠物卡片（选择、启用、取消选择）、开关、大小滑条与导入。 */
 export function PetSettings(props: PetSettingsProps): ReactElement {
   locale.useLocale()
-  const { status, presetPets, chatPets, codexPets, catalogLoaded, overlaySupported, forceXwayland } = useStore(store.pet)
+  const { status, presetPets, petUpdates, chatPets, codexPets, catalogLoaded, overlaySupported, forceXwayland } = useStore(store.pet)
   const [tab, setTab] = useState<'pets' | 'codex'>('pets')
   const [busy, setBusy] = useState(() => !catalogLoaded)
   const [error, setError] = useState<string | null>(null)
+  const [repositoryOpen, setRepositoryOpen] = useState(false)
+  const [repository, setRepository] = useState('')
+  const [repositoryError, setRepositoryError] = useState<string | null>(null)
+  const repositoryPendingRef = useRef(false)
+  const repositoryId = useId()
   const [size, setSize] = useState(status?.pet_size ?? PET_DEFAULT_SIZE)
   // 切换只落盘，本次进程不会有任何变化，提示重启是用户唯一能看到的反馈。
   const [xwaylandRestart, setXwaylandRestart] = useState(false)
@@ -55,6 +72,7 @@ export function PetSettings(props: PetSettingsProps): ReactElement {
   const enabled = Boolean(status?.enabled)
   const active = status?.active_pet ?? ''
   const statusSize = status?.pet_size ?? PET_DEFAULT_SIZE
+  const throwEnabled = Boolean(status?.throw_enabled)
 
   // 宿主侧尺寸变化同步到本地滑条，正在拖动的本地值不被覆盖。
   useWatchImmediate(statusSize, () => {
@@ -82,68 +100,67 @@ export function PetSettings(props: PetSettingsProps): ReactElement {
       setBusy(false)
       if (!result.ok)
         setError(locale.text('listFailed'))
+      else
+        void loadPetUpdates()
     })
     return () => {
       cancelled = true
     }
   }, [])
 
-  async function enablePreset(id: string): Promise<void> {
-    if (busy || active === id)
-      return
-    setBusy(true)
-    setError(null)
-    const result = await enablePet({ id })
-    if (!result.ok)
-      setError(locale.text('setPetFailed'))
-    setBusy(false)
-  }
-
-  async function choose(id: string): Promise<void> {
-    if (busy || active === id)
-      return
-    setBusy(true)
-    setError(null)
-    const result = await choosePet({ id })
-    if (!result.ok)
-      setError(locale.text('setPetFailed'))
-    setBusy(false)
-  }
-
-  async function clearSelection(): Promise<void> {
-    if (busy || active === '')
-      return
-    setBusy(true)
-    setError(null)
-    const result = await clearPetSelection()
-    if (!result.ok)
-      setError(locale.text('clearFailed'))
-    setBusy(false)
-  }
-
-  async function toggleEnabled(): Promise<void> {
+  async function run(action: () => Promise<PetActionResult>, errorKey: Parameters<typeof locale.text>[0]): Promise<void> {
     if (busy)
       return
     setBusy(true)
     setError(null)
-    const result = await togglePet({ enabled: !enabled })
+    const result = await action()
     if (!result.ok)
-      setError(locale.text('toggleFailed'))
+      setError(locale.text(errorKey))
     setBusy(false)
+  }
+
+  async function enablePreset(id: string): Promise<void> {
+    if (active !== id)
+      await run(() => enablePet({ id }), 'setPetFailed')
+  }
+
+  async function choose(id: string): Promise<void> {
+    if (active !== id)
+      await run(() => choosePet({ id }), 'setPetFailed')
+  }
+
+  async function clearSelection(): Promise<void> {
+    if (active !== '')
+      await run(clearPetSelection, 'clearFailed')
+  }
+
+  /** 删除导入的宠物：预设页删的是远端登记，Chat / Codex 页删的是本地目录。 */
+  async function remove(id: string): Promise<void> {
+    await run(() => deletePet({ id }), 'deleteFailed')
+  }
+
+  async function toggleEnabled(): Promise<void> {
+    await run(() => togglePet({ enabled: !enabled }), 'toggleFailed')
+  }
+
+  /** 切换抛射：关闭（默认）时宠物松手即停，不再飞行与撞边回弹（issue #930）。 */
+  async function toggleThrow(): Promise<void> {
+    await run(() => togglePetThrow({ enabled: !throwEnabled }), 'throwFailed')
   }
 
   /** 切换「强制 XWayland」：应用全局设置，下次启动生效。 */
   async function toggleXwayland(): Promise<void> {
-    if (busy)
-      return
-    setBusy(true)
-    setError(null)
-    const result = await toggleForceXwayland({ enabled: !forceXwayland })
-    if (result.ok)
-      setXwaylandRestart(true)
-    else
-      setError(locale.text('xwaylandFailed'))
-    setBusy(false)
+    await run(async () => {
+      const result = await toggleForceXwayland({ enabled: !forceXwayland })
+      if (result.ok)
+        setXwaylandRestart(true)
+      return result
+    }, 'xwaylandFailed')
+  }
+
+  /** 社区分享：在系统浏览器中打开 Codex 宠物社区站点。 */
+  async function shareCommunity(): Promise<void> {
+    await run(openCommunityShare, 'communityShareFailed')
   }
 
   async function commitSize(value: number): Promise<void> {
@@ -163,6 +180,32 @@ export function PetSettings(props: PetSettingsProps): ReactElement {
     const result = await props.onCreate(props.close)
     if (!result.ok) {
       setError(locale.text('createFailed'))
+      setBusy(false)
+    }
+  }
+
+  async function importRepository(): Promise<void> {
+    if (busy || repositoryPendingRef.current)
+      return
+    repositoryPendingRef.current = true
+    setBusy(true)
+    setRepositoryError(null)
+    setError(null)
+    try {
+      const result = await importPetRepository({ repository })
+      if (result.ok) {
+        setRepositoryOpen(false)
+        setRepository('')
+      }
+      else {
+        setRepositoryError(locale.text(result.error === 'PET_REPOSITORY_INVALID' ? 'repositoryInvalid' : 'repositoryImportFailed'))
+      }
+    }
+    catch {
+      setRepositoryError(locale.text('repositoryImportFailed'))
+    }
+    finally {
+      repositoryPendingRef.current = false
       setBusy(false)
     }
   }
@@ -188,12 +231,28 @@ export function PetSettings(props: PetSettingsProps): ReactElement {
     }
   }
 
+  const cards = (items: readonly PetListItem[]) => items.map(item => (
+    <PetCard
+      key={item.id}
+      thumbnail={item.thumbnail}
+      thumbnailType={item.thumbnail_type ?? 'spritesheet'}
+      name={item.name}
+      desc={item.description ?? ''}
+      active={active === item.id}
+      disabled={busy}
+      actionLabel={locale.text(active === item.id ? 'clear' : 'select')}
+      onAction={() => { void (active === item.id ? clearSelection() : choose(item.id)) }}
+      deleteLabel={locale.text('delete')}
+      onDelete={() => { void remove(item.id) }}
+    />
+  ))
+
   const petsPanel = (
     <>
       {busy && presetPets.length === 0 && chatPets.length === 0
-        ? <div className="dshp-pet__loading">{locale.text('loading')}</div>
+        ? <div className="px-[16px] py-[24px] text-center text-[13px] leading-[20px] text-secondary">{locale.text('loading')}</div>
         : (
-            <div className="dshp-pet__cards">
+            <div className="flex flex-col gap-[12px]">
               {presetPets.map(item => (
                 <PetCard
                   key={item.id}
@@ -204,57 +263,37 @@ export function PetSettings(props: PetSettingsProps): ReactElement {
                   disabled={busy}
                   actionLabel={locale.text(active === item.id ? 'clear' : 'enable')}
                   onAction={() => { void (active === item.id ? clearSelection() : enablePreset(item.id)) }}
+                  deleteLabel={item.remote ? locale.text('delete') : undefined}
+                  onDelete={item.remote ? () => { void remove(item.id) } : undefined}
+                  updateLabel={locale.text('update')}
+                  onUpdate={item.remote && petUpdates.includes(item.id) ? () => { void run(() => updatePetRepository({ id: item.id }), 'updateFailed') } : undefined}
                 />
               ))}
-              {chatPets.map(item => (
-                <PetCard
-                  key={item.id}
-                  thumbnail={item.thumbnail}
-                  thumbnailType={item.thumbnail ? 'spritesheet' : undefined}
-                  name={item.name}
-                  desc={item.description ?? ''}
-                  active={active === item.id}
-                  disabled={busy}
-                  actionLabel={locale.text(active === item.id ? 'clear' : 'select')}
-                  onAction={() => { void (active === item.id ? clearSelection() : choose(item.id)) }}
-                />
-              ))}
+              {cards(chatPets)}
             </div>
           )}
     </>
   )
 
   const codexPanel = (
-    <div className="dshp-pet__cards">
+    <div className="flex flex-col gap-[12px]">
       {codexPets.length === 0
-        ? <div className="dshp-pet__empty">{locale.text('emptyImported')}</div>
-        : codexPets.map(item => (
-            <PetCard
-              key={item.id}
-              thumbnail={item.thumbnail}
-              thumbnailType={item.thumbnail ? 'spritesheet' : undefined}
-              name={item.name}
-              desc={item.description ?? ''}
-              active={active === item.id}
-              disabled={busy}
-              actionLabel={locale.text(active === item.id ? 'clear' : 'select')}
-              onAction={() => { void (active === item.id ? clearSelection() : choose(item.id)) }}
-            />
-          ))}
+        ? <div className="px-[16px] py-[24px] text-center text-[13px] leading-[20px] rounded-[12px] border border-dashed border-border-weak text-secondary">{locale.text('emptyImported')}</div>
+        : cards(codexPets)}
     </div>
   )
 
   return (
-    <div className="dshp-pet__page">
+    <div data-pet-page="1" className="flex flex-col gap-[12px] text-primary">
       {/* 开启并重启后 overlaySupported 变回 true、提示消失，没有 forceXwayland 这一支就再也关不掉。
           xwaylandRestart 一支覆盖在 XWayland 下关闭开关的情形：前两个条件同时落空，
           整块会连同刚点过的按钮一起卸载，重启提示无从显示。
           macOS / Windows 上三个条件都不成立，整块不渲染。 */}
       {overlaySupported === false || forceXwayland || xwaylandRestart
         ? (
-            <div className="dshp-pet__notice" role="status">
+            <div className="flex flex-col gap-[8px] px-[12px] py-[10px] text-[12px] leading-[18px] rounded-[10px] border border-border-weak text-secondary [&_p]:m-0" role="status">
               {overlaySupported === false ? <p>{locale.text('waylandNotice')}</p> : null}
-              <div className="dshp-pet__notice-actions">
+              <div className="flex items-center flex-wrap gap-[8px]">
                 <Button
                   type="button"
                   variant="outline"
@@ -266,13 +305,13 @@ export function PetSettings(props: PetSettingsProps): ReactElement {
                 </Button>
               </div>
               {xwaylandRestart
-                ? <p className="dshp-pet__notice-banner">{locale.text('xwaylandRestart')}</p>
+                ? <p className="m-0 px-[10px] py-[8px] text-[13px] leading-[20px] rounded-[8px] border border-[color-mix(in_srgb,var(--dsw-alias-state-business-primary)_35%,transparent)] bg-[color-mix(in_srgb,var(--dsw-alias-state-business-primary)_8%,transparent)] text-primary">{locale.text('xwaylandRestart')}</p>
                 : null}
-              <p className="dshp-pet__notice-hint">{locale.text('xwaylandDesc')}</p>
+              <p className="text-[12px] leading-[18px] text-tertiary">{locale.text('xwaylandDesc')}</p>
             </div>
           )
         : null}
-      <div className="dshp-pet__tabs">
+      <div className="flex items-center justify-between gap-[16px] flex-wrap mt-[4px]">
         <SegmentedControl
           id={tabsId}
           label={locale.text('name')}
@@ -280,7 +319,7 @@ export function PetSettings(props: PetSettingsProps): ReactElement {
           options={TAB_OPTIONS}
           onChange={next => setTab(next === 'codex' ? 'codex' : 'pets')}
         />
-        <div className="dshp-pet__tab-tools">
+        <div className="flex items-center gap-[6px]">
           {tab === 'pets'
             ? (
                 <>
@@ -288,11 +327,23 @@ export function PetSettings(props: PetSettingsProps): ReactElement {
                     type="button"
                     variant="outline"
                     size="sm"
-                    icon={<Icon as={Plus} />}
+                    icon={<Icon size={14} as={Plus} />}
                     disabled={busy}
                     onClick={() => { void createPet() }}
                   >
                     {locale.text('create')}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={busy}
+                    onClick={() => {
+                      setRepositoryError(null)
+                      setRepositoryOpen(true)
+                    }}
+                  >
+                    {locale.text('importRepository')}
                   </Button>
                   <Button
                     type="button"
@@ -311,7 +362,7 @@ export function PetSettings(props: PetSettingsProps): ReactElement {
                     type="button"
                     variant="outline"
                     size="sm"
-                    icon={<Icon as={ArrowRightFromSquare} />}
+                    icon={<Icon size={14} as={ArrowRightFromSquare} />}
                     disabled={busy}
                     onClick={() => fileRef.current?.click()}
                   >
@@ -325,22 +376,76 @@ export function PetSettings(props: PetSettingsProps): ReactElement {
                     disabled={busy}
                     onChange={(event) => { void onImport(event) }}
                   />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    icon={<Icon size={14} as={Globe} />}
+                    disabled={busy}
+                    onClick={() => { void shareCommunity() }}
+                  >
+                    {locale.text('communityShare')}
+                  </Button>
                 </>
               )}
         </div>
       </div>
-      <p className="dshp-pet__tab-desc">
+      <p className="m-0 text-[13px] leading-[20px] text-secondary">
         {tab === 'pets' ? locale.text('tabInstalledDesc') : locale.text('tabCodexDesc')}
       </p>
       <div id={`${tabsId}-${tab}-panel`} role="tabpanel" aria-labelledby={`${tabsId}-${tab}`}>
         {tab === 'pets' ? petsPanel : codexPanel}
       </div>
-      {error ? <div className="dshp-pet__error" role="alert">{error}</div> : null}
-      <div className="dshp-pet__size-row">
-        <span className="dshp-pet__size-label">{locale.text('sizeLabel')}</span>
+      <Modal
+        open={repositoryOpen}
+        title={locale.text('importRepository')}
+        description={locale.text('repositoryHint')}
+        closeLabel={locale.text('close')}
+        onClose={() => {
+          if (!repositoryPendingRef.current)
+            setRepositoryOpen(false)
+        }}
+        footer={(
+          <>
+            <Button variant="outline" disabled={busy} onClick={() => setRepositoryOpen(false)}>{locale.text('cancel')}</Button>
+            <Button type="submit" form={repositoryId} variant="primary" disabled={busy}>
+              {locale.text(busy ? 'repositoryImporting' : 'importRepository')}
+            </Button>
+          </>
+        )}
+      >
+        <form
+          id={repositoryId}
+          className="flex flex-col gap-[12px]"
+          aria-busy={busy}
+          onSubmit={(event) => {
+            event.preventDefault()
+            void importRepository()
+          }}
+        >
+          <label htmlFor={`${repositoryId}-input`}>{locale.text('repositoryLabel')}</label>
+          <Input
+            id={`${repositoryId}-input`}
+            data-modal-autofocus
+            value={repository}
+            placeholder="owner/repo"
+            disabled={busy}
+            aria-invalid={Boolean(repositoryError)}
+            aria-describedby={repositoryError ? `${repositoryId}-error` : undefined}
+            onChange={(event) => {
+              setRepository(event.target.value)
+              setRepositoryError(null)
+            }}
+          />
+          {repositoryError ? <div id={`${repositoryId}-error`} className="text-[12px] leading-[18px] text-error" role="alert">{repositoryError}</div> : null}
+        </form>
+      </Modal>
+      {error ? <div className="text-[12px] leading-[18px] text-error" role="alert">{error}</div> : null}
+      <div className="flex items-center gap-[12px]">
+        <span className="flex-none font-medium">{locale.text('sizeLabel')}</span>
         <input
           type="range"
-          className="dshp-pet__size-slider"
+          className="flex-1 accent-brand cursor-pointer"
           min={PET_SIZE_MIN}
           max={PET_SIZE_MAX}
           step={PET_SIZE_STEP}
@@ -353,7 +458,16 @@ export function PetSettings(props: PetSettingsProps): ReactElement {
           }}
         />
       </div>
-      <p className="dshp-pet__hint">{locale.text('sizeHint')}</p>
+      <p className="m-0 text-[12px] leading-[18px] text-secondary">{locale.text('sizeHint')}</p>
+      <div className="flex items-center justify-between gap-[12px]">
+        <span className="flex-none font-medium">{locale.text('throwLabel')}</span>
+        <Switch
+          checked={throwEnabled}
+          label={locale.text('throwLabel')}
+          onChange={() => { void toggleThrow() }}
+        />
+      </div>
+      <p className="m-0 text-[12px] leading-[18px] text-secondary">{locale.text('throwHint')}</p>
     </div>
   )
 }

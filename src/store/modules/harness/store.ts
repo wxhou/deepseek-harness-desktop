@@ -1,23 +1,29 @@
 import type { UnlistenFn } from '@tauri-apps/api/event'
+import type { PolicyBlockedVersion } from '../preinstall'
 import type { StartupPhase } from './readiness'
 import type {
   HarnessProcessExitedPayload,
   InstallerState,
   InstallProgress,
   InternalPluginsPhasePayload,
+  PatchRepairAction,
   SetupStatus,
   SidebarBusyAction,
   StartupError,
 } from './types'
 import type { PatchEntryStripReport, PatchQuarantineReport } from '@/types/plugin'
+import type { Profile } from '@/types/profile'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import i18next from 'i18next'
+import semver from 'semver'
 import { defineStore } from 'valtio-define'
 import { queryClient } from '@/config/client'
 import { hooks } from '@/config/hooks'
 import { queryKeys } from '@/config/query-keys'
+import { toast } from '@/utils/toast'
 import { harnessUpdater } from '../harness-updater'
+import { parseBlockedRefusal } from '../plugins'
 import { preinstall } from '../preinstall'
 import { recovery } from '../recovery'
 import { setting } from '../setting'
@@ -36,11 +42,13 @@ import { runtimeExitMessageKey, shouldAcceptRuntimeExit } from './runtime'
 import {
   attachStartupDiagnostics,
   checkHealthViaProxy,
+  consumePortConflictRestart,
   generateTimestampedUrl,
   internalPluginReason,
   notifyPatchEntryStrip,
   notifyPatchQuarantine,
   pollHarnessReadiness,
+  resetPortConflictRestarts,
   startupError,
 } from './utils'
 
@@ -49,6 +57,13 @@ const STARTUP_STATUS_KEYS: Record<StartupPhase, string> = {
   'plugin-install': 'status.loading_internal',
   'process-boot': 'status.loading_process',
   'client-modules': 'status.loading_client_modules',
+}
+
+/** 补丁层修复动作的失败日志前缀（保留各入口原有的可检索文案） */
+const PATCH_REPAIR_LOG: Record<PatchRepairAction, string> = {
+  'safe-mode': '[Harness] enter safe mode failed:',
+  'quarantine': '[Harness] quarantine broken patch layers failed:',
+  'strip': '[Harness] strip unresolved patch entries failed:',
 }
 
 const initialInstaller: InstallerState = {
@@ -69,6 +84,7 @@ let pluginActivityReason = ''
 const restartFlight = new SingleFlight<void>()
 const iframeReloadGate = new BoundedReloadGate(IFRAME_RELOAD_MAX_ATTEMPTS)
 let iframeRefreshTimer: ReturnType<typeof setTimeout> | undefined
+let policyApprovalKey: string | undefined
 
 /**
  * 桌面外壳核心业务模块：安装/启动流程、服务生命周期（启动/健康检查/重启/停止）、
@@ -217,11 +233,18 @@ export const harness = defineStore({
       this.iframeLoaded = false
       this.iframeError = false
       this.iframeAliveKey = null
-      this.fail(message)
 
       const error = await attachStartupDiagnostics(new Error(message), true)
       if (exitToken !== bootToken)
         return
+      // 端口被占用而崩：重启换一个端口即可自愈，不该停在错误页等用户点重试。
+      if (consumePortConflictRestart(error.logLines ?? [])) {
+        console.warn('[Harness] port in use; restarting to pick another port')
+        await this.boot()
+        return
+      }
+
+      this.fail(message)
       await recovery.reviewStartupRecovery(
         error.logLines ?? error.logs ?? [],
         () => exitToken === bootToken,
@@ -396,17 +419,22 @@ export const harness = defineStore({
       if (token !== bootToken)
         return false
 
-      // poll 通过与 ready 提交之间仍可能退出。进入提交窗口后再复核一次 ownership，
-      // 既能捕获窗口开启前已丢失的退出事件，也让窗口内事件用 token 中止本次提交。
-      const finalProbe = await checkHealthViaProxy()
+      // poll 通过与 ready 提交之间仍可能退出，因此提交窗口开启前复核一次 ownership；
+      // 但不再为此重跑全量探测（实测 93 个 / 18MB / 311ms，纯粹推迟 iframe 挂载）：
+      // ownership 只取决于后端进程槽位与启动守卫，纯内存查询即可判定。上一轮 poll 已
+      // 确认就绪，故只有 ownership 丢失才推翻结果，短暂 IPC 失败不降级。
+      let ownershipFailure: string | null = null
+      try {
+        await invoke('harness_ownership')
+      }
+      catch (err) {
+        ownershipFailure = String(err)
+      }
       if (token !== bootToken)
         return false
-      // 上一轮 poll 已确认就绪；这里只让 ownership 丢失推翻结果，短暂探测失败不降级。
-      if (finalProbe.notOwned) {
+      if (ownershipFailure?.includes('HARNESS_NOT_OWNED')) {
         this.serviceRunning = false
-        const phase = finalProbe.phase ?? this.startupPhase
-        const reason = finalProbe.reason ?? (this.startupReason || i18next.t('errors.no_readiness_reason'))
-        throw startupError(phase, reason, 'exited')
+        throw startupError('process-boot', ownershipFailure, 'exited')
       }
 
       const readyInfo = await invoke<{ service_url: string }>('get_runtime_info')
@@ -415,6 +443,7 @@ export const harness = defineStore({
 
       this.serviceUrl = readyInfo.service_url
       this.iframeSrc = generateTimestampedUrl(readyInfo.service_url)
+      resetPortConflictRestarts()
       this.serviceHealthy = true
       this.serviceRunning = true
       this.status = 'ready'
@@ -520,6 +549,10 @@ export const harness = defineStore({
     /** 启动流程：检测环境/安装依赖 → 拉起服务 → 已安装时后台检查更新 */
     async boot() {
       const token = ++bootToken
+      if (policyApprovalKey !== undefined) {
+        toast.close(policyApprovalKey)
+        policyApprovalKey = undefined
+      }
       iframeReloadGate.reset()
       if (iframeRefreshTimer !== undefined) {
         clearTimeout(iframeRefreshTimer)
@@ -542,6 +575,7 @@ export const harness = defineStore({
       recovery.clear()
       this.status = 'ready'
       let unlistenInstall: UnlistenFn | null = null
+      let policyApproval: { versions: PolicyBlockedVersion[], profile: string } | undefined
 
       try {
         // 事件监听失败（例如 IPC 自定义协议被 CSP 拦截、回退 postMessage 也异常）
@@ -559,7 +593,7 @@ export const harness = defineStore({
         // 已安装过则跳过安装界面，避免每次启动都闪现"正在安装依赖..."
         // 设置由 setting store 持有（与 Rust 共享同一份 .store.dat）。必须先等水合
         // 完成再读，否则会把默认值当成真实安装状态：多跑一次安装，还漏掉更新检查。
-        await setting.$persist.rehydrate()
+        await setting.refresh()
         // 取快照：后面的 `install_dependencies` 会把 installed 置位并广播，
         // 而本次 boot 的判断应当基于「启动开始时是否已安装」
         const config = { ...setting.$state }
@@ -582,6 +616,7 @@ export const harness = defineStore({
         this.startupReason = i18next.t('status.loading_internal')
         pluginActivitySequence++
         pluginActivityReason = i18next.t('status.internal_waiting')
+        const installProfile = (await invoke<Profile[]>('get_profiles')).find(item => item.active)?.id
         try {
           const result = await waitForActivityTask({
             task: invoke('ensure_internal_plugins'),
@@ -614,7 +649,23 @@ export const harness = defineStore({
           if (err instanceof Error && (err as StartupError).phase) {
             throw err
           }
-          throw startupError('plugin-install', String(err), 'failed')
+          if (token !== bootToken)
+            return
+          const message = err instanceof Error ? err.message : String(err)
+          const policyMessage = message.replace(/^INTERNAL_PLUGIN_INSTALL_FAILED: /, '')
+          const refusal = policyMessage.startsWith('PLUGIN_POLICY_BLOCKED:') && !policyMessage.includes('\n')
+            ? parseBlockedRefusal(policyMessage)
+            : null
+          if (refusal?.kind !== 'policy' || !Array.isArray(refusal.versions)
+            || !refusal.versions.every(item => item && typeof item.name === 'string' && item.name.trim() !== ''
+              && typeof item.version === 'string' && semver.valid(item.version))) {
+            throw startupError('plugin-install', message, 'failed')
+          }
+          const profiles = await invoke<Profile[]>('get_profiles')
+          const profile = profiles.find(item => item.active)?.id
+          if (!installProfile || profile !== installProfile)
+            throw startupError('plugin-install', message, 'failed')
+          policyApproval = { versions: refusal.versions, profile }
         }
         // 预装插件引导：首次安装、老版本升级（无指纹基线）或清单 plugins 节
         // 内容变更（社区新增推荐插件）时重新进入预设流程，装完/跳过后才拉起服务。
@@ -655,6 +706,45 @@ export const harness = defineStore({
       }
       finally {
         unlistenInstall?.()
+        if (policyApproval && token === bootToken) {
+          const { versions, profile } = policyApproval
+          let granting = false
+          const key = toast(i18next.t('plugins.blocked_policy_title', { name: versions.map(item => item.name).join('、') }), {
+            variant: 'warning',
+            timeout: 0,
+            sticky: true,
+            description: i18next.t('plugins.blocked_policy_desc', { blocked: versions.map(item => `${item.name}@${item.version}`).join('、') }),
+            actionProps: {
+              children: i18next.t('buttons.authorize'),
+              onPress: async () => {
+                if (granting || token !== bootToken || this.busyAction || preinstall.installing)
+                  return
+                granting = true
+                try {
+                  const profiles = await invoke<Profile[]>('get_profiles')
+                  if (token !== bootToken || profiles.find(item => item.active)?.id !== profile) {
+                    toast.close(key)
+                    return
+                  }
+                  if (!await preinstall.allowPolicyVersions(versions, profile)) {
+                    toast(i18next.t('plugins.authorize_failed'), { variant: 'danger', description: preinstall.error })
+                    return
+                  }
+                  toast.close(key)
+                  if (token === bootToken)
+                    await this.restart()
+                }
+                catch (error) {
+                  toast(i18next.t('plugins.authorize_failed'), { variant: 'danger', description: String(error) })
+                }
+                finally {
+                  granting = false
+                }
+              },
+            },
+          })
+          policyApprovalKey = key
+        }
       }
     },
 
@@ -717,26 +807,10 @@ export const harness = defineStore({
      * 手写笔误会让安全模式也起不来（issue #525）。结果用 toast 告知备份路径。
      */
     async enterSafeMode() {
-      if (this.busyAction)
-        return
-      try {
+      await this.runPatchRepair('safe-mode', async () => {
         const report = await invoke<PatchQuarantineReport>('enter_safe_mode')
         notifyPatchQuarantine(report)
-      }
-      catch (err) {
-        console.error('[Harness] enter safe mode failed:', err)
-        const error = await attachStartupDiagnostics(err)
-        this.fail(
-          error.message,
-          error.logs,
-          error.pluginConflictHint,
-          error.inotifyLimitHint,
-          undefined,
-          error.patchLayerHint,
-        )
-        return
-      }
-      await this.restart()
+      })
     },
 
     /**
@@ -745,26 +819,10 @@ export const harness = defineStore({
      * 补丁文件只改名保存为 `.broken-<时间戳>` 备份，修好语法后改回原名即可恢复。
      */
     async quarantineBrokenPatchLayers() {
-      if (this.busyAction)
-        return
-      try {
+      await this.runPatchRepair('quarantine', async () => {
         const report = await invoke<PatchQuarantineReport>('quarantine_broken_patch_layers')
         notifyPatchQuarantine(report)
-      }
-      catch (err) {
-        console.error('[Harness] quarantine broken patch layers failed:', err)
-        const error = await attachStartupDiagnostics(err)
-        this.fail(
-          error.message,
-          error.logs,
-          error.pluginConflictHint,
-          error.inotifyLimitHint,
-          undefined,
-          error.patchLayerHint,
-        )
-        return
-      }
-      await this.restart()
+      })
     },
 
     /**
@@ -776,14 +834,28 @@ export const harness = defineStore({
      * 成 `.bak-<时间戳>`，结果用 toast 告知备份路径。
      */
     async stripUnresolvedPatchEntries() {
-      if (this.busyAction)
-        return
-      try {
+      await this.runPatchRepair('strip', async () => {
         const report = await invoke<PatchEntryStripReport>('strip_unresolved_patch_entries')
         notifyPatchEntryStrip(report)
+      })
+    },
+
+    /**
+     * 补丁层修复动作的共用骨架：在第一个 await 之前就占住忙态并推进 bootToken。
+     * 修复本身可能耗到秒级，这期间退出处理器的自动恢复若照常判定，就会把用户刚
+     * 点下的这次修复覆盖掉（它自己随后也要重启）；推进令牌让在飞的启动链与自动
+     * 恢复一次性作废。忙态在交给 restart 之前释放——restart 自己会重新占住它。
+     */
+    async runPatchRepair(action: PatchRepairAction, repair: () => Promise<void>) {
+      if (this.busyAction)
+        return
+      ++bootToken
+      this.busyAction = 'repair'
+      try {
+        await repair()
       }
       catch (err) {
-        console.error('[Harness] strip unresolved patch entries failed:', err)
+        console.error(PATCH_REPAIR_LOG[action], err)
         const error = await attachStartupDiagnostics(err)
         this.fail(
           error.message,
@@ -794,6 +866,9 @@ export const harness = defineStore({
           error.patchLayerHint,
         )
         return
+      }
+      finally {
+        this.busyAction = null
       }
       await this.restart()
     },

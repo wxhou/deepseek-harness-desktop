@@ -1,10 +1,10 @@
-import type { SessionLike } from '../types'
+import type { SessionHost, SessionLike } from '../types'
 import type { OpenSessionDirectoryResult } from './session.types'
 import { rmSync } from 'node:fs'
+import { getServerContext } from 'dsh-h3/utils'
 import { defineService, openDirectory } from 'dsh-tauri'
-import { compact } from 'lodash-es'
 import { dirname, resolve } from 'pathe'
-import { getCurrentHostInstance } from '../config/runtime'
+import { server } from '../server'
 import { findSessionDataDir, isWithinRoot, readDirectory, sessionsRoot } from './session.utils'
 
 export const session = defineService({
@@ -12,7 +12,7 @@ export const session = defineService({
   get(id: string): SessionLike | null {
     if (!id)
       return null
-    const sessions = getCurrentHostInstance().sessions
+    const sessions = getServerContext<SessionHost>(server).sessions
     return sessions.get?.(id)
       ?? sessions.list?.().find(item => item.id === id)
       ?? null
@@ -23,8 +23,8 @@ export const session = defineService({
    * 删除所需面在触碰任何数据之前校验，缺失即抛错，保证失败可整体重试。
    */
   remove(ids: readonly string[]): string[] {
-    const sessions = getCurrentHostInstance().sessions
-    const live = compact(ids.map(id => (sessions.get?.(id) ? id : null)))
+    const sessions = getServerContext<SessionHost>(server).sessions
+    const live = ids.filter(id => sessions.get?.(id) && id)
     if (live.length > 0 && !sessions.remove)
       throw new Error('宿主未提供 SessionStore.remove，请先更新桌面壳')
     return live.filter(id => !sessions.remove?.(id))

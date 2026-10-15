@@ -1,14 +1,15 @@
 import type { PetSessionPayload, SessionStreamSink } from '../types'
 import type { PetSessionEvent, PetSessionPeer, ProjectionRegistryLike, TitleServiceLike } from './session-stream.types'
+import { getServerContext } from 'dsh-h3/utils'
 import { defineService } from 'dsh-tauri'
 import {
   closeSessionBus,
-  getCurrentHostInstance,
   isSessionBusAttached,
   knownSessions,
   setSessionBusDispose,
   sinks,
 } from '../config/runtime'
+import { server } from '../server'
 import { createPetSessionReducer } from './session-stream.utils'
 
 /**
@@ -28,17 +29,24 @@ export const sessionStream = defineService({
    * 接入一个 SSE 消费者：登记后（首个消费者时）挂载会话总线监听。
    *
    * @param sink - 该连接的推送/关闭出口。
-   * @returns 断开该消费者的清理函数（幂等；最后一个消费者断开时注销总线监听并丢弃累计态）。
+   * @returns `detach`：断开该消费者的清理函数（幂等；最后一个消费者断开时注销总线监听并
+   *   丢弃累计态）；`stateLost`：本次接入前是否已无其他消费者——为真表示上一轮累计态已
+   *   随旧连接丢弃，调用方应据此告知消费者作废旧气泡。
    */
-  start(sink: SessionStreamSink): () => void {
+  start(sink: SessionStreamSink): { detach: () => void, stateLost: boolean } {
+    // 必须在登记之前判空：登记后 sinks.size 必然大于 0，判不出上一轮状态是否还在。
+    const stateLost = sinks.size === 0
     sinks.add(sink)
     attachSessionBus()
-    return () => {
-      sinks.delete(sink)
-      if (sinks.size > 0)
-        return
-      closeSessionBus()
-      reducer.clear()
+    return {
+      detach: () => {
+        sinks.delete(sink)
+        if (sinks.size > 0)
+          return
+        closeSessionBus()
+        reducer.clear()
+      },
+      stateLost,
     }
   },
 })
@@ -61,7 +69,7 @@ function attachSessionBus(): void {
   if (isSessionBusAttached())
     return
   // 惰性解析：apply 时服务未必就绪（装配顺序不保证），首个消费者接入时才读。
-  const ctx = getCurrentHostInstance()
+  const ctx = getServerContext(server)
   titleService = ctx.get?.('sessionTitle') as TitleServiceLike | undefined
   projections = ctx.get?.('sessionProjections') as ProjectionRegistryLike | undefined
   const disposeEvent = ctx.on('session/event', handleSessionEvent) as () => void
@@ -139,6 +147,7 @@ function asPetEvent(event: unknown): PetSessionEvent {
     seq: typeof e?.seq === 'number' ? e.seq : 0,
     time: typeof e?.time === 'number' ? e.time : 0,
     data: (e?.data ?? {}) as Record<string, unknown>,
+    surfaceOp: e?.surfaceOp,
   }
 }
 
@@ -146,7 +155,7 @@ function asPetEvent(event: unknown): PetSessionEvent {
 function projectedTitleOf(session: unknown): string | undefined {
   if (projections === undefined) {
     try {
-      projections = getCurrentHostInstance().get?.('sessionProjections') as ProjectionRegistryLike | undefined
+      projections = getServerContext(server).get?.('sessionProjections') as ProjectionRegistryLike | undefined
     }
     catch {
       return undefined

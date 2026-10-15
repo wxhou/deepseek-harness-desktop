@@ -7,11 +7,13 @@
  * storageDomain / approval）。本文件只补桌面端自有的宿主服务（webServer / loader），
  * 并作为 dsh-tauri 宿主侧全部类型的统一出口。
  *
- * 【基准】@deepseek-ai/* 0.1.5-rc.2（版本由 pnpm-workspace.yaml 的 `dsh` catalog 钉住）。
+ * 【基准】@deepseek-ai/* 0.2.1-alpha.1（版本由 pnpm-workspace.yaml 的 `dsh` catalog 钉住）。
  */
 import type { Context } from '@deepseek-ai/cordis'
-import type { SessionStore } from '@deepseek-ai/dsh-session'
-import type { ConnectionGate, HostRoute, RouteHandler, WebServerLike } from '../routes/index.type'
+import type { Agent, AgentHandle, AgentSetupCommit } from '@deepseek-ai/dsh-agent'
+import type { WebRoute, WebServer } from '@deepseek-ai/dsh-host-webserver'
+import type { Session, SessionStore } from '@deepseek-ai/dsh-session'
+import type { IncomingMessage } from 'node:http'
 
 export type { Context } from '@deepseek-ai/cordis'
 export type { Agent, AgentHandle, AgentRegistry, ModelSelection } from '@deepseek-ai/dsh-agent'
@@ -35,13 +37,30 @@ export type {
   ToolRuntime,
 } from '@deepseek-ai/dsh-tools'
 export type { WorkspaceId, WorkspaceRegistry } from '@deepseek-ai/dsh-workspace'
-export type { ConnectionGate, HostRoute, RouteHandler }
+export interface NativeSessionBridge {
+  create: (source: Session, create: (signal?: AbortSignal) => Promise<AgentHandle>) => Promise<AgentHandle>
+  prepare: (source: Session, agent: Agent, signal: AbortSignal) => Promise<AgentSetupCommit | void>
+}
+
+declare module '@deepseek-ai/cordis' {
+  interface Context {
+    nativeSessionBridge: NativeSessionBridge
+  }
+}
+
+export interface ConnectionGate {
+  requestRejection: (request: IncomingMessage) => 401 | 403 | undefined
+}
+
+export type HostRoute = WebRoute
+export type RouteHandler = WebRoute['handler']
+export type RoutesContext = Context
 
 /** JSON 请求体（插件路由自报协议的公共形状）。 */
 export type JsonBody = Record<string, unknown>
 
 /** 宿主 webserver 注册面；字段与 `@deepseek-ai/dsh-host-webserver` 的 register 契约逐字一致。 */
-export type WebServerService = WebServerLike
+export type WebServerService = WebServer
 
 /** 平台模块加载器：从 DSH 安装目录解析核心包（内置插件资源目录没有 node_modules）。 */
 export interface HostPluginLoader {
@@ -60,7 +79,7 @@ export type IndexInjectRow
   = | { kind: 'global', name: string, value: unknown }
     | { kind: 'script', placement: 'head' | 'body', text: string }
 
-export type HostContext = Omit<Context, 'sessions'> & {
+export type HostContext = Context & {
   sessions: SessionStore
   webServer: WebServerService
   loader: HostPluginLoader

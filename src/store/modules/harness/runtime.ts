@@ -35,5 +35,22 @@ export function shouldAcceptRuntimeExit({
 export function runtimeExitMessageKey(exitCode: number | null | undefined): string {
   if (exitCode == null)
     return 'errors.process_exited_without_code'
+  if (isNativeCrashCode(exitCode))
+    return 'errors.process_exited_native_crash'
   return 'errors.process_exited_with_code'
+}
+
+/** Windows NTSTATUS 形态的原生退出码：0xC0000005 访问违例 / 0xC0000409 栈缓冲溢出等。 */
+const NATIVE_CRASH_CODES = new Set([
+  0x80000003,
+  0xC0000005,
+  0xC0000409,
+  0xC0000374,
+  0xC000001D,
+  0xC00000FD,
+])
+
+/** 退出码是否为 Windows 原生崩溃；具体原因仍需日志判断。 */
+export function isNativeCrashCode(exitCode: number | null | undefined): boolean {
+  return exitCode != null && NATIVE_CRASH_CODES.has(exitCode >>> 0)
 }

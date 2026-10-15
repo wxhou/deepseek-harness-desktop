@@ -1,9 +1,10 @@
+import { SCHEDULE_TOOL_NAMES } from '../../shared/constants'
 import { task } from '../service/task'
 import { textBlock } from '../utils/tool'
 
 export function deleteTaskTool(): any {
   return {
-    name: 'scheduler_delete',
+    name: SCHEDULE_TOOL_NAMES.delete,
     description: 'Delete a scheduled task by id (keeps run history).',
     parameters: {
       type: 'object',

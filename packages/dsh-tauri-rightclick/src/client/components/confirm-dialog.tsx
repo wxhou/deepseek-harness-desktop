@@ -1,7 +1,12 @@
-import type { ConfirmDialogOptions } from './confirm-dialog.types'
 import { Button, Modal } from 'dsh-tauri-ui/client'
 import { createRoot } from 'react-dom/client'
 import { locale } from '../locales'
+
+export interface ConfirmDialogOptions {
+  title: string
+  description: string
+  confirmLabel: string
+}
 
 /**
  * 客户端样式确认框：确认 resolve(true)，取消 / 关闭 resolve(false)。

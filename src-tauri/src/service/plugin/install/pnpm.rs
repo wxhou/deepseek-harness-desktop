@@ -16,9 +16,11 @@ use std::io::Read;
 use std::path::Path;
 #[cfg(test)]
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, WebviewWindow};
 
 use super::acquire_process_lock;
+use super::new_process_owner;
 use super::profile_dir;
 use super::PidGuard;
 use super::PreinstallLogPayload;
@@ -28,7 +30,6 @@ use super::PREINSTALL_LOG_EVENT;
 const MIN_TRUSTED_PNPM_MAJOR: u32 = 10;
 const PNPM_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 const PNPM_PROBE_CLEANUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-const PNPM_PROBE_REAP_RETRY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
 const PNPM_PROBE_REAP_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(25);
 const PNPM_PROBE_LIVENESS_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
 
@@ -132,15 +133,33 @@ async fn user_pnpm_major_version_bounded(
     let Some(pnpm) = cli::find_user_pnpm(app_handle) else {
         return Ok(None);
     };
-    let node = config::get_node_binary_path(app_handle);
-    let mut command = pnpm_probe_command(&pnpm, Some(&node), Some(&cli::get_bin_dir(app_handle)));
+    pnpm_major_version_at_bounded(
+        &pnpm,
+        Some(&config::get_node_binary_path(app_handle)),
+        Some(&cli::get_bin_dir(app_handle)),
+        owner,
+    )
+    .await
+}
+
+pub(crate) async fn pnpm_major_version_at_bounded(
+    pnpm: &Path,
+    node: Option<&Path>,
+    bin_dir: Option<&Path>,
+    owner: ProcessOwner,
+) -> Result<Option<u32>, String> {
+    let deadline = tokio::time::Instant::now() + PNPM_PROBE_TIMEOUT;
+    let mut command = pnpm_probe_command(pnpm, node, bin_dir);
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
         command.process_group(0);
     }
-
-    let process_guard = acquire_process_lock().await?;
+    let process_guard = tokio::time::timeout_at(deadline, acquire_process_lock())
+        .await
+        .map_err(|_| {
+            "PNPM_PROBE_LOCK_TIMEOUT: timed out waiting for the process lock".to_string()
+        })??;
     let child = match command
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -148,152 +167,59 @@ async fn user_pnpm_major_version_bounded(
     {
         Ok(child) => child,
         Err(error) => {
-            log::warn!(
-                "pnpm version probe failed to spawn {}: {error}",
-                pnpm.display()
-            );
+            log_probe_fallback(pnpm, "spawn", error);
             return Ok(None);
         }
     };
-    let pid = child.id();
-    let pid_guard = PidGuard::set(owner, pid);
-    let mut waiter = tauri::async_runtime::spawn_blocking(move || {
-        let mut child = child;
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            wait_for_probe_output(&mut child)
-        }))
-        .unwrap_or_else(|_| {
-            super::super::cancel::terminate_pid_tree(pid);
-            ProbeWaitResult::CleanupPending {
-                pid,
-                reason: format!(
-                    "PNPM_PROBE_CLEANUP_FAILED: pnpm version probe pid {pid} panicked before cleanup completed"
-                ),
-            }
-        });
-        match result {
-            ProbeWaitResult::Finished(result) => ProbeTaskResult::Finished(result),
-            ProbeWaitResult::CleanupPending { pid, reason } => {
-                ProbeTaskResult::CleanupPending { child, pid, reason }
-            }
-        }
-    });
-
-    let output = match tokio::time::timeout(PNPM_PROBE_TIMEOUT, &mut waiter).await {
-        Ok(joined) => {
-            let Some(task) = probe_task_or_fallback(&pnpm, joined) else {
-                let reason =
-                    "PNPM_PROBE_WAIT_TASK_FAILED: pnpm version probe wait task failed".to_string();
-                monitor_orphaned_probe_pid(owner, pid, reason, process_guard, pid_guard);
-                return Ok(None);
-            };
-            match task {
-                ProbeTaskResult::Finished(waited) => {
-                    match probe_output_or_fallback(&pnpm, waited)? {
-                        Some(output) => output,
-                        None => return Ok(None),
-                    }
-                }
-                ProbeTaskResult::CleanupPending { child, pid, reason } => {
-                    let pending = ProbeCleanupPending {
-                        child,
-                        pid,
-                        reason,
-                        owner,
-                        _process_guard: process_guard,
-                        _pid_guard: pid_guard,
-                    };
-                    let reason = pending.reason.clone();
-                    monitor_probe_cleanup(pending);
-                    return Err(reason);
-                }
-            }
-        }
-        Err(_) => {
-            let reason = format!(
-                "PNPM_PROBE_TIMEOUT: pnpm version probe exceeded {} seconds",
-                PNPM_PROBE_TIMEOUT.as_secs()
-            );
-            log::error!("{reason}");
-            super::super::process::mark_process_cleanup_failed(owner, reason.clone());
-            super::super::cancel::terminate_owned_install(owner).await;
-            let cleanup = match tokio::time::timeout(PNPM_PROBE_CLEANUP_TIMEOUT, &mut waiter).await
-            {
-                Ok(cleanup) => cleanup,
-                Err(_) => {
-                    let cleanup_reason =
-                        "PNPM_PROBE_CLEANUP_TIMEOUT: pnpm version probe did not exit after forced termination"
-                            .to_string();
-                    monitor_probe_wait_task(
-                        waiter,
-                        owner,
-                        pid,
-                        cleanup_reason.clone(),
-                        process_guard,
-                        pid_guard,
-                    );
-                    return Err(cleanup_reason);
-                }
-            };
-            match cleanup {
-                Ok(ProbeTaskResult::Finished(_)) => {
-                    // 强杀 + 回收完成意味着没有遗留进程，只是这次探测没拿到结果：
-                    // 按「用户 pnpm 不可用」降级，由 ensure_pnpm 回退捆绑版，
-                    // 而不是把慢探测升级成整次插件安装失败（issue #449）。
-                    super::super::process::clear_process_cleanup_failed(owner);
-                    return Ok(probe_timeout_or_fallback(&pnpm, reason));
-                }
-                Ok(ProbeTaskResult::CleanupPending { child, pid, reason }) => {
-                    let pending = ProbeCleanupPending {
-                        child,
-                        pid,
-                        reason,
-                        owner,
-                        _process_guard: process_guard,
-                        _pid_guard: pid_guard,
-                    };
-                    let cleanup_reason = pending.reason.clone();
-                    monitor_probe_cleanup(pending);
-                    return Err(cleanup_reason);
-                }
-                Err(error) => {
-                    monitor_orphaned_probe_pid(
-                        owner,
-                        pid,
-                        format!(
-                            "PNPM_PROBE_CLEANUP_FAILED: pnpm version probe wait task failed during cleanup: {error}"
-                        ),
-                        process_guard,
-                        pid_guard,
-                    );
-                    return Err(format!(
-                        "PNPM_PROBE_CLEANUP_FAILED: pnpm version probe wait task failed during cleanup: {error}"
-                    ));
-                }
-            }
-        }
+    let child = Arc::new(Mutex::new(child));
+    let pid_guard = PidGuard::set_child(owner, &child);
+    let pending = ProbeCleanupPending {
+        child,
+        owner,
+        _process_guard: process_guard,
+        _pid_guard: pid_guard,
     };
-    Ok(parse_pnpm_major_output(&pnpm, &output))
-}
-
-enum ProbeWaitResult {
-    Finished(std::io::Result<std::process::Output>),
-    CleanupPending { pid: u32, reason: String },
-}
-
-enum ProbeTaskResult {
-    Finished(std::io::Result<std::process::Output>),
-    CleanupPending {
-        child: std::process::Child,
-        pid: u32,
-        reason: String,
-    },
+    let pnpm = pnpm.to_path_buf();
+    // 调用方取消只脱离等待；进程与守卫由独立任务持有到回收完成。
+    tauri::async_runtime::spawn(async move {
+        let child = pending.child.clone();
+        let mut waiter =
+            tauri::async_runtime::spawn_blocking(move || wait_for_probe_output(&child));
+        let (reason, waiter) = match tokio::time::timeout_at(deadline, &mut waiter).await {
+            Ok(Ok(Ok(output))) => {
+                if let Some(reason) = super::super::process::process_cleanup_failure(pending.owner)
+                {
+                    (reason, None)
+                } else {
+                    pending.release();
+                    return Ok(parse_pnpm_major_output(&pnpm, &output));
+                }
+            }
+            Ok(joined) => {
+                let reason = match joined {
+                    Ok(Err(error)) => format!("PNPM_PROBE_OUTPUT_FAILED: {error}"),
+                    Err(error) => format!("PNPM_PROBE_WAIT_TASK_FAILED: {error}"),
+                    Ok(Ok(_)) => unreachable!(),
+                };
+                (reason, None)
+            }
+            Err(_) => (
+                format!(
+                    "PNPM_PROBE_TIMEOUT: pnpm version probe exceeded {} seconds",
+                    PNPM_PROBE_TIMEOUT.as_secs()
+                ),
+                Some(waiter),
+            ),
+        };
+        cleanup_probe(pending, waiter, reason.clone()).await?;
+        Ok(probe_timeout_or_fallback(&pnpm, reason))
+    })
+    .await
+    .map_err(|error| format!("PNPM_PROBE_TASK_FAILED: {error}"))?
 }
 
 struct ProbeCleanupPending {
-    child: std::process::Child,
-    pid: u32,
-    reason: String,
+    child: Arc<Mutex<std::process::Child>>,
     owner: ProcessOwner,
     _process_guard: tokio::sync::OwnedMutexGuard<()>,
     _pid_guard: PidGuard,
@@ -302,174 +228,147 @@ struct ProbeCleanupPending {
 impl ProbeCleanupPending {
     fn release(self) {
         let Self {
-            child,
             owner,
             _process_guard,
             _pid_guard,
             ..
         } = self;
         super::super::process::release_process_cleanup(owner, _pid_guard, _process_guard);
-        drop(child);
     }
 }
 
-fn wait_for_probe_output(child: &mut std::process::Child) -> ProbeWaitResult {
-    let pid = child.id();
-    let stdout = child.stdout.take();
-    let stderr = child.stderr.take();
-    let stdout_reader = match std::thread::Builder::new()
-        .name("pnpm-probe-stdout".to_string())
-        .spawn(move || read_probe_pipe(stdout))
-    {
-        Ok(reader) => reader,
-        Err(error) => return reap_probe_after_wait_failure(child, pid, error),
+fn wait_for_probe_output(
+    child: &Arc<Mutex<std::process::Child>>,
+) -> std::io::Result<std::process::Output> {
+    let (stdout, stderr) = {
+        let mut child = child.lock().unwrap_or_else(|error| error.into_inner());
+        (child.stdout.take(), child.stderr.take())
     };
-    let stderr_reader = match std::thread::Builder::new()
-        .name("pnpm-probe-stderr".to_string())
-        .spawn(move || read_probe_pipe(stderr))
-    {
-        Ok(reader) => reader,
-        Err(error) => return reap_probe_after_wait_failure(child, pid, error),
-    };
-
-    let status = match child.wait() {
-        Ok(status) => status,
-        Err(error) => return reap_probe_after_wait_failure(child, pid, error),
-    };
-    let stdout = match join_probe_reader(stdout_reader) {
-        Ok(stdout) => stdout,
-        Err(error) => return ProbeWaitResult::Finished(Err(error)),
-    };
-    let stderr = match join_probe_reader(stderr_reader) {
-        Ok(stderr) => stderr,
-        Err(error) => return ProbeWaitResult::Finished(Err(error)),
-    };
-    ProbeWaitResult::Finished(Ok(std::process::Output {
-        status,
-        stdout,
-        stderr,
-    }))
+    std::thread::scope(|scope| {
+        let stdout_reader = std::thread::Builder::new()
+            .name("pnpm-probe-stdout".to_string())
+            .spawn_scoped(scope, move || read_probe_pipe(stdout))?;
+        let stderr_reader = std::thread::Builder::new()
+            .name("pnpm-probe-stderr".to_string())
+            .spawn_scoped(scope, move || read_probe_pipe(stderr))?;
+        let stdout = stdout_reader
+            .join()
+            .map_err(|_| std::io::Error::other("pnpm version probe stdout reader panicked"))??;
+        let stderr = stderr_reader
+            .join()
+            .map_err(|_| std::io::Error::other("pnpm version probe stderr reader panicked"))??;
+        let status = loop {
+            if let Some(status) = child
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .try_wait()?
+            {
+                break status;
+            }
+            std::thread::sleep(PNPM_PROBE_REAP_RETRY_INTERVAL);
+        };
+        Ok(std::process::Output {
+            status,
+            stdout,
+            stderr,
+        })
+    })
 }
 
-fn reap_probe_after_wait_failure(
-    child: &mut std::process::Child,
-    pid: u32,
-    error: std::io::Error,
-) -> ProbeWaitResult {
-    super::super::cancel::terminate_pid_tree(pid);
-    if let Err(kill_error) = child.kill() {
-        log::warn!("pnpm version probe kill after wait failure failed: {kill_error}");
+use super::super::cancel::terminate_probe_tree;
+
+fn terminate_probe(
+    child: &Arc<Mutex<std::process::Child>>,
+    terminate_tree: fn(u32) -> bool,
+) -> std::io::Result<()> {
+    let mut child = child.lock().unwrap_or_else(|error| error.into_inner());
+    // 同一锁内确认存活并强杀；waiter 不得先回收后再按可能复用的 PID 杀进程。
+    if child.try_wait()?.is_none() {
+        let tree_killed = terminate_tree(child.id());
+        let root_killed = child.kill();
+        if !tree_killed {
+            return Err(std::io::Error::other(
+                "PNPM_PROBE_TREE_CLEANUP_FAILED: pnpm version probe process tree termination was not confirmed",
+            ));
+        }
+        if let Err(error) = root_killed {
+            if child.try_wait()?.is_none() {
+                return Err(error);
+            }
+        }
     }
-    let started = std::time::Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => return ProbeWaitResult::Finished(Err(error)),
-            Ok(None) => {}
-            Err(cleanup_error) => {
-                log::warn!("pnpm version probe reap after wait failure failed: {cleanup_error}");
-                if super::super::process::plugin_process_has_exited(pid) {
-                    return ProbeWaitResult::Finished(Err(error));
+    Ok(())
+}
+
+async fn cleanup_probe(
+    pending: ProbeCleanupPending,
+    waiter: Option<tauri::async_runtime::JoinHandle<std::io::Result<std::process::Output>>>,
+    reason: String,
+) -> Result<(), String> {
+    let mut cleanup = monitor_probe_cleanup(pending, waiter, reason, terminate_probe_tree);
+    match tokio::time::timeout(PNPM_PROBE_CLEANUP_TIMEOUT, &mut cleanup).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) => Err(format!("PNPM_PROBE_CLEANUP_FAILED: {error}")),
+        Err(_) => Err(
+            "PNPM_PROBE_CLEANUP_TIMEOUT: pnpm version probe cleanup did not finish within 5 seconds"
+                .to_string(),
+        ),
+    }
+}
+
+fn monitor_probe_cleanup(
+    pending: ProbeCleanupPending,
+    waiter: Option<tauri::async_runtime::JoinHandle<std::io::Result<std::process::Output>>>,
+    reason: String,
+    terminate_tree: fn(u32) -> bool,
+) -> tauri::async_runtime::JoinHandle<()> {
+    super::super::process::mark_process_cleanup_failed(pending.owner, reason);
+    tauri::async_runtime::spawn(async move {
+        let child = pending.child.clone();
+        let killer =
+            tauri::async_runtime::spawn_blocking(move || terminate_probe(&child, terminate_tree));
+        let wait = async move {
+            if let Some(waiter) = waiter {
+                if let Err(error) = waiter.await {
+                    log::error!("pnpm version probe cleanup wait task failed: {error}");
                 }
             }
+        };
+        let (killed, ()) = tokio::join!(killer, wait);
+        if !matches!(killed, Ok(Ok(()))) {
+            let reason = format!(
+                "PNPM_PROBE_TREE_CLEANUP_FAILED: pnpm version probe process tree termination was not confirmed: {killed:?}"
+            );
+            log::error!("{reason}");
+            super::super::process::mark_process_cleanup_failed(pending.owner, reason);
+            // ponytail: 未确认整树清理仅重启恢复；需自动恢复再跟踪可靠进程树身份。
+            std::future::pending::<()>().await;
         }
-        if started.elapsed() >= PNPM_PROBE_REAP_RETRY_TIMEOUT {
-            return ProbeWaitResult::CleanupPending {
-                pid,
-                reason: format!(
-                    "PNPM_PROBE_CLEANUP_FAILED: pnpm version probe pid {pid} could not be reaped after wait failure: {error}"
-                ),
-            };
+        wait_for_probe_cleanup(&pending).await;
+        if super::super::process::process_cleanup_failure(pending.owner)
+            .is_some_and(|reason| reason.starts_with("PNPM_PROBE_TREE_CLEANUP_FAILED:"))
+        {
+            std::future::pending::<()>().await;
         }
-        std::thread::sleep(PNPM_PROBE_REAP_RETRY_INTERVAL);
-    }
-}
-
-fn monitor_probe_cleanup(mut pending: ProbeCleanupPending) {
-    super::super::process::mark_process_cleanup_failed(pending.owner, pending.reason.clone());
-    tauri::async_runtime::spawn(async move {
-        wait_for_probe_cleanup(&mut pending).await;
         pending.release();
-    });
+    })
 }
 
-fn monitor_probe_wait_task(
-    waiter: tauri::async_runtime::JoinHandle<ProbeTaskResult>,
-    owner: ProcessOwner,
-    pid: u32,
-    reason: String,
-    process_guard: tokio::sync::OwnedMutexGuard<()>,
-    pid_guard: PidGuard,
-) {
-    super::super::process::mark_process_cleanup_failed(owner, reason);
-    tauri::async_runtime::spawn(async move {
-        match waiter.await {
-            Ok(ProbeTaskResult::CleanupPending { child, pid, reason }) => {
-                let mut pending = ProbeCleanupPending {
-                    child,
-                    pid,
-                    reason,
-                    owner,
-                    _process_guard: process_guard,
-                    _pid_guard: pid_guard,
-                };
-                wait_for_probe_cleanup(&mut pending).await;
-                pending.release();
-            }
-            Ok(ProbeTaskResult::Finished(_)) => {
-                super::super::process::release_process_cleanup(owner, pid_guard, process_guard);
-            }
-            Err(error) => {
-                log::error!("pnpm version probe cleanup wait task failed: {error}");
-                wait_for_probe_cleanup_with(
-                    || !super::super::process::plugin_process_has_exited(pid),
-                    PNPM_PROBE_LIVENESS_INTERVAL,
-                )
-                .await;
-                super::super::process::release_process_cleanup(owner, pid_guard, process_guard);
-            }
-        }
-    });
-}
-
-fn monitor_orphaned_probe_pid(
-    owner: ProcessOwner,
-    pid: u32,
-    reason: String,
-    process_guard: tokio::sync::OwnedMutexGuard<()>,
-    pid_guard: PidGuard,
-) {
-    super::super::process::mark_process_cleanup_failed(owner, reason);
-    super::super::cancel::terminate_pid_tree(pid);
-    tauri::async_runtime::spawn(async move {
-        wait_for_probe_cleanup_with(
-            || !super::super::process::plugin_process_has_exited(pid),
-            PNPM_PROBE_LIVENESS_INTERVAL,
-        )
-        .await;
-        super::super::process::release_process_cleanup(owner, pid_guard, process_guard);
-    });
-}
-
-async fn wait_for_probe_cleanup(pending: &mut ProbeCleanupPending) {
+async fn wait_for_probe_cleanup(pending: &ProbeCleanupPending) {
     wait_for_probe_cleanup_with(
-        || match pending.child.try_wait() {
-            Ok(Some(_)) => false,
-            Ok(None) => true,
-            Err(error) => {
-                log::warn!(
-                    "pnpm version probe cleanup monitor wait failed for pid {}: {error}",
-                    pending.pid
-                );
-                !super::super::process::plugin_process_has_exited(pending.pid)
-            }
+        || {
+            !matches!(
+                pending
+                    .child
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .try_wait(),
+                Ok(Some(_))
+            )
         },
         PNPM_PROBE_LIVENESS_INTERVAL,
     )
     .await;
-    log::info!(
-        "pnpm version probe cleanup monitor released pid {}",
-        pending.pid
-    );
 }
 
 async fn wait_for_probe_cleanup_with<F>(mut remains_active: F, interval: std::time::Duration)
@@ -489,42 +388,11 @@ fn read_probe_pipe<R: Read>(pipe: Option<R>) -> std::io::Result<Vec<u8>> {
     Ok(output)
 }
 
-fn join_probe_reader(
-    reader: std::thread::JoinHandle<std::io::Result<Vec<u8>>>,
-) -> std::io::Result<Vec<u8>> {
-    reader
-        .join()
-        .map_err(|_| std::io::Error::other("pnpm version probe output reader thread panicked"))?
-}
-
 fn log_probe_fallback(pnpm: &Path, phase: &str, error: impl std::fmt::Display) {
     log::warn!(
         "pnpm version probe {phase} failed for {}: {error}; falling back to bundled pnpm",
         pnpm.display()
     );
-}
-
-fn probe_task_or_fallback<T, E: std::fmt::Display>(pnpm: &Path, result: Result<T, E>) -> Option<T> {
-    match result {
-        Ok(task) => Some(task),
-        Err(error) => {
-            log_probe_fallback(pnpm, "wait task", error);
-            None
-        }
-    }
-}
-
-fn probe_output_or_fallback(
-    pnpm: &Path,
-    result: std::io::Result<std::process::Output>,
-) -> Result<Option<std::process::Output>, String> {
-    match result {
-        Ok(output) => Ok(Some(output)),
-        Err(error) => {
-            log_probe_fallback(pnpm, "output", error);
-            Ok(None)
-        }
-    }
 }
 
 /// 探测超时后进程已被强杀并回收干净时的处置：记降级日志并返回「用户 pnpm
@@ -538,51 +406,7 @@ fn probe_timeout_or_fallback(pnpm: &Path, reason: String) -> Option<u32> {
     None
 }
 
-/// 用户 pnpm 主版本号（解析 `pnpm --version` 首个点分字段）；不存在或不可运行
-/// （corepack shim 在 Node 24 上 ERR_INVALID_THIS 崩溃等）返回 None。
-///
-/// 供 [`ensure_pnpm`] 选版与 [`crate::service::plugin::verify`] 的修复选版共用（store 主版本匹配）。
-pub(crate) fn user_pnpm_major_version(app_handle: &AppHandle) -> Option<u32> {
-    let pnpm = cli::find_user_pnpm(app_handle)?;
-    let node = config::get_node_binary_path(app_handle);
-    pnpm_major_version_at_with_node(&pnpm, Some(&node))
-}
-
-/// 探测精确 pnpm 可执行路径的主版本，供直接执行路径校验实际将运行的文件。
-pub(crate) fn pnpm_major_version_at(pnpm: &Path) -> Option<u32> {
-    pnpm_major_version_at_with_node(pnpm, None)
-}
-
-/// 在受控 Node 环境中探测 pnpm 主版本。Windows GUI 进程继承的 PATH 可能早于
-/// Node/pnpm 安装，而 corepack 的 `pnpm.cmd` 需要通过 PATH 调用 `node`；探测时
-/// 必须注入桌面端已经选定的 Node 目录，否则会把健康 pnpm 误判为不可用（issue #182）。
-fn pnpm_major_version_at_with_node(pnpm: &Path, node: Option<&Path>) -> Option<u32> {
-    let output = match pnpm_probe_command(pnpm, node, None).output() {
-        Ok(output) => output,
-        Err(error) => {
-            log::warn!(
-                "pnpm version probe failed to spawn {}: {error}",
-                pnpm.display()
-            );
-            return None;
-        }
-    };
-    parse_pnpm_major_output(pnpm, &output)
-}
-
-/// 构建 pnpm 版本探测命令：`--version`、注入选定 Node 的 PATH（issue #182）、
-/// Windows 无窗口，并**显式关闭 stdin**。
-///
-/// 探测只需要 `--version` 的标准输出，绝不该等待输入：corepack 在 pnpm 版本
-/// 未缓存时会先问 "Do you want to continue? [Y/n]"，而 GUI 进程继承的 stdin
-/// 句柄无控制台可读，子进程读它会一直挂起——探测只能靠 10 秒超时强杀，用户
-/// 看到的是「pnpm 不能在这台电脑上运行」的安装失败（issue #449）。关闭 stdin
-/// 让这类读取立刻拿到 EOF，探测必定有界结束。有界探测（子进程 + 超时强杀）与
-/// 无界探测（[`user_pnpm_major_version`] 的 `output()`）共用本函数，避免两套
-/// 探测策略再次分叉。
-///
-/// `bin_dir` 为桌面端 shim 目录：传入即复现安装子进程的解析条件（见
-/// [`pnpm_probe_path`]）；按精确路径探测（`verify`）传 None。
+/// 关闭 stdin 避免 Corepack 交互挂起（issue #449），注入选定 Node 避免陈旧 PATH（issue #182）。
 fn pnpm_probe_command(
     pnpm: &Path,
     node: Option<&Path>,
@@ -788,45 +612,25 @@ pub(crate) fn bundled_pnpm_major(app_handle: &AppHandle) -> Option<u32> {
 /// 匹配且用户版不匹配时强制捆绑版（否则用户版会 `ERR_PNPM_UNEXPECTED_STORE`）；
 /// store 未知时用户 pnpm ≥ 10 优先，否则强制捆绑版。启动阶段绝不触发下载，
 /// 捆绑版未安装即返回 false（交由用户 pnpm）。
-pub(crate) fn harness_prefer_bundled_pnpm(app_handle: &AppHandle) -> bool {
-    let store_major = profile_store_major(app_handle);
-    let user_major = user_pnpm_major_version(app_handle);
-    let bundled_major = bundled_pnpm_major(app_handle);
-    // 捆绑版未安装 → 无法强制，交还用户 pnpm（shim 默认用户优先）
+pub(crate) async fn harness_prefer_bundled_pnpm(app_handle: &AppHandle) -> Result<bool, String> {
     if !config::get_pnpm_binary_path(app_handle).exists() {
-        return false;
+        return Ok(false);
     }
-    match store_major {
-        Some(store) => bundled_major == Some(store) && user_major != Some(store),
+    let store_major = profile_store_major(app_handle);
+    if store_major.is_some_and(|store| bundled_pnpm_major(app_handle) != Some(store)) {
+        return Ok(false);
+    }
+    let user_major = user_pnpm_major_version_bounded(app_handle, new_process_owner()).await?;
+    Ok(match store_major {
+        Some(store) => user_major != Some(store),
         None => !matches!(user_major, Some(major) if major >= MIN_TRUSTED_PNPM_MAJOR),
-    }
+    })
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::super::process::TEST_PROCESS_LOCK;
     use super::*;
-
-    #[test]
-    fn pnpm_probe_wait_and_output_failures_fall_back_to_bundled() {
-        let pnpm = PathBuf::from("broken-pnpm");
-        let output = probe_output_or_fallback(
-            &pnpm,
-            Err(std::io::Error::new(
-                std::io::ErrorKind::BrokenPipe,
-                "output pipe closed",
-            )),
-        )
-        .unwrap();
-
-        assert!(output.is_none());
-    }
-
-    #[test]
-    fn pnpm_probe_wait_task_join_failure_falls_back_to_bundled() {
-        let pnpm = PathBuf::from("broken-pnpm");
-        let task: Option<()> = probe_task_or_fallback(&pnpm, Err("blocking worker dropped"));
-        assert!(task.is_none());
-    }
 
     /// issue #449 回归：探测超时、但进程已被强杀并回收干净时，必须降级为
     /// 「用户 pnpm 不可用」（`None` → `ensure_pnpm` 回退捆绑版），而不是把
@@ -929,6 +733,106 @@ mod tests {
         assert!(pending.is_err());
     }
 
+    #[tokio::test]
+    async fn exited_probe_releases_its_pid_and_process_guard() {
+        let _test_guard = TEST_PROCESS_LOCK.lock().await;
+        #[cfg(windows)]
+        let mut child = {
+            use std::os::windows::process::CommandExt;
+            std::process::Command::new("cmd.exe")
+                .creation_flags(0x08000000)
+                .args(["/D", "/C", "exit 0"])
+                .spawn()
+                .unwrap()
+        };
+        #[cfg(not(windows))]
+        let mut child = std::process::Command::new("sh")
+            .args(["-c", "exit 0"])
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        assert!(child.wait().unwrap().success());
+        let owner = super::super::super::process::new_process_owner();
+        let pid_guard = PidGuard::set(owner, pid);
+        let lock = std::sync::Arc::new(tokio::sync::Mutex::new(()));
+        let process_guard = lock.clone().lock_owned().await;
+        assert!(lock.try_lock().is_err());
+        cleanup_probe(
+            ProbeCleanupPending {
+                child: Arc::new(Mutex::new(child)),
+                owner,
+                _process_guard: process_guard,
+                _pid_guard: pid_guard,
+            },
+            None,
+            "PNPM_PROBE_WAIT_TASK_FAILED: test cleanup".to_string(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(super::super::super::process::active_plugin_pid(owner), None);
+        assert!(lock.try_lock().is_ok());
+    }
+
+    #[tokio::test]
+    async fn live_probe_retains_its_pid_and_process_guard_until_exit() {
+        let _test_guard = TEST_PROCESS_LOCK.lock().await;
+        #[cfg(windows)]
+        let mut command = {
+            use std::os::windows::process::CommandExt;
+            let mut command = std::process::Command::new("cmd.exe");
+            command
+                .creation_flags(0x08000000)
+                .args(["/D", "/C", "set /p token="]);
+            command
+        };
+        #[cfg(not(windows))]
+        let mut command = {
+            let mut command = std::process::Command::new("sh");
+            command.args(["-c", "read -r token"]);
+            command
+        };
+        let mut child = command
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let owner = super::super::super::process::new_process_owner();
+        let pid_guard = PidGuard::set(owner, pid);
+        let lock = std::sync::Arc::new(tokio::sync::Mutex::new(()));
+        let process_guard = lock.clone().lock_owned().await;
+        let mut input = child.stdin.take().unwrap();
+        let pending = ProbeCleanupPending {
+            child: Arc::new(Mutex::new(child)),
+            owner,
+            _process_guard: process_guard,
+            _pid_guard: pid_guard,
+        };
+        let release = async {
+            wait_for_probe_cleanup(&pending).await;
+            pending.release();
+        };
+        tokio::pin!(release);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), &mut release)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            super::super::super::process::active_plugin_pid(owner),
+            Some(pid)
+        );
+        assert!(lock.try_lock().is_err());
+        use std::io::Write;
+        input.write_all(b"done\n").unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), &mut release)
+            .await
+            .unwrap();
+        assert_eq!(super::super::super::process::active_plugin_pid(owner), None);
+        assert!(lock.try_lock().is_ok());
+    }
+
     struct BrokenPipeReader;
 
     impl std::io::Read for BrokenPipeReader {
@@ -947,8 +851,9 @@ mod tests {
     }
 
     #[cfg(unix)]
-    #[test]
-    fn pnpm_major_version_at_probes_the_exact_selected_path() {
+    #[tokio::test]
+    async fn pnpm_major_version_at_probes_the_exact_selected_path() {
+        let _test_guard = TEST_PROCESS_LOCK.lock().await;
         use std::os::unix::fs::PermissionsExt;
         use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -969,16 +874,23 @@ mod tests {
             std::fs::set_permissions(path, permissions).unwrap();
         }
 
-        assert_eq!(pnpm_major_version_at(&selected), Some(11));
-        assert_eq!(pnpm_major_version_at(&other), Some(10));
+        for (path, major) in [(&selected, 11), (&other, 10)] {
+            assert_eq!(
+                pnpm_major_version_at_bounded(path, None, None, new_process_owner())
+                    .await
+                    .unwrap(),
+                Some(major)
+            );
+        }
         let _ = std::fs::remove_dir_all(root);
     }
 
     /// 回归 Windows GUI 的陈旧 PATH：pnpm shim 必须解析到桌面端选定的 Node，
     /// 即使 shim 同目录存在冲突的 node，且路径包含空格和 shell 元字符。
     #[cfg(windows)]
-    #[test]
-    fn pnpm_major_version_probe_injects_selected_node_for_cmd_shim() {
+    #[tokio::test]
+    async fn pnpm_major_version_probe_injects_selected_node_for_cmd_shim() {
+        let _test_guard = TEST_PROCESS_LOCK.lock().await;
         use std::time::{SystemTime, UNIX_EPOCH};
 
         let nonce = SystemTime::now()
@@ -999,10 +911,273 @@ mod tests {
         std::fs::write(&node, "@echo off\r\necho 11.24.0\r\n").unwrap();
 
         assert_eq!(
-            pnpm_major_version_at_with_node(&selected, Some(&node)),
+            pnpm_major_version_at_bounded(&selected, Some(&node), None, new_process_owner())
+                .await
+                .unwrap(),
             Some(11)
         );
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn pnpm_version_probe_bounds_slow_shims_and_releases_the_process_lock() {
+        let _test_guard = TEST_PROCESS_LOCK.lock().await;
+        let root = tempfile::tempdir().unwrap();
+        #[cfg(windows)]
+        let pnpm = {
+            let pnpm = root.path().join("slow pnpm.cmd");
+            std::fs::write(
+                &pnpm,
+                "@echo off\r\npowershell.exe -NoProfile -NonInteractive -Command \"Start-Sleep -Seconds 20\"\r\necho 11.2.0\r\n",
+            )
+            .unwrap();
+            pnpm
+        };
+        #[cfg(unix)]
+        let pnpm = {
+            use std::os::unix::fs::PermissionsExt;
+            let pnpm = root.path().join("slow-pnpm");
+            std::fs::write(&pnpm, "#!/bin/sh\nsleep 20\nprintf '11.2.0\\n'\n").unwrap();
+            std::fs::set_permissions(&pnpm, std::fs::Permissions::from_mode(0o700)).unwrap();
+            pnpm
+        };
+        let started = std::time::Instant::now();
+        assert_eq!(
+            pnpm_major_version_at_bounded(&pnpm, None, None, new_process_owner())
+                .await
+                .unwrap(),
+            None
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(18));
+        let process_guard =
+            tokio::time::timeout(std::time::Duration::from_secs(1), acquire_process_lock())
+                .await
+                .expect("finished probe must release the process lock")
+                .unwrap();
+        drop(process_guard);
+    }
+
+    #[tokio::test]
+    async fn cancelled_probe_keeps_its_pid_and_lock_until_the_child_exits() {
+        let _test_guard = TEST_PROCESS_LOCK.lock().await;
+        let root = tempfile::tempdir().unwrap();
+        let release = root.path().join("release");
+        #[cfg(windows)]
+        let pnpm = {
+            let pnpm = root.path().join("held pnpm.cmd");
+            let path = release.to_string_lossy().replace('\'', "''");
+            std::fs::write(
+                &pnpm,
+                format!("@echo off\r\npowershell.exe -NoProfile -NonInteractive -Command \"while (-not (Test-Path -LiteralPath '{path}')) {{ Start-Sleep -Milliseconds 25 }}\"\r\necho 11.2.0\r\n"),
+            )
+            .unwrap();
+            pnpm
+        };
+        #[cfg(unix)]
+        let pnpm = {
+            use std::os::unix::fs::PermissionsExt;
+            let pnpm = root.path().join("held-pnpm");
+            let path = release.to_string_lossy().replace('\'', "'\\''");
+            std::fs::write(
+                &pnpm,
+                format!("#!/bin/sh\nwhile [ ! -f '{path}' ]; do sleep 0.025; done\nprintf '11.2.0\\n'\n"),
+            )
+            .unwrap();
+            std::fs::set_permissions(&pnpm, std::fs::Permissions::from_mode(0o700)).unwrap();
+            pnpm
+        };
+        let owner = new_process_owner();
+        let caller =
+            tokio::spawn(
+                async move { pnpm_major_version_at_bounded(&pnpm, None, None, owner).await },
+            );
+        let pid = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if let Some(pid) = super::super::super::process::active_plugin_pid(owner) {
+                    break pid;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        caller.abort();
+        assert!(caller.await.unwrap_err().is_cancelled());
+        let retained_pid = super::super::super::process::active_plugin_pid(owner);
+        let held_lock =
+            tokio::time::timeout(std::time::Duration::from_millis(50), acquire_process_lock())
+                .await;
+        std::fs::write(release, "done").unwrap();
+        let released =
+            tokio::time::timeout(std::time::Duration::from_secs(5), acquire_process_lock())
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(retained_pid, Some(pid));
+        assert!(
+            held_lock.is_err(),
+            "cancelled caller must not release a live probe lock"
+        );
+        assert_eq!(super::super::super::process::active_plugin_pid(owner), None);
+        drop(released);
+    }
+
+    #[tokio::test]
+    async fn cleanup_timeout_fails_closed_until_the_waiter_finishes() {
+        let _test_guard = TEST_PROCESS_LOCK.lock().await;
+        #[cfg(windows)]
+        let mut child = {
+            use std::os::windows::process::CommandExt;
+            std::process::Command::new("cmd.exe")
+                .creation_flags(0x08000000)
+                .args(["/D", "/C", "exit 0"])
+                .spawn()
+                .unwrap()
+        };
+        #[cfg(unix)]
+        let mut child = std::process::Command::new("sh")
+            .args(["-c", "exit 0"])
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        child.wait().unwrap();
+        let owner = new_process_owner();
+        let process_guard = acquire_process_lock().await.unwrap();
+        let pending = ProbeCleanupPending {
+            child: Arc::new(Mutex::new(child)),
+            owner,
+            _process_guard: process_guard,
+            _pid_guard: PidGuard::set(owner, pid),
+        };
+        let (release, held) = tokio::sync::oneshot::channel::<()>();
+        let waiter = tauri::async_runtime::spawn(async move {
+            held.await.unwrap();
+            Err(std::io::Error::other("probe output pipe closed"))
+        });
+        let started = std::time::Instant::now();
+        let result = cleanup_probe(
+            pending,
+            Some(waiter),
+            "PNPM_PROBE_WAIT_TASK_FAILED: held waiter".to_string(),
+        )
+        .await;
+        let retained_pid = super::super::super::process::active_plugin_pid(owner);
+        let blocked =
+            tokio::time::timeout(std::time::Duration::from_millis(50), acquire_process_lock())
+                .await;
+        release.send(()).unwrap();
+        let released = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while super::super::super::process::active_plugin_pid(owner).is_some() {
+                tokio::task::yield_now().await;
+            }
+            acquire_process_lock().await
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(result
+            .unwrap_err()
+            .starts_with("PNPM_PROBE_CLEANUP_TIMEOUT:"));
+        assert!(started.elapsed() < std::time::Duration::from_secs(7));
+        assert_eq!(retained_pid, Some(pid));
+        assert!(blocked
+            .unwrap()
+            .unwrap_err()
+            .starts_with("PNPM_PROBE_WAIT_TASK_FAILED:"));
+        assert_eq!(super::super::super::process::active_plugin_pid(owner), None);
+        drop(released);
+    }
+
+    #[tokio::test]
+    async fn failed_tree_termination_retains_guards_even_after_root_exit() {
+        let _test_guard = TEST_PROCESS_LOCK.lock().await;
+        #[cfg(windows)]
+        let mut command = {
+            use std::os::windows::process::CommandExt;
+            let mut command = std::process::Command::new("cmd.exe");
+            command
+                .creation_flags(0x08000000)
+                .args(["/D", "/C", "set /p token="]);
+            command
+        };
+        #[cfg(unix)]
+        let mut command = {
+            use std::os::unix::process::CommandExt;
+            let mut command = std::process::Command::new("sh");
+            command.args(["-c", "read -r token"]).process_group(0);
+            command
+        };
+        let child = Arc::new(Mutex::new(
+            command
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap(),
+        ));
+        let pid = child.lock().unwrap().id();
+        let owner = new_process_owner();
+        let lock = Arc::new(tokio::sync::Mutex::new(()));
+        let pending = ProbeCleanupPending {
+            child: child.clone(),
+            owner,
+            _process_guard: lock.clone().lock_owned().await,
+            _pid_guard: PidGuard::set(owner, pid),
+        };
+        let waiting_child = child.clone();
+        let waiter =
+            tauri::async_runtime::spawn_blocking(move || wait_for_probe_output(&waiting_child));
+        let mut monitor = monitor_probe_cleanup(
+            pending,
+            Some(waiter),
+            "PNPM_PROBE_TIMEOUT: injected tree termination failure".to_string(),
+            |_| false,
+        );
+        let exited = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while child.lock().unwrap().try_wait().unwrap().is_none() {
+                tokio::time::sleep(PNPM_PROBE_REAP_RETRY_INTERVAL).await;
+            }
+        })
+        .await;
+        let failure = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if let Err(reason) = acquire_process_lock().await {
+                    if reason.starts_with("PNPM_PROBE_TREE_CLEANUP_FAILED:") {
+                        break reason;
+                    }
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        let retained_pid = super::super::super::process::active_plugin_pid(owner);
+        let lock_held = lock.try_lock().is_err();
+        let retained = tokio::time::timeout(std::time::Duration::from_millis(50), &mut monitor)
+            .await
+            .is_err();
+        if retained {
+            monitor.abort();
+            let _ = monitor.await;
+        }
+        super::super::super::process::clear_process_cleanup_failed(owner);
+        if exited.is_err() {
+            let mut child = child.lock().unwrap();
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        assert!(
+            exited.is_ok(),
+            "root fallback must kill the real probe child"
+        );
+        assert!(
+            failure.is_ok(),
+            "root exit must not clear unconfirmed tree cleanup"
+        );
+        assert!(retained, "tree failure must retain the cleanup monitor");
+        assert!(lock_held, "tree failure must retain the process guard");
+        assert_eq!(retained_pid, Some(pid));
+        assert_eq!(super::super::super::process::active_plugin_pid(owner), None);
+        assert!(lock.try_lock().is_ok());
     }
 
     #[test]

@@ -2,7 +2,6 @@ import type { ClientContext } from 'dsh-tauri/client'
 import { compact, defineRegister, uniq } from 'dsh-tauri/client'
 import {
   SETTINGS_EXTERNAL_OVERLAY_SELECTORS,
-  SETTINGS_SIDEBAR_CLASS,
   SETTINGS_UNDERLAY_SLOT_KEYS,
   SIDEBAR_WIDTH_PROPERTY,
 } from '../constants'
@@ -65,7 +64,7 @@ export const registerSettingsObstructions = defineRegister<ClientContext>((contr
     if (controller.isDisposed())
       return
 
-    if (document.querySelector(`.${SETTINGS_SIDEBAR_CLASS}`) === null) {
+    if (document.querySelector('[data-slot-sidebar="dsh-tauri-ui"]') === null) {
       restore()
       return
     }

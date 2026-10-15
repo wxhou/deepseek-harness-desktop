@@ -19,18 +19,17 @@
 
 use std::collections::HashMap;
 use std::ffi::OsString;
-use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 
 use crate::config;
 use crate::service::cli;
 
 use super::errors;
-use super::install::{build_plugin_envs, harness_prefer_bundled_pnpm};
+use super::install::{build_plugin_envs, new_process_owner, run_plugin_process};
 use super::installed::{installed_name, profile_dir, ProfilePackageJson};
 use super::preset::{load_presets, PreinstallPluginInfo};
+use super::process::is_process_cleanup_failure;
 
 /// 判定清单引用的预装插件是否缺失产物（纯函数，便于单测）。
 ///
@@ -67,7 +66,8 @@ fn record_missing(app_handle: &AppHandle, ids: &[String], detail: &str) {
     }
 }
 
-/// 启动前调用：核对并修复预装插件完整性。最佳努力：失败只返回 Err（调用方告警）。
+/// 启动前调用：核对并修复预装插件完整性。普通失败只告警并记录错误标记，返回 Ok；
+/// 仅进程清理/协调器失败会以 Err 上抛，交由调用方终止本次启动（见下文）。
 pub(crate) async fn ensure_preset_plugins(app_handle: &AppHandle) -> Result<(), String> {
     let presets = load_presets(app_handle);
     if presets.is_empty() {
@@ -103,9 +103,16 @@ pub(crate) async fn ensure_preset_plugins(app_handle: &AppHandle) -> Result<(), 
     );
 
     // 修复：在 profile 目录以现有 manifest + lockfile 为准执行 `pnpm install`，
-    // 重建 node_modules 依赖图（不解析新版本）。修复失败不阻断启动，给缺失插件
+    // 重建 node_modules 依赖图（不解析新版本）。普通修复失败不阻断启动，给缺失插件
     // 记录错误标记，让前端插件面板暴露问题、用户可走卸载兜底恢复。
+    //
+    // 例外是进程清理/协调器失败（`is_process_cleanup_failure`）：那说明前一进程的
+    // 去向未确认，继续 spawn 新的 pnpm 会与残留进程抢同一个 store 与档案。此时必须
+    // 把失败交给调用方终止启动，而不是降级成一次「最佳努力」的告警。
     if let Err(e) = repair_with_pnpm_install(app_handle, &profile).await {
+        if is_process_cleanup_failure(&e) {
+            return Err(e);
+        }
         log::warn!("PRESET_PLUGIN_REPAIR_FAILED: {e}");
         record_missing(app_handle, &missing, &e);
         return Ok(());
@@ -130,19 +137,38 @@ pub(crate) async fn ensure_preset_plugins(app_handle: &AppHandle) -> Result<(), 
 /// 选定直接执行的 pnpm（见 [`pnpm_direct`]），环境沿用桌面端插件子进程策略
 /// （`build_plugin_envs`：隔离 $DSH_HOME、PATH 前置 shim 与 node 目录、pnpm
 /// 选版开关），与安装/升级/卸载同一套行为，避免意外的 store/版本不兼容。
+///
+/// 走 [`run_plugin_process`]（与其他装机路径同一执行器）：它持有共享进程锁直到
+/// 阻塞等待结束，因此前一进程清理未确认时这里会直接拿到协调器错误，而不是绕开
+/// 锁再起一个 pnpm。
 async fn repair_with_pnpm_install(app_handle: &AppHandle, profile: &Path) -> Result<(), String> {
-    let (program, mut args) = pnpm_direct(app_handle).ok_or_else(|| {
+    let (program, mut args) = pnpm_direct(app_handle).await?.ok_or_else(|| {
         "PNPM_NOT_FOUND: 无捆绑 pnpm 且无用户 pnpm，无法修复插件依赖（如需可手动执行 pnpm install）"
             .to_string()
     })?;
+    let bundled = config::get_pnpm_binary_path(app_handle);
+    let prefer_bundled = args
+        .iter()
+        .any(|arg| arg.as_os_str() == bundled.as_os_str());
     args.push(OsString::from("install"));
 
-    let envs = build_plugin_envs(app_handle, harness_prefer_bundled_pnpm(app_handle));
+    let window = app_handle
+        .get_webview_window("main")
+        .ok_or("WINDOW_NOT_FOUND: main window missing")?;
+    let envs = build_plugin_envs(app_handle, prefer_bundled);
     log::info!(
         "repairing profile node_modules via pnpm install in {}",
         profile.display()
     );
-    let (exit_code, output) = spawn_and_wait(&program, &args, profile, &envs).await?;
+    let (exit_code, output) = run_plugin_process(
+        &program,
+        &args,
+        profile,
+        &envs,
+        &window,
+        new_process_owner(),
+    )
+    .await?;
     if exit_code != 0 {
         // 日志只保留输出尾部，避免刷屏（pnpm 失败信息集中在末尾）。
         let tail: String = output
@@ -174,8 +200,10 @@ const REPAIR_OUTPUT_LIMIT: usize = 4000;
 ///
 /// Windows 上 `.cmd`/`.bat` 无法被 CreateProcess 直接执行（需 cmd.exe 解析），
 /// 用户 pnpm 只接受 `.exe`。
-pub(crate) fn pnpm_direct(app_handle: &AppHandle) -> Option<(PathBuf, Vec<OsString>)> {
-    use super::install::{bundled_pnpm_major, pnpm_major_version_at, profile_store_major};
+pub(crate) async fn pnpm_direct(
+    app_handle: &AppHandle,
+) -> Result<Option<(PathBuf, Vec<OsString>)>, String> {
+    use super::install::{bundled_pnpm_major, pnpm_major_version_at_bounded, profile_store_major};
 
     let bundled = config::get_pnpm_binary_path(app_handle);
     let bundled_ready = bundled.exists();
@@ -185,7 +213,7 @@ pub(crate) fn pnpm_direct(app_handle: &AppHandle) -> Option<(PathBuf, Vec<OsStri
 
     if bundled_matches {
         let node = config::get_node_binary_path(app_handle);
-        return Some((node, vec![bundled.into_os_string()]));
+        return Ok(Some((node, vec![bundled.into_os_string()])));
     }
 
     // 用户 pnpm 主版本与 store 一致（或 store 未知）都可直接用。Windows
@@ -195,129 +223,30 @@ pub(crate) fn pnpm_direct(app_handle: &AppHandle) -> Option<(PathBuf, Vec<OsStri
     #[cfg(not(windows))]
     let user_pnpm = cli::find_user_pnpm(app_handle);
     if let Some(user) = user_pnpm {
-        if store.is_none_or(|s| pnpm_major_version_at(&user) == Some(s)) {
-            return Some((user, Vec::new()));
+        let matches = match store {
+            None => true,
+            Some(store) => {
+                pnpm_major_version_at_bounded(
+                    &user,
+                    Some(&config::get_node_binary_path(app_handle)),
+                    None,
+                    super::process::new_process_owner(),
+                )
+                .await?
+                    == Some(store)
+            }
+        };
+        if matches {
+            return Ok(Some((user, Vec::new())));
         }
     }
 
     // 都不匹配：退回捆绑版尽力一试（pnpm 会因 store 不兼容失败，由调用方记录）
     if bundled_ready {
         let node = config::get_node_binary_path(app_handle);
-        return Some((node, vec![bundled.into_os_string()]));
+        return Ok(Some((node, vec![bundled.into_os_string()])));
     }
-    None
-}
-
-/// 启动子进程 `program args...`（cwd=`cwd`）并等待退出，返回 (退出码, 合并输出)。
-///
-/// Windows 复用隐藏控制台方案（`workflow::win_spawn`）：GUI 进程直接以
-/// CREATE_NO_WINDOW 启动会让 node 的子进程各自新建可见控制台窗口（黑窗闪烁）。
-/// 原始进程句柄（`*mut c_void`）非 Send，整个「spawn + 读管道 + 等待」都在单个
-/// `spawn_blocking` 内完成（与 `plugin::process` 的等待语义一致），句柄不外传。
-async fn spawn_and_wait(
-    program: &Path,
-    args: &[OsString],
-    cwd: &Path,
-    envs: &HashMap<String, String>,
-) -> Result<(i32, String), String> {
-    let captured = Arc::new(Mutex::new(String::new()));
-
-    #[cfg(windows)]
-    {
-        use crate::service::workflow;
-        use std::time::Duration;
-
-        let program = program.to_path_buf();
-        let args = args.to_vec();
-        let cwd = cwd.to_path_buf();
-        let envs = envs.clone();
-        let captured = captured.clone();
-        let (exit_code, output) = tauri::async_runtime::spawn_blocking(move || {
-            use windows_sys::Win32::Foundation::CloseHandle;
-            use windows_sys::Win32::System::Threading::{
-                GetExitCodeProcess, WaitForSingleObject, INFINITE,
-            };
-
-            let (stdout, stderr, handle) = workflow::win_spawn::spawn_with_hidden_console_tracked(
-                &program,
-                &args,
-                Some(&cwd),
-                &envs,
-            )
-            .map_err(|e| format!("PNPM_REPAIR_SPAWN: {e}"))?;
-            drain_pipe(stdout, captured.clone());
-            drain_pipe(stderr, captured.clone());
-
-            // 等孤立读取线程把管道内容写完（短命令通常已结束，此等待为兜底）。
-            std::thread::sleep(Duration::from_millis(200));
-            let exit_code = unsafe {
-                let wait = WaitForSingleObject(handle, INFINITE);
-                let mut code: u32 = 0;
-                if GetExitCodeProcess(handle, &mut code) == 0 {
-                    code = wait;
-                }
-                CloseHandle(handle);
-                code as i32
-            };
-            Ok::<_, String>((exit_code, drain_captured(captured)))
-        })
-        .await
-        .map_err(|e| format!("PNPM_REPAIR_WAIT: {e}"))??;
-        Ok((exit_code, output))
-    }
-
-    #[cfg(not(windows))]
-    {
-        use std::os::unix::process::CommandExt;
-        use std::process::{Command, Stdio};
-
-        let mut child = Command::new(program)
-            .args(args)
-            .envs(envs)
-            .current_dir(cwd)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .process_group(0) // 独立进程组，便于将来取消
-            .spawn()
-            .map_err(|e| format!("PNPM_REPAIR_SPAWN: {e}"))?;
-        if let Some(out) = child.stdout.take() {
-            drain_pipe(out, captured.clone());
-        }
-        if let Some(err) = child.stderr.take() {
-            drain_pipe(err, captured.clone());
-        }
-        let exit_code = tauri::async_runtime::spawn_blocking(move || {
-            child.wait().map(|s| s.code().unwrap_or(1)).unwrap_or(1)
-        })
-        .await
-        .map_err(|e| format!("PNPM_REPAIR_WAIT: {e}"))?;
-
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-        Ok((exit_code, drain_captured(captured)))
-    }
-}
-
-/// 在独立线程中把管道读取到 EOF 并追加进共享缓冲区（无事件转发：修复过程
-/// 只需落日志，进度反馈非必需）。
-fn drain_pipe<R: Read + Send + 'static>(mut reader: R, captured: Arc<Mutex<String>>) {
-    std::thread::spawn(move || {
-        let mut buffer = Vec::new();
-        if reader.read_to_end(&mut buffer).is_err() {
-            return;
-        }
-        if let Ok(mut acc) = captured.lock() {
-            acc.push_str(&String::from_utf8_lossy(&buffer));
-        }
-    });
-}
-
-/// 取出（并清空）共享缓冲区中的全部捕获输出。
-fn drain_captured(captured: Arc<Mutex<String>>) -> String {
-    captured
-        .lock()
-        .map(|mut buf| std::mem::take(&mut *buf))
-        .unwrap_or_default()
+    Ok(None)
 }
 
 #[cfg(test)]

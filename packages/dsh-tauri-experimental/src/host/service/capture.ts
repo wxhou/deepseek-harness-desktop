@@ -12,19 +12,20 @@
 
 import type { LiveSnapshot, SnapshotStore, TurnFileChange, TurnRecord } from '../types'
 import type { ActiveTurn, BeginningTurn, CaptureLogger } from './capture.types'
+import { getServerContext } from 'dsh-h3/utils'
 import { defineService } from 'dsh-tauri'
 import { RUNNING_CHANGES_REASON_WORKSPACE_CHANGED as REASON_WORKSPACE_CHANGED } from '../../shared/constants'
 import { LOCK_BARRIER_TIMEOUT_MS, REASON_SNAPSHOT_FAILED, REASON_UNSAFE_WORKSPACE } from '../config/constants'
 import {
   activeTurns,
   beginningTurns,
-  getCurrentHostInstance,
   isCaptureDisposed,
   setCaptureDisposed,
   settlingTurns,
   workspaceQueue,
 } from '../config/runtime'
 import { runningChangesHooks } from '../events'
+import { server } from '../server'
 import { pruneLooseObjects } from '../utils/git'
 import { WorkspaceLockTimeoutError } from '../utils/lock'
 import { retention } from './retention'
@@ -84,12 +85,6 @@ export const capture = defineService({
     }
     if (inflight.length > 0)
       await Promise.all(inflight)
-  },
-
-  /** 起快照并同步等它落地：生产路径由 start / awaitBegin 分挂两个钩子，这里保留合并形态。 */
-  async begin(sessionId: string, turn: number): Promise<void> {
-    capture.start(sessionId, turn)
-    await capture.awaitBegin(sessionId, turn)
   },
 
   /**
@@ -224,28 +219,6 @@ export const capture = defineService({
   },
 
   /**
-   * 该轮是否仍未落定：before 快照还在飞，或 after 尚未结算。
-   * 不能用实时读数是否 active（读数是提示条的过程态，`turn/end` 一到就归零，
-   * 而这一轮此后还要在后台结算）。
-   * @param sessionId - 会话 id。
-   * @param turn - 省略即该会话是否有任何未落定的轮次。
-   */
-  pending(sessionId: string, turn?: number): boolean {
-    for (const entry of activeTurns.values()) {
-      if (entry.sessionId === sessionId && (turn === undefined || entry.turn === turn))
-        return true
-    }
-    if (turn === undefined) {
-      for (const item of beginningTurns.values()) {
-        if (item.sessionId === sessionId)
-          return true
-      }
-      return false
-    }
-    return beginningTurns.has(activeKey(sessionId, turn))
-  },
-
-  /**
    * 运行中实时读数；没有正在进行的 turn 时返回 active: false。
    * 同一会话可能同时留着多条（旧轮还在后台结算，新一轮已经开始）：只认**轮次最新**的
    * 那条读数，按插入序取第一条会报出更早 before 快照的差值，看上去就是跨轮累加的数字。
@@ -263,7 +236,7 @@ export const capture = defineService({
     return { active: true, ...newest.live }
   },
 
-  /** 卸载：清定时器并丢弃内存态（宿主解绑由 apply 的 clearHostRuntime 负责）。 */
+  /** 卸载：清定时器并丢弃内存态（服务卸载由 apply 负责）。 */
   dispose(): void {
     setCaptureDisposed(true)
     // 必须清掉每个 active turn 的轮询定时器，否则插件停用后仍会持续拉起 git 子进程。
@@ -284,7 +257,7 @@ function activeKey(sessionId: string, turn: number): string {
 /** 日志面（宿主 logger 的最小契约；未绑定宿主或没有 logger 时静默）。 */
 function warn(message: string): void {
   try {
-    const logger = getCurrentHostInstance()?.logger as CaptureLogger | undefined
+    const logger = getServerContext(server)?.logger as CaptureLogger | undefined
     logger?.warn?.(message)
   }
   catch {

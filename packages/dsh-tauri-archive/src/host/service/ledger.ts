@@ -1,8 +1,8 @@
-import type { ArchiveRegistrySurface, ArchiveTableSurface, SessionLike, WorkspaceEntryLike } from '../types'
+import type { ArchiveRegistrySurface, ArchiveTableSurface, SessionHost, SessionLike } from '../types'
 import type { ArchiveAccounting, ArchivedListPayload } from './ledger.types'
+import { getServerContext } from 'dsh-h3/utils'
 import { defineService } from 'dsh-tauri'
-import { difference, keyBy, uniq } from 'lodash-es'
-import { getCurrentHostInstance } from '../config/runtime'
+import { server } from '../server'
 import { session } from './session'
 
 export const ledger = defineService({
@@ -11,7 +11,7 @@ export const ledger = defineService({
    * 同时断言变更面齐全 —— 删除事务的预检必须在任何破坏性动作之前完成。
    */
   list(): string[] {
-    const registry = getCurrentHostInstance().workspaceRegistry
+    const registry = getServerContext<SessionHost>(server).workspaceRegistry
     requireWritableRegistry(registry)
     requireTable(registry)
     return [...(registry.archivedSessionIds ?? [])]
@@ -21,7 +21,7 @@ export const ledger = defineService({
   load(): ArchivedListPayload {
     const archivedSessionIds: string[] = []
     const meta: ArchivedListPayload['meta'] = {}
-    for (const sessionId of getCurrentHostInstance().workspaceRegistry.archivedSessionIds ?? []) {
+    for (const sessionId of getServerContext<SessionHost>(server).workspaceRegistry.archivedSessionIds ?? []) {
       const entry = session.get(sessionId)
       if (entry === null)
         continue
@@ -38,7 +38,7 @@ export const ledger = defineService({
 
   /** 写入归档集合（宿主 archiveSession，幂等）；宿主未暴露时抛错，绝不静默降级。 */
   async save(sessionId: string): Promise<void> {
-    const registry = getCurrentHostInstance().workspaceRegistry
+    const registry = getServerContext<SessionHost>(server).workspaceRegistry
     const archiveSession = registry.archiveSession
     if (typeof archiveSession !== 'function')
       throw new Error('宿主 workspaceRegistry 未提供 archiveSession（宿主版本不兼容）')
@@ -50,8 +50,8 @@ export const ledger = defineService({
    * `accounting` 为 `detach` 时摘除记账（彻底删除），`attach` 时修复缺失槽位（取消归档）。
    */
   async remove(sessionIds: readonly string[], accounting: ArchiveAccounting = 'detach'): Promise<void> {
-    const registry = requireWritableRegistry(getCurrentHostInstance().workspaceRegistry)
-    const ids = uniq(sessionIds)
+    const registry = requireWritableRegistry(getServerContext<SessionHost>(server).workspaceRegistry)
+    const ids = [...new Set(sessionIds)]
     await registry.enqueueOperation(async () => {
       if (accounting === 'attach')
         await restoreWorkspaceAccounting(registry, ids)
@@ -59,7 +59,7 @@ export const ledger = defineService({
         await detachWorkspaceAccounting(registry, ids)
       const state = registry.requireState()
       const archived = state.archivedSessionIds ?? []
-      const next = difference(archived, ids)
+      const next = archived.filter(id => !ids.includes(id))
       if (next.length !== archived.length)
         await registry.setState({ ...state, archivedSessionIds: next })
     })
@@ -90,7 +90,7 @@ async function detachWorkspaceAccounting(registry: ArchiveRegistrySurface, sessi
   const table = requireTable(registry)
   for (const [workspaceId, record] of table.entries()) {
     const current = record.sessionIds ?? []
-    const next = difference(current, sessionIds)
+    const next = current.filter(id => !sessionIds.includes(id))
     if (next.length !== current.length)
       await table.update(workspaceId, value => ({ ...value, sessionIds: next }))
   }
@@ -105,7 +105,7 @@ async function restoreWorkspaceAccounting(registry: ArchiveRegistrySurface, sess
   const workspaces = registry.list?.()
   if (!table || !workspaces)
     return
-  const byPath = keyBy<WorkspaceEntryLike>(workspaces, 'path')
+  const byPath = Object.fromEntries(workspaces.map(workspace => [workspace.path, workspace]))
   for (const sessionId of sessionIds) {
     const cwd = cwdOf(session.get(sessionId))
     const workspace = cwd ? byPath[cwd] : undefined

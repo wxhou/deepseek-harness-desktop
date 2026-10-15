@@ -10,7 +10,7 @@ export function SchedulerNavIcon({ size }: { size: number }): ReactElement {
     <>
       <Icon as={Clock} size={size} />
       {countUnreadRuns(state.runs, state.readAt, state.readIds) > 0
-        ? <Dot className="dshp-scheduler__nav-dot" state="done" />
+        ? <Dot className="dshp-scheduler__nav-dot absolute right-[8px] top-1/2 -translate-y-1/2" state="done" />
         : null}
     </>
   )

@@ -27,7 +27,7 @@ export default {
     './packages/*/src/**/*.{js,ts,jsx,tsx}',
     // 生成物自身不能参与扫描：产物里的类名会被再次当成候选，第一次与第二次生成结果不一致
     // （不收敛），提交的 taiwindcss.ts 也就无法稳定复现。
-    '!./packages/dsh-tauri-taiwindcss/src/client/styles/taiwindcss.ts',
+    '!./packages/dsh-tauri-ui/src/client/styles/index.ts',
   ],
   theme: {
     extend: {
@@ -40,6 +40,7 @@ export default {
         'border-l2': 'var(--dsw-alias-border-l2)',
         'border-l3': 'var(--dsw-alias-border-l3)',
         'border-l4': 'var(--dsw-alias-border-l4)',
+        'border-weak': 'var(--dsw-alias-border-weak, rgba(127, 127, 127, 0.2))',
         'brand': 'var(--dsw-alias-brand-primary)',
         'business': 'var(--dsw-alias-state-business-primary)',
         'layer-1': 'var(--dsw-alias-bg-layer-1)',

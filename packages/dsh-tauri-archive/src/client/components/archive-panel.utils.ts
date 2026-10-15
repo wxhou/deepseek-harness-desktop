@@ -1,4 +1,4 @@
-import type { ArchivedListPayload } from '../apis/index.type'
+import type { GetApiTauriArchiveSessionArchiveResponse as ArchivedListPayload } from '../apis/index.type'
 import type { ArchiveSort } from '../store/modules/archive.types'
 import type { SessionListSnapshot, WorkspaceListSnapshot } from '../types/runtime'
 import type { ArchiveGroupRow, ArchiveRow } from './archive-panel.types'
@@ -41,9 +41,9 @@ export function buildRows(
 }
 
 /** 项目下拉选项：从归档行取「工作区 id → 标题」（后值覆盖、保持首次出现顺序）。 */
-export function projectOptions(rows: readonly ArchiveRow[]): Array<{ id: string, label: string }> {
+export function projectOptions(rows: readonly ArchiveRow[]): Array<{ value: string, label: string }> {
   const scoped = rows.filter((row): row is ArchiveRow & { workspaceId: string } => Boolean(row.workspaceId))
-  return Object.entries(keyBy(scoped, 'workspaceId')).map(([id, row]) => ({ id, label: row.workspaceTitle ?? id }))
+  return Object.entries(keyBy(scoped, 'workspaceId')).map(([id, row]) => ({ value: id, label: row.workspaceTitle ?? id }))
 }
 
 /** 行时间展示（zh/en 双语格式）。 */

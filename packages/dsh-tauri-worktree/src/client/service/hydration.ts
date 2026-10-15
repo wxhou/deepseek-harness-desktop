@@ -1,8 +1,4 @@
-import type {
-  WorktreeBindingSummary,
-  WorktreeDiscardJobSummary,
-  WorktreeStatus,
-} from '../apis/index.type'
+import type { GetApiTauriWorktreeBindingsResponse, GetApiTauriWorktreeStatusResponse as WorktreeStatus } from '../apis/index.type'
 import type { WorktreeSessionState } from '../store/modules/worktree.types'
 import type {
   BindingsProjection,
@@ -125,7 +121,7 @@ export function isWorktree(sessionId: string): boolean {
   return sessionStateOf(store.worktree.$state, sessionId).mode === 'worktree'
 }
 
-export function projectBinding(binding: WorktreeBindingSummary): Partial<WorktreeSessionState> {
+export function projectBinding(binding: GetApiTauriWorktreeBindingsResponse['bindings'][number]): Partial<WorktreeSessionState> {
   return {
     mode: 'worktree',
     phase: 'created',
@@ -139,7 +135,7 @@ export function projectBinding(binding: WorktreeBindingSummary): Partial<Worktre
   }
 }
 
-export function projectJob(job: WorktreeDiscardJobSummary): Partial<WorktreeSessionState> {
+export function projectJob(job: GetApiTauriWorktreeBindingsResponse['jobs'][number]): Partial<WorktreeSessionState> {
   return {
     mode: 'worktree',
     phase: job.state === 'deleting' ? 'deleting' : 'error',
@@ -266,17 +262,7 @@ export async function calibrateSession(input: {
   return { kind: 'local' }
 }
 
-export async function loadJobStatus(input: {
-  sessionId: string
-  jobId: string
-}): Promise<WorktreeStatus | undefined> {
-  try {
-    return await getStatus(input)
-  }
-  catch {
-    return undefined
-  }
-}
+export { loadJobStatus } from './worktree'
 
 export function planHandoff(input: {
   state: HydrationState

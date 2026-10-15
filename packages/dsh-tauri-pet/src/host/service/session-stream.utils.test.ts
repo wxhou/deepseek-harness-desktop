@@ -9,8 +9,13 @@ import type { PetSessionEvent, PetSessionPeer } from './session-stream.types'
 import { describe, expect, it } from 'vitest'
 import { createPetSessionReducer, PET_REASONING_PUSH_INTERVAL_MS, PET_REASONING_TAIL_WINDOW } from './session-stream.utils'
 
-function ev(type: string, data: Record<string, unknown>, seq: number): PetSessionEvent {
-  return { type, seq, time: Date.now(), data }
+function ev(
+  type: string,
+  data: Record<string, unknown>,
+  seq: number,
+  surfaceOp?: PetSessionEvent['surfaceOp'],
+): PetSessionEvent {
+  return { type, seq, time: Date.now(), data, surfaceOp }
 }
 
 const peer = (over: Partial<PetSessionPeer> = {}): PetSessionPeer => ({ id: 'a', ...over })
@@ -32,6 +37,21 @@ describe('petSessionReducer (host)', () => {
     expect(pushes[0].action).toBe('create')
     expect(pushes[0].payload).toMatchObject({ id: 'a', running: false })
     expect(pushes[0].payload.status).toBeUndefined()
+  })
+
+  it('preserves the activity alias across running, waiting, error and idle wire payloads', () => {
+    const { reducer, pushes } = collect()
+    reducer.create(peer())
+    expect(pushes.at(-1)!.payload).toHaveProperty('activity', undefined)
+    reducer.apply(peer(), ev('turn/start', { turn: 1 }, 1))
+    expect(pushes.at(-1)!.payload).toMatchObject({ status: 'running', activity: 'running' })
+    reducer.apply(peer(), ev('approval/asked', { id: 'approval' }, 2))
+    expect(pushes.at(-1)!.payload).toMatchObject({ status: 'waiting', activity: 'waiting' })
+    reducer.apply(peer(), ev('turn/end', { turn: 1, reason: { kind: 'error', error: { message: 'failed' } } }, 3))
+    expect(pushes.at(-1)!.payload).toMatchObject({ status: 'error', activity: 'error' })
+    reducer.apply(peer(), ev('turn/start', { turn: 2 }, 4))
+    reducer.apply(peer(), ev('turn/end', { turn: 2, reason: { kind: 'completed' } }, 5))
+    expect(pushes.at(-1)!.payload).toHaveProperty('activity', undefined)
   })
 
   it('turn/start 让 running=true、status=running、workStatus=thinking', () => {
@@ -111,6 +131,28 @@ describe('petSessionReducer (host)', () => {
     expect(afterAnswer.payload).toMatchObject({ workStatus: 'working' })
   })
 
+  it('surfaceOp=replace 的用户消息（rewind 回退标记）不是新回合：空闲会话不得被翻成 running', () => {
+    const { reducer, pushes } = collect()
+    reducer.create(peer())
+    reducer.apply(peer(), ev('turn/start', { turn: 1 }, 1))
+    reducer.apply(peer(), ev('turn/end', { turn: 1, reason: { kind: 'aborted' } }, 2))
+
+    // rewind 在 cancel + waitForAgentIdle 之后追加替换标记，且回合外不再有 turn/end 收尾：
+    // 若照常置 running，会话永久停在「思考中」，桌宠气泡等不到收敛（回退后消不掉的残留气泡）。
+    const before = pushes.length
+    reducer.apply(peer(), ev('user/message', {
+      message: { role: 'user', content: [{ type: 'text', text: '回退' }] },
+    }, 3, { op: 'replace', startSeq: 0, endSeq: 2 }))
+    expect(pushes, '替换标记不产生任何展示态变化').toHaveLength(before)
+    expect(pushes.at(-1)!.payload).toMatchObject({ running: false })
+
+    // 真正的用户消息（append 标记或没有标记）仍视为新回合。
+    reducer.apply(peer(), ev('user/message', {
+      message: { role: 'user', content: [{ type: 'text', text: '继续' }] },
+    }, 4, 'append'))
+    expect(pushes.at(-1)!.payload).toMatchObject({ running: true })
+  })
+
   it('turn/end(blocked) 让展示为 waiting(phase=blocked, workStatus=waiting)（等待用户处理非思考中）', () => {
     const { reducer, pushes } = collect()
     reducer.create(peer())
@@ -166,6 +208,78 @@ describe('petSessionReducer (host)', () => {
     expect(last.payload.workStatus).toBeUndefined()
     expect(last.payload.lastAgentError).toBeUndefined()
     expect(last.payload.status).toBeUndefined()
+  })
+
+  it('goal 续跑轮（source.round>0）未声明收尾时 turn/end(completed) 只到 result，不播雀跃庆祝', () => {
+    const { reducer, pushes } = collect()
+    reducer.create(peer())
+    reducer.apply(peer(), ev('turn/start', { turn: 2 }, 1))
+    reducer.apply(peer(), ev('user/message', { source: { kind: 'goal', goalId: 'g1', revision: 1, round: 1 } }, 2))
+    reducer.apply(peer(), ev('turn/end', { turn: 2, reason: { kind: 'completed' } }, 3))
+    expect(pushes.at(-1)!.payload).toMatchObject({ running: false, workStatus: 'result' })
+  })
+
+  it('goal 续跑轮以 update_goal complete 收尾 → workStatus=success', () => {
+    const { reducer, pushes } = collect()
+    reducer.create(peer())
+    reducer.apply(peer(), ev('turn/start', { turn: 2 }, 1))
+    reducer.apply(peer(), ev('user/message', { source: { kind: 'goal', goalId: 'g1', revision: 1, round: 1 } }, 2))
+    reducer.apply(peer(), ev('tool/call', { turn: 2, step: 1, callId: 'c1', name: 'update_goal', arguments: '{"action":"complete"}' }, 3))
+    reducer.apply(peer(), ev('turn/end', { turn: 2, reason: { kind: 'completed' } }, 4))
+    expect(pushes.at(-1)!.payload).toMatchObject({ workStatus: 'success' })
+  })
+
+  it('goal 续跑轮以 update_goal blocked 收尾 → workStatus=error，但不写 lastAgentError（阻塞非崩溃）', () => {
+    const { reducer, pushes } = collect()
+    reducer.create(peer())
+    reducer.apply(peer(), ev('turn/start', { turn: 2 }, 1))
+    reducer.apply(peer(), ev('user/message', { source: { kind: 'goal', goalId: 'g1', revision: 1, round: 1 } }, 2))
+    reducer.apply(peer(), ev('tool/call', { turn: 2, step: 1, callId: 'c1', name: 'update_goal', arguments: '{"action":"blocked","blocked_reason":"x"}' }, 3))
+    reducer.apply(peer(), ev('turn/end', { turn: 2, reason: { kind: 'completed' } }, 4))
+    const last = pushes.at(-1)!
+    expect(last.payload).toMatchObject({ workStatus: 'error' })
+    expect(last.payload.lastAgentError).toBeUndefined()
+    expect(last.payload.status).toBeUndefined()
+  })
+
+  it('goal 激活轮（round=0）不是续跑轮 → turn/end(completed) 仍为 success', () => {
+    const { reducer, pushes } = collect()
+    reducer.create(peer())
+    reducer.apply(peer(), ev('turn/start', { turn: 1 }, 1))
+    reducer.apply(peer(), ev('user/message', { source: { kind: 'goal', goalId: 'g1', revision: 1, round: 0 } }, 2))
+    reducer.apply(peer(), ev('turn/end', { turn: 1, reason: { kind: 'completed' } }, 3))
+    expect(pushes.at(-1)!.payload).toMatchObject({ workStatus: 'success' })
+  })
+
+  it('非 goal 轮的 update_goal 不影响终局档位（普通回合仍 success）', () => {
+    const { reducer, pushes } = collect()
+    reducer.create(peer())
+    reducer.apply(peer(), ev('turn/start', { turn: 1 }, 1))
+    reducer.apply(peer(), ev('tool/call', { turn: 1, step: 1, callId: 'c1', name: 'update_goal', arguments: '{"action":"blocked"}' }, 2))
+    reducer.apply(peer(), ev('turn/end', { turn: 1, reason: { kind: 'completed' } }, 3))
+    expect(pushes.at(-1)!.payload).toMatchObject({ workStatus: 'success' })
+  })
+
+  it('goal 标志随回合失效：续跑轮 result 后，下一普通轮 completed 回到 success', () => {
+    const { reducer, pushes } = collect()
+    reducer.create(peer())
+    reducer.apply(peer(), ev('turn/start', { turn: 2 }, 1))
+    reducer.apply(peer(), ev('user/message', { source: { kind: 'goal', goalId: 'g1', revision: 1, round: 1 } }, 2))
+    reducer.apply(peer(), ev('turn/end', { turn: 2, reason: { kind: 'completed' } }, 3))
+    expect(pushes.at(-1)!.payload).toMatchObject({ workStatus: 'result' })
+    reducer.apply(peer(), ev('turn/start', { turn: 3 }, 4))
+    reducer.apply(peer(), ev('turn/end', { turn: 3, reason: { kind: 'completed' } }, 5))
+    expect(pushes.at(-1)!.payload).toMatchObject({ workStatus: 'success' })
+  })
+
+  it('update_goal 参数不可解析时不当作收尾（续跑轮仍只到 result）', () => {
+    const { reducer, pushes } = collect()
+    reducer.create(peer())
+    reducer.apply(peer(), ev('turn/start', { turn: 2 }, 1))
+    reducer.apply(peer(), ev('user/message', { source: { kind: 'goal', goalId: 'g1', revision: 1, round: 2 } }, 2))
+    reducer.apply(peer(), ev('tool/call', { turn: 2, step: 1, callId: 'c1', name: 'update_goal', arguments: '{oops' }, 3))
+    reducer.apply(peer(), ev('turn/end', { turn: 2, reason: { kind: 'completed' } }, 4))
+    expect(pushes.at(-1)!.payload).toMatchObject({ workStatus: 'result' })
   })
 
   it('tool/result 的工具级错误不写入 lastAgentError（回合仍在跑时不得判 failed 收起气泡）', () => {
@@ -313,6 +427,57 @@ describe('petSessionReducer (host)', () => {
     // 相同任务再次写入：无变化，不重复转发。
     reducer.apply(peer(), ev('todo/write', { todos: [{ id: 't1', status: 'in_progress', content: '整理文档' }] }, 4))
     expect(pushes.length).toBe(before + 1)
+  })
+
+  it('todo/write 取最后一个 in_progress（agent 忘标上一步 completed 时文案不卡在最早那步）', () => {
+    const { reducer, pushes } = collect()
+    reducer.create(peer())
+    reducer.apply(peer(), ev('turn/start', { turn: 1 }, 1))
+    reducer.apply(peer(), ev('todo/write', {
+      todos: [
+        { id: 't1', status: 'in_progress', content: '第一步' },
+        { id: 't2', status: 'completed', content: '中间' },
+        { id: 't3', status: 'in_progress', content: '第三步' },
+      ],
+    }, 2))
+    expect(pushes.at(-1)!.payload).toMatchObject({ task: '第三步' })
+  })
+
+  it('todo/write 无进行中项时回落第一个 pending', () => {
+    const { reducer, pushes } = collect()
+    reducer.create(peer())
+    reducer.apply(peer(), ev('turn/start', { turn: 1 }, 1))
+    reducer.apply(peer(), ev('todo/write', {
+      todos: [
+        { id: 't1', status: 'completed', content: '已完成' },
+        { id: 't2', status: 'pending', content: '待办一' },
+        { id: 't3', status: 'pending', content: '待办二' },
+      ],
+    }, 2))
+    expect(pushes.at(-1)!.payload).toMatchObject({ task: '待办一' })
+  })
+
+  it('todo/write 长文案按码点截断到 40 并加省略号（不劈开 emoji）', () => {
+    const { reducer, pushes } = collect()
+    reducer.create(peer())
+    reducer.apply(peer(), ev('turn/start', { turn: 1 }, 1))
+    const emoji = '🐟'
+    reducer.apply(peer(), ev('todo/write', {
+      todos: [{ id: 't1', status: 'in_progress', content: emoji.repeat(50) }],
+    }, 2))
+    const task = pushes.at(-1)!.payload.task as string
+    expect(Array.from(task)).toHaveLength(41)
+    expect(task).toBe(`${emoji.repeat(40)}…`)
+    expect(task.endsWith('…')).toBe(true)
+  })
+
+  it('todo/write 恰好 40 码点不截断', () => {
+    const { reducer, pushes } = collect()
+    reducer.create(peer())
+    reducer.apply(peer(), ev('turn/start', { turn: 1 }, 1))
+    const content = '字'.repeat(40)
+    reducer.apply(peer(), ev('todo/write', { todos: [{ id: 't1', status: 'in_progress', content }] }, 2))
+    expect(pushes.at(-1)!.payload).toMatchObject({ task: content })
   })
 
   // ---------------------------------------------------------------------------

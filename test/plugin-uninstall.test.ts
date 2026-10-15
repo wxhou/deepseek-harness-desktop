@@ -30,6 +30,21 @@ describe('plugin preset chip i18n keys', () => {
   })
 })
 
+describe('one-click plugin upgrade messages', () => {
+  it.each([
+    ['en-US', 'Upgrade All', 'Upgrade or repair all {{count}} available plugins', 'No plugins available to upgrade'],
+    ['zh-CN', '一键升级', '升级或修复全部可操作的插件（{{count}}）', '暂无可升级的插件'],
+  ] as const)('provides the %s bulk upgrade label and hints', (locale, label, hint, empty) => {
+    const source = readFileSync(new URL(`../src/i18n/locales/${locale}.json`, import.meta.url), 'utf8')
+    const messages = JSON.parse(source) as Record<string, string>
+    expect(messages).toMatchObject({
+      'plugins.upgrade_all': label,
+      'plugins.upgrade_all_hint': hint,
+      'plugins.upgrade_all_empty': empty,
+    })
+  })
+})
+
 // ── Suite B — component references the preset key + condition ────────────────
 describe('configPlugin preset chip', () => {
   it('renders the plugins.preset key', () => {
@@ -59,24 +74,38 @@ describe('configPlugin preset chip', () => {
     expect(source).toContain('plugins.builtin')
   })
 
-  it('withholds uninstall/disable/snapshot from internal plugins', () => {
+  it('allows internal toggles while withholding uninstall/snapshot', () => {
     const source = readFileSync(new URL('../src/ui/config/plugin.tsx', import.meta.url), 'utf8')
-    expect(source, '禁用入口排除内置插件').toContain('cond={!plugin.internal && !plugin.patchDisabled && !plugin.disabled}')
-    expect(source, '启用入口排除内置插件的桌面禁用态').toContain('cond={plugin.patchDisabled || (!plugin.internal && plugin.disabled)}')
+    expect(source, '禁用入口包含内置插件').toContain('cond={!plugin.patchDisabled}')
+    expect(source, '启用入口包含内置插件的禁用态').toContain('cond={plugin.patchDisabled}')
     expect(source, '快照入口由 !plugin.internal 守卫').toContain('<If cond={!plugin.internal}>')
+  })
+
+  it('hides the snapshot entries behind a default-off advanced toggle', () => {
+    const source = readFileSync(new URL('../src/ui/config/plugin.tsx', import.meta.url), 'utf8')
+    expect(source, '高级选项默认关闭').toContain('const [advanced, toggleAdvanced] = useToggle()')
+    expect(source, '快照入口受高级选项控制').toContain('<If cond={advanced}>')
+    expect(source, '控件挂在「打开预设」左侧').toContain('plugins.advanced_options')
   })
 })
 
-// ── Suite C — uninstall flow wires to remove_dsh_plugin + restart ────────────
+// ── Suite C — uninstall routes through the manager + settles without a restart prompt ──
 describe('configPlugin uninstall flow', () => {
-  it('calls remove_dsh_plugin', () => {
-    const source = readFileSync(new URL('../src/ui/config/plugin.tsx', import.meta.url), 'utf8')
-    expect(source).toContain('remove_dsh_plugin')
+  it('routes uninstall through the manager batch command', () => {
+    const panel = readFileSync(new URL('../src/ui/config/plugin.tsx', import.meta.url), 'utf8')
+    const store = readFileSync(new URL('../src/store/modules/plugins/store.ts', import.meta.url), 'utf8')
+
+    expect(panel).toContain('manager.uninstall')
+    expect(panel).not.toContain('remove_dsh_plugin')
+    expect(store).toContain('remove_dsh_plugins')
   })
 
-  it('restarts the service after uninstall', () => {
-    const source = readFileSync(new URL('../src/ui/config/plugin.tsx', import.meta.url), 'utf8')
-    expect(source).toContain('store.harness.restart()')
+  it('settles results without offering a restart', () => {
+    const store = readFileSync(new URL('../src/store/modules/plugins/store.ts', import.meta.url), 'utf8')
+
+    // 队列自己热更新插件：结果气泡不挂「重启」按钮，也不再让气泡常驻
+    expect(store).not.toContain('restartAction')
+    expect(store).not.toContain('actionProps: restart')
   })
 
   it('shows a confirm dialog before uninstall', () => {

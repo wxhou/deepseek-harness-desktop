@@ -39,7 +39,7 @@ export function Logs({ logs, limit = 100, header, className, bodyClassName }: Lo
             // 日志行内容可能重复，需以 index 区分 key
             // eslint-disable-next-line react/no-array-index-key
             <p key={`${line}-${index}`} className="m-0 flex gap-2 overflow-hidden text-ellipsis whitespace-nowrap text-log-ink">
-              <span className="shrink-0 text-accent select-none">›</span>
+              <span className="shrink-0 text-info select-none">›</span>
               <span className="min-w-0 overflow-hidden text-ellipsis">{formatLogLine(line)}</span>
             </p>
           ))}

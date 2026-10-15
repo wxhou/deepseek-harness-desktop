@@ -1,12 +1,4 @@
-/**
- * client/controller.ts — 基于 hookable 的生命周期控制器（全 workspace 客户端共享）。
- *
- * Controller 化统一方案：observer / timer / listener / disposer 全部登记进统一清理队列；
- * dispose 保证幂等，异步续接以 isDisposed() 守护，业务代码无需各自维护 disposed 标志。
- */
-
 import { noop } from '@reause/core'
-import { createHooks } from 'hookable'
 
 /** 控制器注册的命名生命周期钩子（dispose 为统一清理点）。 */
 export interface LifecycleHooks {
@@ -36,6 +28,14 @@ export interface LifecycleController {
     options?: AddEventListenerOptions,
   ) => () => void
   /**
+   * 受控 window 事件监听：dispose 时自动移除；返回移除句柄。
+   */
+  listenWindow: <K extends keyof WindowEventMap>(
+    type: K,
+    fn: (event: WindowEventMap[K]) => void,
+    options?: AddEventListenerOptions,
+  ) => () => void
+  /**
    * 受控 MutationObserver：dispose 时自动 disconnect；返回 observer 本体。
    * 观察配置是第三个参数且可省略，默认见 DEFAULT_MUTATION_OPTIONS。
    */
@@ -55,9 +55,9 @@ const DEFAULT_MUTATION_OPTIONS: MutationObserverInit = { childList: true, subtre
 
 /** 创建生命周期控制器 */
 export function createLifecycleController(): LifecycleController {
-  const hooks = createHooks<LifecycleHooks>()
   let isDisposed = false
   const activeTimeouts = new Set<ReturnType<typeof setTimeout>>()
+  const disposers = new Set<LifecycleHooks['dispose']>()
   const controller: LifecycleController = {
     add(disposer) {
       if (isDisposed)
@@ -71,7 +71,11 @@ export function createLifecycleController(): LifecycleController {
         }
       }
 
-      return hooks.hook('dispose', safeDisposer)
+      disposers.add(safeDisposer)
+
+      return () => {
+        disposers.delete(safeDisposer)
+      }
     },
 
     timeout(fn, ms) {
@@ -124,6 +128,21 @@ export function createLifecycleController(): LifecycleController {
       }
     },
 
+    listenWindow(type, fn, options) {
+      if (isDisposed || typeof window === 'undefined')
+        return noop
+
+      const handler = fn as EventListener
+      window.addEventListener(type, handler, options)
+
+      const remove = () => window.removeEventListener(type, handler, options)
+      const unhook = controller.add(remove)
+      return () => {
+        remove()
+        unhook()
+      }
+    },
+
     observe(target, onMutate, options) {
       const observer = new MutationObserver(onMutate)
 
@@ -147,9 +166,9 @@ export function createLifecycleController(): LifecycleController {
         clearTimeout(timer)
       activeTimeouts.clear()
 
-      // 2. 统一触发所有通过 controller.add / interval / listen / observe 挂载的资源销毁函数
-      void hooks.callHook('dispose')
-      hooks.removeAllHooks()
+      for (const disposer of [...disposers])
+        disposer()
+      disposers.clear()
     },
   }
 

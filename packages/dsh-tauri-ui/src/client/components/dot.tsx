@@ -1,10 +1,21 @@
 // 引用源 @deepseek-ai/dsh-client-ui-primitives · packages/client/ui-primitives/src/StateDot.module.css · 版本 0.1.7-rc.2（≥0.1.7-alpha.1）· hash dot=_dot_1i3xo_2
+import type { VariantProps } from 'dsh-tauri/client'
 import type { ReactElement } from 'react'
-import { compact } from 'dsh-tauri/client'
-import { useMountStyle } from '../hooks/use-mount-style'
-import dotStyle from './dot.cssr'
+import { tv } from 'dsh-tauri/client'
 
-export type DotState = 'done' | 'warning' | 'error' | 'idle'
+const dot = tv({
+  base: 'relative inline-block shrink-0 after:absolute after:inset-[20%] after:rounded-full after:bg-current after:content-[""] after:[corner-shape:round]',
+  variants: {
+    state: {
+      done: 'text-success',
+      warning: 'text-warn',
+      error: 'text-error',
+      idle: 'text-idle',
+    },
+  },
+})
+
+export type DotState = NonNullable<VariantProps<typeof dot>['state']>
 
 export interface DotProps {
   state?: DotState
@@ -12,14 +23,11 @@ export interface DotProps {
   className?: string
 }
 
-export const DOT_STYLE_ID = 'dsh-tauri-ui-dot-styles'
-
 export function Dot({ state, size = 10, className }: DotProps): ReactElement {
-  useMountStyle(dotStyle, DOT_STYLE_ID)
   return (
     <span
       aria-hidden
-      className={compact(['dshp-dot', className]).join(' ')}
+      className={dot({ state, className })}
       data-state={state}
       style={{ width: size, height: size }}
     />

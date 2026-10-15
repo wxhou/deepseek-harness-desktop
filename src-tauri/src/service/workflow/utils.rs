@@ -19,9 +19,15 @@ fn dsh_log_lock() -> &'static Mutex<()> {
 /// 生命周期探测访问的是本机 dsh，不能继承 `HTTP_PROXY` / `ALL_PROXY`：部分代理
 /// 不尊重回环地址直连，或应用进程没有 `NO_PROXY`，会把健康检查转发到外部代理，
 /// 造成端口已经监听但持续误报未就绪。
+///
+/// 建连单独限时（[`crate::config::LOOPBACK_CONNECT_TIMEOUT`]）：TUN 式网络过滤器
+/// 会把**失败**的回环 `connect` 拖到约 2s。`timeout` 是整体请求截止时间（建连开始到
+/// 响应体读完），5s 的余量足以容纳这段阻塞，端口尚未监听的每一轮探测都会因此白等
+/// 2s；只有对建连阶段单独限时才能把它截断。
 pub(super) fn loopback_http_client(timeout: Duration) -> Result<reqwest::Client, reqwest::Error> {
     reqwest::Client::builder()
         .no_proxy()
+        .connect_timeout(crate::config::LOOPBACK_CONNECT_TIMEOUT)
         .timeout(timeout)
         .build()
 }
@@ -163,11 +169,33 @@ pub async fn is_dsh_running(port: u16) -> bool {
     check_status.await.unwrap_or(false)
 }
 
-/// 检查指定端口是否被占用（通过尝试连接来判断）
+/// 有界等待端口回落为空闲；端口本来就空闲时立即返回。
+///
+/// 结束进程后端口释放有滞后，但实测是毫秒级，固定睡眠只会把这段滞后放大成白等。
+pub fn wait_for_port_release(port: u16, budget: Duration) -> bool {
+    let deadline = std::time::Instant::now() + budget;
+    loop {
+        if !is_port_in_use(port) {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// 检查指定端口是否被占用。
+///
+/// 以实际绑定结果判断，能够识别“已绑定但尚未 listen”的占用状态。Windows 上
+/// 具体地址与通配地址的绑定互不冲突（`0.0.0.0:3080` 与 `127.0.0.1:3080` 可
+/// 同时绑定成功），只探一个地址会在另一种绑定下误判为空闲：harness 绑
+/// `0.0.0.0`（局域网访问开关，issue #1021）时桌面端永远判定“未监听”，启动
+/// 必然超时失败。两个地址都绑得上才算空闲。
 pub fn is_port_in_use(port: u16) -> bool {
-    // 以实际绑定结果判断，能够识别“已绑定但尚未 listen”的占用状态。
-    let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
-    TcpListener::bind(addr).is_err()
+    [Ipv4Addr::LOCALHOST, Ipv4Addr::UNSPECIFIED]
+        .iter()
+        .any(|ip| TcpListener::bind(SocketAddr::new(IpAddr::V4(*ip), port)).is_err())
 }
 
 /// 在独立线程中读取子进程的输出，同时写入日志文件
@@ -242,20 +270,16 @@ fn log_level_name(level: log::Level) -> &'static str {
     }
 }
 
-fn append_log(log_path: &PathBuf, line: &str) {
+pub(super) fn append_log(log_path: &PathBuf, line: &str) {
     // 与 `logger` 的 `desktop.log` / `desktop.frontdesk.log` 保持一致：5MiB × 3 轮转
     let _guard = dsh_log_lock().lock().unwrap_or_else(|e| e.into_inner());
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(log_path)
-    {
-        let _ = writeln!(file, "{}", line);
-        let _ = file.flush();
-    }
-    // 超阈值则按大小轮转（与启动次轮转 `rotate_service_log` 互补，避免单次运行无限增长）
     if let Ok(meta) = std::fs::metadata(log_path) {
-        if meta.len() > DSH_MAX_LOG_BYTES {
+        if meta
+            .len()
+            .saturating_add(line.len() as u64)
+            .saturating_add(1)
+            > DSH_MAX_LOG_BYTES
+        {
             let _ = std::fs::remove_file(indexed_log_path(log_path, DSH_MAX_BACKUPS));
             for i in (1..DSH_MAX_BACKUPS).rev() {
                 let from = indexed_log_path(log_path, i);
@@ -268,12 +292,15 @@ fn append_log(log_path: &PathBuf, line: &str) {
             if log_path.exists() {
                 let _ = std::fs::rename(log_path, indexed_log_path(log_path, 1));
             }
-            let _ = std::fs::OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .open(log_path);
         }
+    }
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+    {
+        let _ = writeln!(file, "{}", line);
+        let _ = file.flush();
     }
 }
 
@@ -397,6 +424,28 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    #[test]
+    fn append_keeps_the_new_line_in_current_log_when_size_limit_is_reached() {
+        let root = tempfile::tempdir().unwrap();
+        let log = root.path().join("dsh-web.log");
+        let previous = vec![b'x'; 5 * 1024 * 1024];
+        fs::write(&log, &previous).unwrap();
+        let marker = "ERROR HARNESS_FATAL_REPORT: C:/logs/harness-fatal-42.json";
+
+        append_log(&log, marker);
+
+        assert_eq!(fs::read_to_string(&log).unwrap(), format!("{marker}\n"));
+        assert_eq!(
+            fs::read(root.path().join("dsh-web.log.1")).unwrap(),
+            previous
+        );
+        append_log(&log, "next output");
+        assert_eq!(
+            fs::read_to_string(&log).unwrap(),
+            format!("{marker}\nnext output\n")
+        );
+    }
+
     /// 模拟连续 5 次启动，验证磁盘上始终只保留最近 `keep` 份日志，
     /// 且每次启动都会新建当前日志文件。
     #[test]
@@ -479,6 +528,48 @@ mod tests {
         assert!(urls
             .iter()
             .any(|url| url.contains("dsh-client-ui-layout/client.js&rev=f26b875a92b6")));
+    }
+
+    /// 被占用时等到预算耗尽才返回 false；端口回落为空闲后立即返回 true，
+    /// 这正是「结束进程后不再固定睡 800ms」的依据。
+    #[test]
+    fn wait_for_port_release_bounds_the_wait_and_returns_as_soon_as_the_port_frees() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let started = std::time::Instant::now();
+        assert!(!wait_for_port_release(port, Duration::from_millis(200)));
+        assert!(
+            started.elapsed() >= Duration::from_millis(200),
+            "an occupied port must be waited on until the budget runs out"
+        );
+        drop(listener);
+        let started = std::time::Instant::now();
+        assert!(wait_for_port_release(port, Duration::from_millis(200)));
+        assert!(
+            started.elapsed() < Duration::from_millis(100),
+            "a released port must not be waited on"
+        );
+    }
+
+    /// 回归（issue #1021）：Windows 上具体地址与通配地址的绑定互不冲突
+    /// （`127.0.0.1:3080` 与 `0.0.0.0:3080` 可同时绑上），只探回环会把绑在
+    /// `0.0.0.0` 的 harness 判成「端口空闲」，桌面端据此永远报未监听、
+    /// 启动必然超时。两种绑定都必须被识别为占用，端口释放后则读作空闲。
+    #[test]
+    fn is_port_in_use_detects_wildcard_and_loopback_listeners() {
+        for bind_addr in ["127.0.0.1:0", "0.0.0.0:0"] {
+            let listener = TcpListener::bind(bind_addr).unwrap();
+            let port = listener.local_addr().unwrap().port();
+            assert!(
+                is_port_in_use(port),
+                "a listener on {bind_addr} must read as occupying port {port}"
+            );
+        }
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        assert!(!is_port_in_use(port), "a released port must read as free");
     }
 
     #[test]

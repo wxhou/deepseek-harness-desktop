@@ -15,7 +15,7 @@ export * from './modules/date-fns'
 export * from './modules/hookable'
 export * from './modules/lodash-es'
 export * from './modules/reause'
-export * from './modules/unstorage'
+export * from './modules/tailwind-variants'
 export * from './modules/valtio-define'
 
 export * from './panel'
@@ -33,7 +33,8 @@ export type * from './types/harness'
 export type * from './types/iframe'
 export type * from './types/tauri'
 
+export * from './utils/device'
+
 export const name = PLUGIN_ID
 
-/** 客户端服务依赖：layout（侧边栏切换）。 */
-export const inject = ['layout']
+export const inject = ['layout', 'theme']

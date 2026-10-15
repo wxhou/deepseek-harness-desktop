@@ -1,5 +1,5 @@
 import type { Profile } from '@/types'
-import { Plus } from '@gravity-ui/icons'
+import { CopyArrowRight, Plus } from '@gravity-ui/icons'
 import { AlertDialog, Button, Checkbox, Chip, Description, Input, Label } from '@heroui/react'
 import { useOverlay } from '@overlastic/react'
 import { useToggle } from '@reause/core'
@@ -18,10 +18,20 @@ import { useInvalidateOnSettingUpdated } from '@/hooks/use-invalidate-on-setting
 import { store } from '@/store'
 import { waitForHarnessStopped } from '@/store/modules/harness'
 import { ConfigBackup } from '@/ui/config/backup'
+import { ProfileMigrateDialog } from '@/ui/dialog/profile-migrate'
+import { normalizeProfileId } from '@/utils/profile-id'
 import { silence } from '@/utils/silence'
 import { toast } from '@/utils/toast'
 
 type ProfileView = 'list' | { profile: string }
+
+/** 宿主档案错误的 `CODE` → 提示 key（错误串是 `CODE: 详情`，详见 `service::profile`） */
+const PROFILE_ERROR_KEYS: Record<string, string> = {
+  PROFILE_EMPTY_NAME: 'profiles.error_empty_name',
+  PROFILE_NAME_TOO_LONG: 'profiles.error_name_too_long',
+  PROFILE_RESERVED: 'profiles.error_reserved',
+  PROFILE_NOT_FOUND: 'profiles.error_not_found',
+}
 
 export function ConfigProfile() {
   /**
@@ -97,8 +107,13 @@ export function ConfigProfile() {
   const profiles = profileList ?? []
   const loading = isLoading
   const error = profileError ? String(profileError) : ''
+  /** 当前使用中的档案，即迁移的目标（不可更改） */
+  const activeProfile = profiles.find(profile => profile.active)
   /** 操作进行中标记（新建/切换/删除/重置/克隆任一） */
   const busy = create.isPending || activate.isPending || remove.isPending || reset.isPending || clone.isPending
+
+  /** 迁移入口的禁用条件：操作进行中、没有当前档案、或没有第二个档案可作来源 */
+  const migrateBlocked = busy || !activeProfile || profiles.length < 2
 
   const [dialogHolder, openDialog] = useOverlay(Modal, { type: 'holder' })
 
@@ -110,6 +125,40 @@ export function ConfigProfile() {
   // 克隆档案：命名对话框状态
   const [cloning, setCloning] = useState<{ sourceId: string, sourceName: string } | null>(null)
   const [cloneName, setCloneName] = useState('')
+
+  // 迁移档案数据：来源档案在对话框内选择，目标恒为当前使用中的档案
+  const [migrateDialogHolder, openMigrateDialog] = useOverlay(ProfileMigrateDialog, { type: 'holder' })
+
+  /**
+   * 档案名会直接当磁盘目录名与 CLI `--profile` 参数，只能用 ASCII 字母数字（`-`/`_`/空格
+   * 分隔，其余字符被丢弃，与后端 `normalize_profile_id` 同一套规则）。归一化后为空说明
+   * 整个名字都不可用（例如纯中文）：在输入框下面就讲清楚，按钮同时置灰，不让用户提交后
+   * 才撞上一个机器错误码。
+   */
+  function profileNameHint(value: string): string | null {
+    if (value.trim() === '' || normalizeProfileId(value) !== '')
+      return null
+    return t('profiles.name_invalid_hint')
+  }
+
+  /**
+   * 宿主错误串换成用户能看懂的一句话；未知错误码照原样显示，免得把真实原因吞掉。
+   *
+   * 「名字不可用」直接用输入框那条提示文案，「已存在」复用已有的 `clone_exists`（带名字），
+   * 其余按码查表——同一件事在两个地方各写一份文案就是新的漂移源。
+   */
+  function profileErrorText(error: unknown, name: string): string {
+    const code = String(error).split(':')[0]?.trim() ?? ''
+    if (code === 'PROFILE_INVALID_NAME')
+      return t('profiles.name_invalid_hint')
+    if (code === 'PROFILE_EXISTS')
+      return t('profiles.clone_exists', { name })
+    const key = PROFILE_ERROR_KEYS[code]
+    return key ? t(key) : String(error)
+  }
+
+  const createNameHint = profileNameHint(name)
+  const cloneNameHint = profileNameHint(cloneName)
 
   /** 推导下一个未占用的自动递增名称（仅作为建议，后端才是权威） */
   function suggestCloneName(base: string): string {
@@ -135,6 +184,8 @@ export function ConfigProfile() {
       toast(t('profiles.clone_empty'), {})
       return
     }
+    if (cloneNameHint !== null)
+      return
     try {
       await cloneProfile(cloning.sourceId, trimmed)
       setCloning(null)
@@ -147,7 +198,7 @@ export function ConfigProfile() {
     }
     catch (err) {
       console.error('[ConfigProfile] clone failed:', err)
-      toast(t('profiles.clone_failed'), {})
+      toast(t('profiles.clone_failed'), { description: profileErrorText(err, trimmed) })
     }
   }
 
@@ -205,6 +256,8 @@ export function ConfigProfile() {
     const trimmed = name.trim()
     if (!trimmed)
       return
+    if (createNameHint !== null)
+      return
     try {
       // 创建成功后列表已刷新出新档案，UI 本身就有变化，不再弹成功 toast
       await createProfile(trimmed)
@@ -213,7 +266,7 @@ export function ConfigProfile() {
     }
     catch (err) {
       console.error('[ConfigProfile] create failed:', err)
-      toast(t('profiles.create_failed'), {})
+      toast(t('profiles.create_failed'), { description: profileErrorText(err, trimmed) })
     }
   }
 
@@ -319,7 +372,22 @@ export function ConfigProfile() {
 
   return (
     <div className="space-y-3">
-      <Panel.Header title={t('profiles.title')} description={t('profiles.tooltip')} testId="dsh-config-panel-title" />
+      <Panel.Header
+        title={t('profiles.title')}
+        description={t('profiles.tooltip')}
+        testId="dsh-config-panel-title"
+        action={(
+          <Button
+            size="sm"
+            variant="primary"
+            isDisabled={migrateBlocked}
+            onPress={() => void openMigrateDialog()}
+          >
+            <CopyArrowRight className="size-3.5" />
+            {t('profiles.migrate')}
+          </Button>
+        )}
+      />
 
       {/* 加载 / 失败 / 列表 */}
       <Panel.Loadable loading={loading} error={error}>
@@ -356,7 +424,6 @@ export function ConfigProfile() {
                     </Checkbox.Content>
                   </Checkbox>
                   <Chip
-                    className="rounded-md"
                     size="sm"
                     onClick={(event) => {
                       event.stopPropagation()
@@ -366,7 +433,7 @@ export function ConfigProfile() {
                     {t('backup.manage')}
                   </Chip>
                   <Chip
-                    className={`rounded-md${busy ? ' cursor-not-allowed opacity-50' : ' cursor-pointer'}`}
+                    className={busy ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}
                     color="accent"
                     size="sm"
                     onClick={(event) => {
@@ -378,7 +445,7 @@ export function ConfigProfile() {
                     {t('profiles.clone')}
                   </Chip>
                   <Chip
-                    className={`rounded-md${busy ? ' cursor-not-allowed opacity-50' : ' cursor-pointer'}`}
+                    className={busy ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}
                     variant="primary"
                     color="danger"
                     size="sm"
@@ -403,38 +470,46 @@ export function ConfigProfile() {
           <If
             cond={!creating}
             else={(
-              <div className="flex items-center gap-2 px-1">
-                <Input
-                  autoFocus
-                  variant="secondary"
-                  className="h-8 flex-1 rounded-md"
-                  placeholder={t('profiles.name_placeholder')}
-                  value={name}
-                  onChange={e => setName(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter')
-                      commitCreate()
-                  }}
+              <div className="flex flex-col gap-1">
+                <div className="flex items-center gap-2 px-1">
+                  <Input
+                    autoFocus
+                    variant="secondary"
+                    className="h-8 flex-1"
+                    placeholder={t('profiles.name_placeholder')}
+                    value={name}
+                    onChange={e => setName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter')
+                        commitCreate()
+                    }}
+                  />
+                  <Button size="sm" variant="tertiary" className="h-8" onPress={cancelCreate}>
+                    {t('profiles.create_cancel')}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    className="h-8"
+                    isDisabled={!name.trim() || createNameHint !== null || busy}
+                    onPress={commitCreate}
+                  >
+                    {t('profiles.create_confirm')}
+                  </Button>
+                </div>
+                <If
+                  cond={createNameHint !== null}
+                  then={(
+                    <p className="px-1 text-xs text-muted">{createNameHint}</p>
+                  )}
                 />
-                <Button size="sm" variant="tertiary" className="h-8 rounded-md" onPress={cancelCreate}>
-                  {t('profiles.create_cancel')}
-                </Button>
-                <Button
-                  size="sm"
-                  variant="primary"
-                  className="h-8 rounded-md"
-                  isDisabled={!name.trim() || busy}
-                  onPress={commitCreate}
-                >
-                  {t('profiles.create_confirm')}
-                </Button>
               </div>
             )}
           >
             <Button
               onClick={startCreate}
               variant="tertiary"
-              className="flex w-full rounded-md"
+              className="flex w-full"
               isDisabled={busy}
             >
               <Plus className="size-3.5" />
@@ -444,6 +519,7 @@ export function ConfigProfile() {
         </div>
       </Panel.Loadable>
       {dialogHolder}
+      {migrateDialogHolder}
 
       {/* 克隆档案：命名对话框（创建型，accent；可编辑建议名称） */}
       <AlertDialog
@@ -468,7 +544,7 @@ export function ConfigProfile() {
                 <Input
                   autoFocus
                   variant="secondary"
-                  className="h-8 rounded-md w-full my-2"
+                  className="h-8 w-full my-2"
                   placeholder={t('profiles.clone_name_placeholder')}
                   value={cloneName}
                   onChange={e => setCloneName(e.target.value)}
@@ -477,6 +553,12 @@ export function ConfigProfile() {
                       commitClone()
                   }}
                 />
+                <If
+                  cond={cloneNameHint !== null}
+                  then={(
+                    <p className="mb-1 text-xs text-muted">{cloneNameHint}</p>
+                  )}
+                />
                 {cloning && (
                   <p className="text-xs text-muted">
                     {t('profiles.clone_default_hint', { name: suggestCloneName(cloning.sourceId) })}
@@ -484,13 +566,12 @@ export function ConfigProfile() {
                 )}
               </AlertDialog.Body>
               <AlertDialog.Footer>
-                <Button className="rounded-md" variant="tertiary" onPress={() => setCloning(null)}>
+                <Button variant="tertiary" onPress={() => setCloning(null)}>
                   {t('profiles.clone_cancel')}
                 </Button>
                 <Button
-                  className="rounded-md"
                   variant="primary"
-                  isDisabled={!cloneName.trim() || busy}
+                  isDisabled={!cloneName.trim() || cloneNameHint !== null || busy}
                   onPress={commitClone}
                 >
                   {busy ? t('profiles.clone_cloning') : t('profiles.clone_confirm')}

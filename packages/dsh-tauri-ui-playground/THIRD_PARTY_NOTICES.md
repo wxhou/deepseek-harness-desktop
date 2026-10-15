@@ -3,10 +3,10 @@
 ## deepseek-ai/deepseek-harness
 
 - Repository: <https://github.com/deepseek-ai/deepseek-harness>
-- Version: `dsh-v0.1.7-rc.2`
-- Revision: `477b4f420553e8a52c2fbccc464d7561b239c443`
+- Version: `dsh-v0.2.1-alpha.1`
+- Revision: `5badb15009ae1756c3afe0ae0cef1faafc290ccc`
 - Source: `source/deepseek-harness`
-- Catalog pin: `dsh:` → `0.1.7-alpha.1` (`pnpm-workspace.yaml`)
+- Catalog pin: `dsh:` → `0.2.1-alpha.1` (`pnpm-workspace.yaml`)
 - License: MIT — Copyright (c) 2026 DeepSeek
 - Not copied: a development-only playground that renders the component registry of `dsh-tauri-ui`, so it shows — but does not copy — official client UI components.
 
@@ -16,6 +16,10 @@ Official surface referenced:
 - Official `Menu`: wired into the chip triggers so selection state, chevron rotation and popover placement behave like the shipped UI (`ui-components.tsx:57`).
 - Icons: two kernel generations export the official icons barrel under different names, so icons are consumed through `@gravity-ui/icons` re-exported by `dsh-tauri-ui/client` (`ui-components.tsx:262`).
 - Derivation table of those official components: `packages/dsh-tauri-ui/THIRD_PARTY_NOTICES.md`.
+
+## Compatibility `0.2.0-rc.2` → `0.2.1-alpha.1`
+
+- The playground continues to consume the shared registry and official primitives through `dsh-tauri-ui/client`; the additive InlineEditor and shell seat need no local component migration.
 
 ## License
 

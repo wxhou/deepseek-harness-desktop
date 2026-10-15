@@ -3,10 +3,10 @@
 ## deepseek-ai/deepseek-harness
 
 - Repository: <https://github.com/deepseek-ai/deepseek-harness>
-- Version: `dsh-v0.1.7-rc.2`
-- Revision: `477b4f420553e8a52c2fbccc464d7561b239c443`
+- Version: `dsh-v0.2.1-alpha.1`
+- Revision: `5badb15009ae1756c3afe0ae0cef1faafc290ccc`
 - Source: `source/deepseek-harness`
-- Catalog pin: `dsh:` → `0.1.7-alpha.1` (`pnpm-workspace.yaml`)
+- Catalog pin: `dsh:` → `0.2.1-alpha.1` (`pnpm-workspace.yaml`)
 - License: MIT — Copyright (c) 2026 DeepSeek
 - Not copied: the per-turn Git snapshot and file restore path are this repo's own; only the input-dock chip mirrors the official deliverables row.
 
@@ -16,6 +16,11 @@ Mirrored official surface:
 - Count colours: `+N` green / `-M` red match the official deliverables row (`src/client/components/change-counts.tsx:5`, `src/client/styles/counts.cssr.ts:8`, `src/client/components/running-changes-chip.cssr.test.ts:26`).
 - Dock order: the chip is ordered against the official dock rows (official `todo` = 0, `goal` = 10, `queue` = 20, worktree banner = -10); a negative order places it above the official task list and worktree banner (`src/client/constants/index.ts:12`, `src/client/register/running-chip.ts:5`).
 - Official reference chips (`ctx.conversation.input` insertion path) → `src/client/register/paste-collapse.ts`: large pastes collapse into the official reference chip through the official public surface only.
+
+## Compatibility `0.2.0-rc.2` → `0.2.1-alpha.1`
+
+- The reference-insertion, source-codec, and revision-guarded span contracts used by paste collapse remain available. This package does not override the removed composer `stats` registration.
+- The independent `activity` and `usage` dock entries are supplied by the target core; the running-changes chip keeps its separate registration and order.
 
 ## License
 

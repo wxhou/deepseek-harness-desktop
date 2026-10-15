@@ -1,8 +1,10 @@
+mod appearance;
+pub use appearance::Appearance;
 mod constants;
 pub mod dependencies;
-mod format;
 pub mod i18n;
 pub mod manifest;
+pub mod proxy;
 mod region;
 mod runtime;
 mod setting;
@@ -11,7 +13,6 @@ mod utils;
 mod window_state;
 
 pub use constants::*;
-pub use format::*;
 pub use manifest::{
     is_above_recommended as is_dsh_version_above_recommended, recommended_dsh_version,
 };

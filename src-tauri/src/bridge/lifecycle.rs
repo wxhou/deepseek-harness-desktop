@@ -23,18 +23,24 @@ fn active_dsh_version(app_handle: &AppHandle) -> Option<String> {
     core::active_version(app_handle).or_else(|| config::get_dsh_version(app_handle))
 }
 
-/// 已安装版本高于推荐版本时保留现有核心，避免依赖自愈流程触发降级。
-fn preserve_newer_installed_dsh(
-    installed_version: Option<&str>,
-    recommended_version: Option<&str>,
-) -> bool {
-    match (
-        installed_version.and_then(|version| semver::Version::parse(version).ok()),
-        recommended_version.and_then(|version| semver::Version::parse(version).ok()),
-    ) {
-        (Some(installed), Some(recommended)) => installed > recommended,
-        _ => false,
-    }
+/// 比较两个版本的先后（`candidate` 相对 `baseline`）。
+///
+/// 两者都须能解析为语义化版本，否则返回 None——无从比较就不下结论，各调用点
+/// 据此退回原行为：依赖自愈不误降级，更新提示不静音真实可用的更新。
+fn version_order(candidate: Option<&str>, baseline: Option<&str>) -> Option<std::cmp::Ordering> {
+    let candidate = semver::Version::parse(candidate?).ok()?;
+    let baseline = semver::Version::parse(baseline?).ok()?;
+    Some(candidate.cmp(&baseline))
+}
+
+/// 该 release 是否不构成更新：不高于当前运行核心（更旧或同版本）就不提示。
+///
+/// 版本无从比较时返回 false，即宁可按原样提示、也不永久静音一个可能可用的更新。
+fn is_update_suppressed(latest_version: Option<&str>, active_version: Option<&str>) -> bool {
+    matches!(
+        version_order(latest_version, active_version),
+        Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
+    )
 }
 
 fn install_lock() -> &'static tokio::sync::Mutex<()> {
@@ -143,7 +149,8 @@ pub async fn install_dependencies(app_handle: AppHandle) -> Result<bool, String>
         .then(|| active_dsh_version(&app_handle))
         .flatten();
     let preserve_installed =
-        preserve_newer_installed_dsh(installed_version.as_deref(), recommended_version.as_deref());
+        version_order(installed_version.as_deref(), recommended_version.as_deref())
+            == Some(std::cmp::Ordering::Greater);
     let dsh_latest = if preserve_installed {
         log::info!(
             "Keeping installed dsh version above recommendation: {}",
@@ -152,8 +159,8 @@ pub async fn install_dependencies(app_handle: AppHandle) -> Result<bool, String>
         None
     } else {
         Some(match recommended_version {
-            Some(version) => download::fetch_dsh_pkg_version(&version).await,
-            None => download::fetch_latest_dsh_pkg_info().await,
+            Some(version) => download::fetch_dsh_pkg_version(&app_handle, &version).await,
+            None => download::fetch_latest_dsh_pkg_info(&app_handle).await,
         })
     };
 
@@ -170,7 +177,7 @@ pub async fn install_dependencies(app_handle: AppHandle) -> Result<bool, String>
             // 老记录没有 tag，反查 pkg 仓库 tags 列表确认记录对应的发布版本；
             // 反查失败时由 resolve_update 回退到“以实际文件为准”的保守分支
             let legacy_tags = if record_tag.is_none() {
-                download::fetch_dsh_pkg_tags().await.unwrap_or_default()
+                download::fetch_dsh_pkg_tags(&app_handle).await.unwrap_or_default()
             } else {
                 Vec::new()
             };
@@ -182,16 +189,24 @@ pub async fn install_dependencies(app_handle: AppHandle) -> Result<bool, String>
                 &legacy_tags,
             ) {
                 // 安装文件已是最新 release，只是记录滞后：修正记录后下次
-                // 启动直接走 commit 快速比对，不再误判、也绝不整包重下
+                // 启动直接走 commit 快速比对，不再误判、也绝不整包重下。
+                // tag 记录同时是核心面板判定 release 身份的唯一依据（就地安装的
+                // 副本没有槽位目录）：缺 tag 会让它把已下载的核心当成没下载过，并
+                // 吞掉核心更新提示（issue #790），所以 commit 相符也要补齐 tag。
                 download::UpdateCheck::UpToDate | download::UpdateCheck::HealUpToDate => {
-                    if record_commit.as_deref() != Some(latest.commit.as_str()) {
+                    if record_tag.as_deref() != Some(latest.tag.as_str())
+                        || record_commit.as_deref() != Some(latest.commit.as_str())
+                    {
                         log::info!(
                             "Installed Harness files already at latest release, healing stale record: {} ({})",
                             latest.tag,
                             latest.commit
                         );
-                        config::set_dsh_pkg_commit(&app_handle, latest.commit.clone());
-                        config::set_dsh_pkg_tag(&app_handle, latest.tag.clone());
+                        config::set_dsh_pkg_identity(
+                            &app_handle,
+                            latest.commit.clone(),
+                            latest.tag.clone(),
+                        );
                     }
                     false
                 }
@@ -289,7 +304,7 @@ pub async fn check_dsh_update(
         return Ok(None);
     }
 
-    let latest = download::fetch_latest_dsh_pkg_info().await?;
+    let latest = download::fetch_latest_dsh_pkg_info(&app_handle).await?;
 
     // 关键修复1：最新 release 的版本号已经在已装核心列表里（含 active 和非 active
     // 槽位），就不提示更新。避免「老版本激活 + 新版已下载但未切换」场景下白点一次
@@ -313,6 +328,23 @@ pub async fn check_dsh_update(
             log::info!(
                 "Suppressing dsh update toast because latest is above recommended (preview/alpha): {}",
                 version
+            );
+            return Ok(None);
+        }
+    }
+
+    // 关键修复3：latest 不高于当前运行核心时不提示。pkg 仓库的「Current latest」
+    // 可能被指向更旧的 release（dsh-0.1.7-rc.2），而用户运行的核心已是更高的
+    // 0.2.0-rc.1；此时提示会把用户引向降级，且「立即更新」也会因保留更高版本
+    // 而实际什么都没做，最终只弹一个「更新校验失败」。
+    // 版本无从比较时不进入本分支，保留原有的「照常提示」行为。
+    if let Some(version) = download::parse_version_from_tag(&latest.tag) {
+        let active = active_dsh_version(&app_handle);
+        if is_update_suppressed(Some(&version), active.as_deref()) {
+            log::info!(
+                "Suppressing dsh update toast because latest {} does not outrank the active core {}",
+                version,
+                active.as_deref().unwrap_or_default()
             );
             return Ok(None);
         }
@@ -435,7 +467,34 @@ pub fn runtime_ready(app_handle: AppHandle) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{install_lock, preserve_newer_installed_dsh};
+    use super::{install_lock, is_update_suppressed, version_order};
+    use std::cmp::Ordering;
+
+    #[test]
+    fn older_latest_release_does_not_outrank_active_core() {
+        // 症状回归：pkg 仓库的「Current latest」可能指向更旧的 release
+        // （dsh-0.1.7-rc.2），而当前运行的核心已是更高的 0.2.0-rc.1，
+        // 此时 latest 不构成更新，不得提示（更不能引导用户降级）。
+        assert!(is_update_suppressed(Some("0.1.7-rc.2"), Some("0.2.0-rc.1")));
+        assert!(is_update_suppressed(Some("0.2.0-rc.1"), Some("0.2.0-rc.1")));
+        // 真正更高的 release 仍须提示
+        assert!(!is_update_suppressed(
+            Some("0.2.0-rc.1"),
+            Some("0.1.7-rc.2")
+        ));
+        // 同一版本的 rc 序号按语义化比较，不是字符串序
+        assert_eq!(
+            version_order(Some("0.1.7-rc.10"), Some("0.1.7-rc.9")),
+            Some(Ordering::Greater)
+        );
+        // 版本无从比较时不得据此静音更新提示
+        assert!(!is_update_suppressed(None, Some("0.2.0-rc.1")));
+        assert!(!is_update_suppressed(Some("0.2.0-rc.1"), None));
+        assert!(!is_update_suppressed(
+            Some("not-a-version"),
+            Some("0.2.0-rc.1")
+        ));
+    }
 
     #[test]
     fn install_lock_is_exclusive_while_held() {
@@ -452,17 +511,11 @@ mod tests {
 
     #[test]
     fn newer_installed_dsh_is_preserved_from_recommended_downgrade() {
-        assert!(preserve_newer_installed_dsh(
-            Some("0.1.1-rc.3"),
-            Some("0.1.1-rc.2")
-        ));
-        assert!(!preserve_newer_installed_dsh(
-            Some("0.1.1-rc.2"),
-            Some("0.1.1-rc.2")
-        ));
-        assert!(!preserve_newer_installed_dsh(
-            Some("0.1.1-rc.1"),
-            Some("0.1.1-rc.2")
-        ));
+        let preserve = |installed: &str, recommended: &str| {
+            version_order(Some(installed), Some(recommended)) == Some(Ordering::Greater)
+        };
+        assert!(preserve("0.1.1-rc.3", "0.1.1-rc.2"));
+        assert!(!preserve("0.1.1-rc.2", "0.1.1-rc.2"));
+        assert!(!preserve("0.1.1-rc.1", "0.1.1-rc.2"));
     }
 }

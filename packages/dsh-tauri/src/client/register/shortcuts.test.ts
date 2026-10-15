@@ -1,17 +1,6 @@
-/**
- * register/shortcuts.test.ts — 快捷键桥的三条契约。
- *
- * 1. iframe → 宿主：核心 `ctx.shortcuts.catalog` 的目录投影后经 `dsh://shortcuts` 回报
- *    （壳层菜单右侧的按键提示都读它），配置变更后重发；
- * 2. 宿主 → iframe：`dsh://edit` 在文档上执行对应编辑命令，非法 action 不进文档；
- * 3. 宿主 → iframe：`dsh://shortcuts:open` 按官方 `shortcuts.open` 的**生效**绑定补一次
- *    合成 keydown，弹出官方弹层与官方蒙版（壳层不自建对话框）。
- *
- * 核心没有 `shortcuts` 服务（老核心）时全部保持沉默，不得抛错。
- */
 import type { ClientContext, ParentMessage } from '../types'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { CMD_EDIT, CMD_SHORTCUTS_OPEN, EVENT_SHORTCUTS, shortcutsFeature } from './shortcuts'
+import { CMD_SHORTCUTS_OPEN, EVENT_SHORTCUTS, shortcutsFeature } from './shortcuts'
 
 const dispatchers = new Set<(event: KeyboardEvent) => void>()
 
@@ -60,14 +49,13 @@ function stubEnv(): Harness {
 const disposers: (() => void)[] = []
 
 function fakeCtx(service: unknown): ClientContext {
-  return {
-    get: () => service,
-    effect(callback: (this: unknown) => () => void) {
-      const dispose = callback.call({ ctx: this })
-      disposers.push(dispose)
-      return dispose
-    },
-  } as unknown as ClientContext
+  return { get: () => service } as unknown as ClientContext
+}
+
+function runFeature(ctx: ClientContext): () => void {
+  const dispose = shortcutsFeature.call(ctx)
+  disposers.push(dispose)
+  return dispose
 }
 
 function catalogService(rows: unknown[], subscribe?: (listener: () => void) => () => void) {
@@ -78,6 +66,7 @@ afterEach(() => {
   for (const dispose of disposers.splice(0))
     dispose()
   vi.unstubAllGlobals()
+  vi.restoreAllMocks()
 })
 
 describe('shortcutsFeature', () => {
@@ -87,6 +76,7 @@ describe('shortcutsFeature', () => {
     const ctx = fakeCtx(catalogService([
       { id: 'session.new', label: 'New chat', keys: ['Ctrl+N'], aria: 'Control+N', modified: false },
       { id: 'workspace.add', label: 'Open folder', keys: ['Ctrl+O'] },
+      { id: 'sidebar.left.toggle', label: 'Toggle sidebar', keys: ['⌥', '⌘', 'B'], binding: { code: 'KeyB', modifiers: ['alt', 'meta'] }, issue: null, conflicts: [] },
       { id: 42, label: 'broken' },
       { id: 'no.label' },
     ], (listener) => {
@@ -94,13 +84,14 @@ describe('shortcutsFeature', () => {
       return () => {}
     }))
 
-    shortcutsFeature.call(ctx)
+    runFeature(ctx)
 
     expect(env.sent).toEqual([{
       type: EVENT_SHORTCUTS,
       rows: [
-        { id: 'session.new', label: 'New chat', keys: ['Ctrl+N'], aria: 'Control+N' },
-        { id: 'workspace.add', label: 'Open folder', keys: ['Ctrl+O'] },
+        { id: 'session.new', label: 'New chat', keys: ['Ctrl+N'], aria: 'Control+N', available: false },
+        { id: 'workspace.add', label: 'Open folder', keys: ['Ctrl+O'], available: false },
+        { id: 'sidebar.left.toggle', label: 'Toggle sidebar', keys: ['⌥', '⌘', 'B'], available: true },
       ],
     }])
     expect(env.listeners()).toBe(1)
@@ -112,26 +103,11 @@ describe('shortcutsFeature', () => {
   it('stays inert when the core has no shortcuts service', () => {
     const env = stubEnv()
 
-    expect(() => shortcutsFeature.call(fakeCtx(undefined))).not.toThrow()
+    expect(() => runFeature(fakeCtx(undefined))).not.toThrow()
     expect(env.sent).toEqual([])
     expect(env.listeners()).toBe(0)
   })
 
-  it('runs the edit command and ignores unknown actions', () => {
-    const env = stubEnv()
-    const exec = vi.fn(() => true)
-    vi.stubGlobal('document', { execCommand: exec })
-
-    shortcutsFeature.call(fakeCtx(catalogService([])))
-    env.dispatch({ type: CMD_EDIT, action: 'copy' })
-    env.dispatch({ type: CMD_EDIT, action: 'rm -rf' })
-    env.dispatch({ type: 'dsh://sidebar:toggle' })
-
-    expect(exec).toHaveBeenCalledTimes(1)
-    expect(exec).toHaveBeenCalledWith('copy')
-  })
-
-  /** 官方弹层：用目录里的生效绑定合成 keydown（官方适配器只看 code + 修饰键）。 */
   it('opens the official reference with the effective binding', () => {
     const env = stubEnv()
     class FakeKeyboardEvent {
@@ -155,7 +131,7 @@ describe('shortcutsFeature', () => {
     }
     dispatchers.add(handler as unknown as (event: KeyboardEvent) => void)
 
-    shortcutsFeature.call(fakeCtx(catalogService([
+    runFeature(fakeCtx(catalogService([
       { id: 'shortcuts.open', label: 'Shortcuts', keys: ['Ctrl+/'], binding: { code: 'Slash', modifiers: ['control'] } },
     ])))
     env.dispatch({ type: CMD_SHORTCUTS_OPEN })
@@ -164,5 +140,87 @@ describe('shortcutsFeature', () => {
     expect(seen?.ctrlKey).toBe(true)
     expect(seen?.metaKey).toBe(false)
     dispatchers.delete(handler as unknown as (event: KeyboardEvent) => void)
+  })
+
+  it.each(['sidebar.left.toggle', 'sidebar.right.toggle', 'terminal.new', 'session.search'])('invokes %s once with its current binding', (id) => {
+    const env = stubEnv()
+    class FakeKeyboardEvent {
+      constructor(readonly type: string, readonly init: KeyboardEventInit) {}
+    }
+    vi.stubGlobal('KeyboardEvent', FakeKeyboardEvent)
+    const received = vi.fn()
+    dispatchers.add(received)
+    const rows = [{ id, label: id, keys: ['⌘', 'T'], binding: { code: 'KeyT', modifiers: ['meta'] } }]
+    runFeature(fakeCtx(catalogService(rows)))
+
+    env.dispatch({ type: 'dsh://view:command', command: id })
+    expect(received).toHaveBeenCalledExactlyOnceWith(new FakeKeyboardEvent('keydown', {
+      bubbles: true,
+      cancelable: true,
+      code: 'KeyT',
+      ctrlKey: false,
+      metaKey: true,
+      altKey: false,
+      shiftKey: false,
+    }))
+
+    rows[0].binding = { code: 'KeyU', modifiers: ['control', 'shift'] }
+    env.dispatch({ type: 'dsh://view:command', command: id })
+    expect(received).toHaveBeenCalledTimes(2)
+    expect(received).toHaveBeenLastCalledWith(new FakeKeyboardEvent('keydown', {
+      bubbles: true,
+      cancelable: true,
+      code: 'KeyU',
+      ctrlKey: true,
+      metaKey: false,
+      altKey: false,
+      shiftKey: true,
+    }))
+  })
+
+  it.each([
+    { binding: null },
+    { binding: { code: 'KeyB', modifiers: ['meta'] }, conflicts: ['other.command'] },
+    { binding: { code: 'KeyB', modifiers: ['meta'] }, issue: 'reserved' },
+    { binding: { code: 'KeyB', secondCode: 'KeyC', modifiers: ['meta'] } },
+  ])('disables unavailable bindings without dispatching a fallback: %j', (input) => {
+    const env = stubEnv()
+    vi.stubGlobal('KeyboardEvent', vi.fn())
+    runFeature(fakeCtx(catalogService([
+      { id: 'sidebar.left.toggle', label: 'Sidebar', keys: ['⌘', 'B'], ...input },
+      { id: 'shortcuts.open', label: 'Shortcuts', keys: [], binding: null },
+    ])))
+
+    expect(env.sent[0].rows).toEqual([
+      { id: 'sidebar.left.toggle', label: 'Sidebar', keys: ['⌘', 'B'], available: false },
+      { id: 'shortcuts.open', label: 'Shortcuts', keys: [], available: false },
+    ])
+    env.dispatch({ type: 'dsh://view:command', command: 'sidebar.left.toggle' })
+    env.dispatch({ type: CMD_SHORTCUTS_OPEN })
+    expect(KeyboardEvent).not.toHaveBeenCalled()
+  })
+
+  it('rejects commands outside the View whitelist', () => {
+    const env = stubEnv()
+    vi.stubGlobal('KeyboardEvent', vi.fn())
+    runFeature(fakeCtx(catalogService([
+      { id: 'session.archive', label: 'Archive', keys: ['⌘', 'A'], binding: { code: 'KeyA', modifiers: ['meta'] } },
+    ])))
+    env.dispatch({ type: 'dsh://view:command', command: 'session.archive' })
+    env.dispatch({ type: 'dsh://view:command', command: 42 })
+    expect(KeyboardEvent).not.toHaveBeenCalled()
+  })
+
+  it('clears the shell catalog when the bridge is disposed', () => {
+    const env = stubEnv()
+    const dispose = runFeature(fakeCtx(catalogService([
+      { id: 'terminal.new', label: 'Terminal', keys: ['Ctrl+`'], binding: { code: 'Backquote', modifiers: ['control'] } },
+    ])))
+    dispose()
+    expect(env.sent).toEqual([
+      { type: EVENT_SHORTCUTS, rows: [{ id: 'terminal.new', label: 'Terminal', keys: ['Ctrl+`'], available: true }] },
+      { type: EVENT_SHORTCUTS, rows: [] },
+    ])
+    expect(env.listeners()).toBe(0)
   })
 })

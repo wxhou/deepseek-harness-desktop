@@ -114,9 +114,9 @@ function CheckoutDialog(props: {
         </>
       )}
     >
-      <div className="dshp-worktree__dialog-form">
-        <div className="dshp-worktree__dialog-field">
-          <label className="dshp-worktree__dialog-field-label" htmlFor="wt-checkout-branch">{locale.text('checkoutBranchLabel')}</label>
+      <div className="flex flex-col gap-[14px]">
+        <div className="flex flex-col gap-[6px]">
+          <label className="text-[12px] leading-[18px] text-[var(--dsw-alias-label-secondary,var(--dsw-alias-label-primary))]" htmlFor="wt-checkout-branch">{locale.text('checkoutBranchLabel')}</label>
           <Input
             id="wt-checkout-branch"
             value={branchName}
@@ -124,15 +124,15 @@ function CheckoutDialog(props: {
             onChange={event => updateBranch(event.target.value)}
           />
         </div>
-        <div className="dshp-worktree__dialog-path-row">
-          <span className="dshp-worktree__dialog-path-key">{locale.text('checkoutCurrentPath')}</span>
-          <span className="dshp-worktree__dialog-path-value">{worktreeKey || '—'}</span>
+        <div className="flex justify-between gap-[12px] text-[12px] leading-[18px]">
+          <span className="flex-none text-[var(--dsw-alias-label-secondary,var(--dsw-alias-label-primary))]">{locale.text('checkoutCurrentPath')}</span>
+          <span className="truncate [font-family:monospace]">{worktreeKey || '—'}</span>
         </div>
-        <div className="dshp-worktree__dialog-path-row">
-          <span className="dshp-worktree__dialog-path-key">{locale.text('checkoutTargetPath')}</span>
-          <span className="dshp-worktree__dialog-path-value">{projectPath.replaceAll('\\', '/') || '—'}</span>
+        <div className="flex justify-between gap-[12px] text-[12px] leading-[18px]">
+          <span className="flex-none text-[var(--dsw-alias-label-secondary,var(--dsw-alias-label-primary))]">{locale.text('checkoutTargetPath')}</span>
+          <span className="truncate [font-family:monospace]">{projectPath.replaceAll('\\', '/') || '—'}</span>
         </div>
-        {props.error && <div className="dshp-worktree__dialog-error">{props.error}</div>}
+        {props.error && <div className="text-[12px] leading-[18px] text-error">{props.error}</div>}
       </div>
     </Modal>
   )
@@ -169,7 +169,7 @@ function AbandonDialog(props: {
         </>
       )}
     >
-      {props.error === '' ? undefined : <div className="dshp-worktree__dialog-error">{props.error}</div>}
+      {props.error === '' ? undefined : <div className="text-[12px] leading-[18px] text-error">{props.error}</div>}
     </Modal>
   )
 }

@@ -11,6 +11,7 @@ import { apply } from './apply'
 
 // effect 标签是 `ctx.effect` 的卸载日志标识：与 `client/apply.ts` 逐字一致。
 const EXPECTED_LABELS = [
+  'dsh-tauri: appearance',
   'dsh-tauri: style (sidebar background)',
   'dsh-tauri: sidebar (toggle command + collapsed report)',
   'dsh-tauri: navigation (new session, add workspace)',
@@ -39,19 +40,21 @@ interface Harness {
   documentListeners: () => number
   sent: ParentMessage[]
   styles: HTMLStyleElement[]
+  paint: () => void
+  pendingFrames: () => number
   dispatch: (data: ParentMessage) => void
   keydown: (event: KeyboardEvent) => void
 }
 
 /** 装上 DOM 假实现（node 环境无 jsdom）。 */
 function stubEnv(): Harness {
-  const windowListeners = new Set<(event: MessageEvent) => void>()
-  const documentListeners = new Set<(event: KeyboardEvent) => void>()
+  const windowListeners = new Map<(event: MessageEvent) => void, string>()
+  const documentListeners = new Map<(event: KeyboardEvent) => void, string>()
   const sent: ParentMessage[] = []
   const parent = { postMessage: (message: ParentMessage) => sent.push(message) }
   vi.stubGlobal('window', {
     parent,
-    addEventListener: (_type: string, handler: (event: MessageEvent) => void) => windowListeners.add(handler),
+    addEventListener: (type: string, handler: (event: MessageEvent) => void) => windowListeners.set(handler, type),
     removeEventListener: (_type: string, handler: (event: MessageEvent) => void) => windowListeners.delete(handler),
   })
   const styles: HTMLStyleElement[] = []
@@ -63,23 +66,43 @@ function stubEnv(): Harness {
   vi.stubGlobal('document', {
     body: {},
     head,
+    // 移动抽屉归属标记挂在 documentElement 上，桌面假实现里始终未设置。
+    documentElement: { style: { colorScheme: 'light' }, hasAttribute: () => false },
     createElement: () => ({ setAttribute: () => {}, textContent: '', parentElement: head }),
     querySelector: () => null,
-    addEventListener: (_type: string, handler: (event: KeyboardEvent) => void) => documentListeners.add(handler),
+    querySelectorAll: () => [],
+    addEventListener: (type: string, handler: (event: KeyboardEvent) => void) => documentListeners.set(handler, type),
     removeEventListener: (_type: string, handler: (event: KeyboardEvent) => void) => documentListeners.delete(handler),
   })
   vi.stubGlobal('MutationObserver', FakeMutationObserver)
+  const frames = new Map<number, FrameRequestCallback>()
+  let nextFrame = 0
+  vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+    frames.set(++nextFrame, callback)
+    return nextFrame
+  })
+  vi.stubGlobal('cancelAnimationFrame', (id: number) => frames.delete(id))
   return {
     labels: [],
     sent,
     styles,
+    paint() {
+      const batch = [...frames.values()]
+      frames.clear()
+      batch.forEach(callback => callback(16))
+    },
+    pendingFrames: () => frames.size,
     dispatch(data) {
-      for (const handler of windowListeners)
-        handler({ source: window.parent, data } as MessageEvent)
+      for (const [handler, type] of windowListeners) {
+        if (type === 'message')
+          handler({ source: window.parent, data } as MessageEvent)
+      }
     },
     keydown(event) {
-      for (const handler of documentListeners)
-        handler(event)
+      for (const [handler, type] of documentListeners) {
+        if (type === 'keydown')
+          handler(event)
+      }
     },
     windowListeners: () => windowListeners.size,
     documentListeners: () => documentListeners.size,
@@ -148,7 +171,7 @@ describe('apply', () => {
     expect(vi.getTimerCount()).toBe(0)
   })
 
-  it('内嵌页面保留五条 effect 与侧边栏、导航、缩放桥', async () => {
+  it('内嵌页面登记桌面 effect 并保留样式、侧边栏、导航、缩放桥', async () => {
     const env = stubEnv()
 
     const toggleSidebar = vi.fn()
@@ -162,6 +185,9 @@ describe('apply', () => {
 
     apply(ctx)
 
+    expect(env.pendingFrames()).toBe(1)
+    env.paint()
+    expect(env.sent).toContainEqual({ type: 'dsh://style', sidebar: null, marked: null, frame: null, colorScheme: 'light' })
     expect(env.sent).toContainEqual({ type: 'dsh://sidebar:collapsed', collapsed: false })
     env.dispatch({ type: 'dsh://sidebar:toggle' })
     expect(toggleSidebar).toHaveBeenCalledTimes(1)
@@ -179,9 +205,8 @@ describe('apply', () => {
     expect(env.labels).toEqual(EXPECTED_LABELS)
     expect(env.styles).toHaveLength(1)
     expect(env.sent.filter(message => message.type === 'dsh://plugin-error')).toEqual([])
-    // 侧边栏桥 + 导航命令各挂一个父窗口消息监听；缩放快捷键挂一个 document 捕获监听。
-    expect(env.windowListeners()).toBe(2)
-    expect(env.documentListeners()).toBe(1)
+    expect(env.windowListeners()).toBe(3)
+    expect(env.documentListeners()).toBe(2)
 
     for (const dispose of disposers.splice(0))
       dispose()
@@ -189,6 +214,7 @@ describe('apply', () => {
       expect(env.windowListeners()).toBe(0)
       expect(env.documentListeners()).toBe(0)
       expect(env.styles).toEqual([])
+      expect(env.pendingFrames()).toBe(0)
       expect(vi.getTimerCount()).toBe(0)
     })
   })

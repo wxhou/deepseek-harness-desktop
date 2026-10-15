@@ -3,8 +3,10 @@ mod config;
 pub mod desktop;
 mod logger;
 mod service;
-mod task;
 mod utils;
+
+#[cfg(target_os = "macos")]
+use tauri::Manager;
 
 /// 对显式给定的核心安装目录施加全套 dsh 补丁（`--patch-core <dir>` 的入口）。
 ///
@@ -15,9 +17,9 @@ pub fn patch_core_dir(core_dir: &std::path::Path) -> Result<(), String> {
     service::patch::apply_all_at(core_dir)
 }
 
-/// 应用入口：先做 Wayland 环境兼容（见 `should_apply_wayland_egl_workaround`），
-/// 再初始化日志、装配桌面端并进入事件循环。
-pub fn run() {
+/// 应用入口：先做 Wayland 环境兼容，再初始化日志、装配桌面端并进入事件循环。
+pub fn run() -> Result<(), String> {
+    desktop::startup::verify()?;
     // Wayland EGL workaround：仅 AppImage 需要（见 `should_apply_wayland_egl_workaround`）。
     if should_apply_wayland_egl_workaround(
         &std::env::var("XDG_SESSION_TYPE").unwrap_or_default(),
@@ -37,13 +39,15 @@ pub fn run() {
         }
         if !applied.is_empty() {
             // 此处在 logger::init() 之前执行，log 宏尚无 subscriber，用 eprintln 输出
-            eprintln!("[wayland] set {} for WebKitGTK EGL", applied.join("="));
+            eprintln!("[wayland] set {} for WebKitGTK EGL", applied.join(" "));
         }
     }
     // 强制 XWayland（默认关闭的设置项，见 `should_force_xwayland`）。必须在此处执行：
     // GDK 只在初始化时读一次 GDK_BACKEND，建窗之后再改无效。
+    let force_xwayland =
+        config::force_xwayland_setting() || std::env::var_os("DSH_FORCE_XWAYLAND").is_some();
     if should_force_xwayland(
-        config::force_xwayland_setting(),
+        force_xwayland,
         &std::env::var("WAYLAND_DISPLAY").unwrap_or_default(),
         &std::env::var("GDK_BACKEND").unwrap_or_default(),
         &std::env::var("DISPLAY").unwrap_or_default(),
@@ -54,12 +58,25 @@ pub fn run() {
     }
     // 初始化日志系统
     logger::init();
+    // Unix：把持久化的 DSH_HOME 补回进程环境（issue #871）。必须在桌面端装配之前，
+    // 否则首次 get_dsh_data_path 会落到默认目录，日志、store 与 shim 全部写错位置。
+    service::data_dir::restore_process_env();
 
     desktop::builder()
         .invoke_handler(desktop::handler())
         .build(tauri::generate_context!())
-        .expect("error while building tauri application")
+        .map_err(|error| format!("STARTUP_FAILED: {error}"))?
         .run(|app_handle, event| match event {
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::WindowEvent { event, .. } => {
+                desktop::builder::on_macos_titlebar_event(&event);
+            }
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::MainEventsCleared => {
+                desktop::builder::sync_macos_titlebars(|| {
+                    app_handle.webview_windows().into_values()
+                });
+            }
             // macOS：关闭按钮只是隐藏窗口（见 builder 的 on_window_event），
             // 点击 Dock 图标时系统回调 applicationShouldHandleReopen 触发
             // RunEvent::Reopen，这里重新显示主窗口，否则窗口会一直隐藏在托盘。
@@ -93,6 +110,7 @@ pub fn run() {
             }
             _ => {}
         });
+    Ok(())
 }
 
 /// Wayland EGL workaround 是否生效：仅 AppImage 需要。

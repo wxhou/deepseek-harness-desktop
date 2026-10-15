@@ -86,10 +86,11 @@ describe('defineAdapter — 世代探测与内置迁移', () => {
     }))
 
     expect(adapter.generation).toBe('modern')
-    // legacy 的工作区导航投影不该在 modern 布局上出现（uiWorkspace 缺席）
+    // 工作区导航投影无条件安装、候选能力在调用期解析：判定「uiWorkspace 创建期在不在场」
+    // 会让晚激活的服务永远接不上（issue #756），因此 modern 布局同样装上投影。
     expect(adapter.migrations).toContain('services:auto-bind')
     expect(adapter.migrations).toContain('sessions:list-projection')
-    expect(adapter.migrations).not.toContain('legacy:workspaces-navigation')
+    expect(adapter.migrations).toContain('legacy:workspaces-navigation')
     expect(adapter.migrations).not.toContain('sessions:provide-info-bridge')
     expect(adapter.migrations).toContain('navigation:resolve-start-session')
     expect(adapter.migrations).toContain('workspace:resolve-add-workspace')
@@ -149,6 +150,40 @@ describe('defineAdapter — 世代探测与内置迁移', () => {
 
     adapter.resolveStartSession()?.('w2')
     expect(startSession).toHaveBeenCalledWith('w2')
+  })
+
+  it('工作区导航投影：创建期 uiWorkspace 尚未激活，服务到达后 connectWorkspace / startSession 照常可用', () => {
+    const connectWorkspace = vi.fn(() => 's1')
+    const startSession = vi.fn()
+    const list = makeList()
+    // `dsh-client-ui-workspace` 额外等 ui-session / connection，可能晚于 dsh-tauri-pet 创建：
+    // 创建期读不到 uiWorkspace 是常态，投影的安装判据不能依赖它（issue #756）。
+    const services: Record<string, unknown> = { sessions: { list }, workspaces: { list, create: vi.fn() } }
+    const adapter = defineAdapter(makeContext(services))
+
+    expect(adapter.migrations).toContain('legacy:workspaces-navigation')
+    // 两个候选都没有该能力时诚实缺席，而不是给一个调用即崩的假投影
+    expect(adapter.workspaces.connectWorkspace).toBeUndefined()
+    expect(adapter.has('navigation.startSession')).toBe(false)
+    expect(adapter.resolveStartSession()).toBeUndefined()
+    expect(adapter.has('navigation.addWorkspace')).toBe(false)
+
+    // uiWorkspace 稍后激活：投影在调用期重读服务，无需重建适配层
+    services.uiWorkspace = { connectWorkspace, startSession, pickDirectory: vi.fn().mockResolvedValue('D:/work/demo') }
+    expect(adapter.workspaces.connectWorkspace?.('w1')).toBe('s1')
+    expect(connectWorkspace).toHaveBeenCalledWith('w1')
+    expect(connectWorkspace.mock.instances[0]).toMatchObject({ connectWorkspace })
+
+    expect(adapter.has('navigation.startSession')).toBe(true)
+    adapter.resolveStartSession()?.('w2')
+    expect(startSession).toHaveBeenCalledWith('w2')
+    adapter.workspaces.startSession?.('w3')
+    expect(startSession).toHaveBeenCalledWith('w3')
+    expect(startSession.mock.instances[0]).toMatchObject({ startSession })
+
+    // 目录选择是工作区侧原生实现：晚到的 uiWorkspace 也要能接上聚合出的 addWorkspace
+    expect(adapter.has('navigation.addWorkspace')).toBe(true)
+    expect(requireAddWorkspace(adapter).pickDirectory).toBeTypeOf('function')
   })
 
   it('provideInfo 桥原生优先：原生只覆盖部分会话时回退 binding + uiSession 投影', () => {
@@ -647,6 +682,46 @@ describe('defineAdapter — 0.1.6-alpha.2 会话面投影', () => {
     adapter.sessions.open?.('s1')
     expect(open).toHaveBeenCalledWith('s1')
     expect(openSession).not.toHaveBeenCalled()
+  })
+})
+
+describe('defineAdapter — official session APIs', () => {
+  it('create and catalog refresh capabilities bind only existing official methods', async () => {
+    const owner = {
+      create: vi.fn(function (this: object, input?: unknown) {
+        expect(this).toBe(owner)
+        expect(input).toEqual({ cwd: '/project' })
+        return Promise.resolve('official-session')
+      }),
+      refresh: vi.fn(function (this: object) {
+        expect(this).toBe(owner)
+        return Promise.resolve()
+      }),
+    }
+    const adapter = defineAdapter(makeContext({ sessions: owner }))
+    expect(adapter.has('sessions.create')).toBe(true)
+    expect(adapter.has('sessions.refresh')).toBe(true)
+    await expect(adapter.sessions.create?.({ cwd: '/project' })).resolves.toBe('official-session')
+    await adapter.sessions.refresh?.()
+    expect(owner.refresh).toHaveBeenCalledOnce()
+    const unavailable = defineAdapter(makeContext({ sessions: {} }))
+    expect(unavailable.has('sessions.create')).toBe(false)
+    expect(unavailable.has('sessions.refresh')).toBe(false)
+  })
+
+  it('projection refresh capability binds only the official existing method', async () => {
+    const owner = {
+      refreshProjections: vi.fn(function (this: object, id: string) {
+        expect(this).toBe(owner)
+        expect(id).toBe('session-a')
+        return Promise.resolve()
+      }),
+    }
+    const adapter = defineAdapter(makeContext({ sessions: owner }))
+    expect(adapter.has('sessions.refreshProjections')).toBe(true)
+    await adapter.sessions.refreshProjections?.('session-a')
+    expect(owner.refreshProjections).toHaveBeenCalledOnce()
+    expect(defineAdapter(makeContext({ sessions: {} })).has('sessions.refreshProjections')).toBe(false)
   })
 })
 

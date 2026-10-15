@@ -10,10 +10,8 @@ export const PANEL_ACTION_ORDER = 20
 export const INPUT_PREFILL_ID = `${PLUGIN_ID}.skill-prefill`
 export const INPUT_PREFILL_ORDER = 40
 export const INPUT_PREFILL_PRIORITY = 0
-export const STYLE_ID = `${PLUGIN_ID}-styles`
 
 export const LOCALE_EFFECT = `${PLUGIN_ID}: locale`
-export const STYLES_EFFECT = `${PLUGIN_ID}: styles`
 export const SKILL_CREATOR_PREFILL_EFFECT = `${PLUGIN_ID}: skill creator prefill`
 export const EXTENSION_PANEL_EFFECT = `${PLUGIN_ID}: extension panel`
 

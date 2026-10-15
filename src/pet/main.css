@@ -14,14 +14,6 @@
   width: calc(90vw - 2rem);
 }
 
-/* Toast 正文最多两行（-webkit-line-clamp）：思考片段/命令超长时截断省略。 */
-[data-slot='toast-description'] {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  overflow: hidden;
-}
-
 @layer base {
   html,
   body,

@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::service::download::ProgressTracker;
-use tauri::Runtime;
+use tauri::{Manager, Runtime};
 
 /// 下载文件到内存
 ///
@@ -25,13 +25,13 @@ pub async fn download_file<'a, R: Runtime>(
     download_file_from_sources(tracker, vec![url]).await
 }
 
-/// 按顺序依次尝试多个下载源（如 GitHub 官方直连 → ghfast.top 镜像兜底），
+/// 按顺序依次尝试多个下载源（GitHub 官方直连 → 多个 GitHub 代理镜像兜底），
 /// 某个源全部重试失败后自动切换下一个源，并通过 `tracker` 在界面上告知用户
 /// 当前使用的下载源；全部源均失败时返回最后一个源的错误并注明尝试过的源数。
 ///
-/// 每个源内部仍走 `download_with_retry` 的断点续传重试；切换源时保留已下载
-/// 的字节续传（镜像透传同一文件，内容一致，且最终有 SHA-256 完整性校验兜底；
-/// 服务端不支持 Range 时 `download_attempt` 会自动清空从头下载）。
+/// 断点续传只在单个源内部生效（`download_with_retry` 的字节缓冲按源独立）：
+/// 换源必然从头下载，避免把不同来源的半成品拼成一个文件；镜像只是原样透传
+/// 官方资产，最终内容仍由 SHA-256 校验兜底。
 pub async fn download_file_from_sources<'a, R: Runtime>(
     tracker: &'a ProgressTracker<'a, R>,
     urls: Vec<String>,
@@ -83,9 +83,10 @@ async fn download_with_retry<'a, R: Runtime>(
     tracker.update(0.0, String::new(), format!("Download {}", url));
 
     // 创建具备 User-Agent 的客户端
-    let client = reqwest::Client::builder()
+    let client = crate::config::proxy::http_client_builder(tracker.window.app_handle())?
         .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (deepseek-harness-desktop)")
         .connect_timeout(std::time::Duration::from_secs(20))
+        .read_timeout(Duration::from_secs(30))
         .build()
         .map_err(|e| {
             log::error!("Failed to create HTTP client: {}", e);
@@ -213,7 +214,6 @@ async fn download_attempt<'a, R: Runtime>(
         res.content_length().unwrap_or(0)
     };
     log::debug!("File size: {} bytes", total_size);
-    let mut downloaded: u64 = 0;
     let mut stream = res.bytes_stream();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| {
@@ -221,8 +221,7 @@ async fn download_attempt<'a, R: Runtime>(
             e.to_string()
         })?;
         buffer.extend_from_slice(&chunk);
-        downloaded += chunk.len() as u64;
-        let received_total = resume_from + downloaded;
+        let received_total = buffer.len() as u64;
         // 未知总长（服务器未给 Content-Length/分块传输）时进度取 -1，
         // 避免 `received / 0 = +inf` 或 NaN 进度传给前端
         let progress_pct = download_progress_percent(received_total, total_size);
@@ -259,11 +258,14 @@ fn validate_download_url(url: &str) -> Result<(), String> {
                 | "release-assets.githubusercontent.com"
                 | "objects.githubusercontent.com"
                 // 国内镜像：npmmirror 系列（node dist 会 302 到 cdn.npmmirror.com）
-                // 与 ghfast.top 中转（GitHub Release 内容原样透传）
+                // 与 GitHub Release 代理（原样透传，重定向后仍落在镜像自身域名）
                 | "npmmirror.com"
                 | "cdn.npmmirror.com"
                 | "registry.npmmirror.com"
+                | "gh-proxy.com"
+                | "gh.llkk.cc"
                 | "ghfast.top"
+                | "ghproxy.net"
         )
     );
     if parsed.scheme() != "https" || !trusted_host {
@@ -292,12 +294,12 @@ pub fn verify_sha256(buffer: &[u8], expected: &str) -> Result<(), String> {
 }
 
 /// 从 Node.js 官方同版本 SHASUMS256.txt 中读取当前平台包的摘要。
-pub async fn fetch_node_sha256(download_url: &str) -> Result<String, String> {
+pub async fn fetch_node_sha256(app_handle: &tauri::AppHandle, download_url: &str) -> Result<String, String> {
     let (base, filename) = download_url.rsplit_once('/').ok_or_else(|| {
         "INTEGRITY_METADATA_INVALID: Node.js download URL has no filename".to_string()
     })?;
     let checksums_url = format!("{base}/SHASUMS256.txt");
-    let checksums = reqwest::Client::builder()
+    let checksums = crate::config::proxy::http_client_builder(app_handle)?
         .user_agent("deepseek-harness-desktop")
         .timeout(Duration::from_secs(20))
         .build()
@@ -719,10 +721,15 @@ mod tests {
             validate_download_url("https://cdn.npmmirror.com/binaries/node/v22/file.zip").is_ok()
         );
         assert!(validate_download_url("https://registry.npmmirror.com/pnpm/-/pnpm.tgz").is_ok());
-        assert!(validate_download_url(
-            "https://ghfast.top/https://github.com/dsh-tauri-desk/deepseek-harness-pkg/releases/latest/download/deepseek-harness-pkg-windows.zip"
-        )
-        .is_ok());
+        for prefix in crate::config::DSH_MIRROR_PREFIXES {
+            assert!(
+                validate_download_url(&format!(
+                    "{prefix}https://github.com/dsh-tauri-desk/deepseek-harness-pkg/releases/latest/download/deepseek-harness-pkg-windows.zip"
+                ))
+                .is_ok(),
+                "镜像前缀应被放行: {prefix}"
+            );
+        }
     }
 
     #[tokio::test]

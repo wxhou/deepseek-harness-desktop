@@ -3,10 +3,10 @@
 ## deepseek-ai/deepseek-harness
 
 - Repository: <https://github.com/deepseek-ai/deepseek-harness>
-- Version: `dsh-v0.1.7-rc.2`
-- Revision: `477b4f420553e8a52c2fbccc464d7561b239c443`
+- Version: `dsh-v0.2.1-alpha.1`
+- Revision: `5badb15009ae1756c3afe0ae0cef1faafc290ccc`
 - Source: `source/deepseek-harness`
-- Catalog pin: `dsh:` → `0.1.7-alpha.1` (`pnpm-workspace.yaml`)
+- Catalog pin: `dsh:` → `0.2.1-alpha.1` (`pnpm-workspace.yaml`)
 - License: MIT — Copyright (c) 2026 DeepSeek
 - Not copied: the official workspace browser and settings sidebar are extended through official slots, official primitives `Menu` entries and the official sessions / workspaces service surfaces.
 
@@ -16,11 +16,15 @@ Integration points:
 - Official row/menu recognition: only official `itemWrap`-structured primitives entries are recognised, and workspace rows are matched by the official row title (`workspace-patch.utils.ts:13,32,52`).
 - Official service surface: `src/client/types/runtime.ts:24-29` declares the official sessions (list subscription, refresh, open, bind, fork) and workspaces surfaces; `open` moved in kernel 0.1.7 and is restored by this repo's adapter instead of being re-implemented.
 - Official archive action mirroring: a session archived through the official menu appears in this package's page immediately (`src/client/hooks/use-archive-view.ts:15`).
-- Official row disabled: `cordis.patch.yml` disables the official row id `ui-settings-unarchive-sessions`, whose page duplicates this package's archive section and only supports unarchive, never delete.
 
 Deliberate difference:
 
 - The official entry only unarchives; this package's "Archived chats" page adds search, sort, grouping, project filter, delete, and a "delete workspace" action rewritten into "archive workspace".
+
+## Compatibility `0.2.0-rc.2` → `0.2.1-alpha.1`
+
+- The sessions and workspaces integration still delegates to official services. Optional draft initialization on `uiWorkspace.startSession` does not replace the adapter open path.
+- The official workspace menu and row shapes used by the archive-entry patch remain compatible; no removed invariant export is imported.
 
 ## License
 

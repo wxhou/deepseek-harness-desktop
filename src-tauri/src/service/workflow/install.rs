@@ -44,11 +44,9 @@ pub async fn install(
     // 枚举/结束涉及 powershell 枚举与 taskkill（同步阻塞），移出 Tokio 线程。
     {
         let handle = app_handle.clone();
-        tauri::async_runtime::spawn_blocking(move || {
-            terminate_stale_harness_processes(&handle);
-        })
-        .await
-        .map_err(|e| format!("STOP_FAILED: {e}"))?;
+        tauri::async_runtime::spawn_blocking(move || terminate_stale_harness_processes(&handle))
+            .await
+            .map_err(|e| format!("STOP_FAILED: {e}"))??;
     }
 
     let window = app_handle
@@ -120,7 +118,7 @@ pub async fn install(
         // 下载 URL 对 dsh 也是完全确定可算的（DSH_CORE_URL + 平台文件名），
         // 无需依赖 GitHub API 元数据；api.github.com 限流/被代理拦截时
         // （mac 首次启动常见）仍能拿到真实下载地址，避免整次安装被瞬时失败卡死。
-        // dsh 核心按 官方直连 → 站点自有反代 → ghfast.top 镜像 的顺序兜底
+        // dsh 核心按 官方直连 → 站点自有反代 → 公益镜像列表依次兜底 的顺序
         // （下载层会在界面上告知用户）；其余任务保持单一官方源。
         let (urls, name) = if kind == download::InstallKind::Dsh {
             // 元数据先行后 dsh_latest 为解析所得值；URL 与 digest 同源于该次
@@ -143,7 +141,7 @@ pub async fn install(
         log::info!("Download completed, file size: {} bytes", buffer.len());
         let expected_digest = match kind {
             download::InstallKind::Node => {
-                download::fetch_node_sha256(task.get_download_url()?.as_str()).await?
+                download::fetch_node_sha256(app_handle, task.get_download_url()?.as_str()).await?
             }
             download::InstallKind::Dsh => {
                 // 元数据先行：digest 与下载 URL 同源于循环前完成的那次解析
@@ -183,8 +181,11 @@ pub async fn install(
         // 记录本次安装对应的 release tag 与 commit，供下次启动比对
         if kind == download::InstallKind::Dsh {
             dsh_updated = true;
-            config::set_dsh_pkg_commit(app_handle, dsh_latest.commit.clone());
-            config::set_dsh_pkg_tag(app_handle, dsh_latest.tag.clone());
+            config::set_dsh_pkg_identity(
+                app_handle,
+                dsh_latest.commit.clone(),
+                dsh_latest.tag.clone(),
+            );
         }
     }
 
@@ -198,16 +199,17 @@ pub async fn install(
     Ok(dsh_updated)
 }
 
-/// dsh 资产的下载源列表：官方直连 → 站点自有反代 → ghfast.top 公益镜像。
+/// dsh 资产的下载源列表：官方直连 → 站点自有反代 → 公益代理镜像列表。
 ///
 /// 顺序含义：自有反代域名在我们控制下（不受公益镜像限速/停服影响），
-/// 排在公益镜像之前；三者内容一致，均受调用方的 SHA-256 校验约束。
+/// 排在公益镜像之前；全部源内容一致，均受调用方的 SHA-256 校验约束。
 fn dsh_source_urls(primary: &str) -> Vec<String> {
-    vec![
+    let mut urls = vec![
         primary.to_string(),
         config::proxy_download_url(primary),
-        config::mirror_download_url(primary),
-    ]
+    ];
+    urls.extend(config::mirror_download_urls(primary));
+    urls
 }
 
 /// 元数据先行：dshLatest 为 None 时带退避重取（重试 3 次）；彻底失败返回
@@ -223,8 +225,8 @@ async fn ensure_dsh_metadata(
         // 推荐版本清单存在时按版本精确匹配（rc 是 pre-release，不能走
         // `/releases/latest` 端点）；否则取最新非预览发行版。
         match config::recommended_dsh_version(app_handle) {
-            Some(version) => download::fetch_dsh_pkg_version(&version).await,
-            None => download::fetch_latest_dsh_pkg_info().await,
+            Some(version) => download::fetch_dsh_pkg_version(app_handle, &version).await,
+            None => download::fetch_latest_dsh_pkg_info(app_handle).await,
         }
     })
     .await
@@ -293,7 +295,7 @@ mod tests {
     #[test]
     fn dsh_sources_order_official_proxy_mirror() {
         let urls = dsh_source_urls(ASSET);
-        assert_eq!(urls.len(), 3);
+        assert_eq!(urls.len(), 2 + crate::config::DSH_MIRROR_PREFIXES.len());
         assert_eq!(urls[0], ASSET);
         assert_eq!(
             urls[1],
@@ -302,7 +304,9 @@ mod tests {
                 ASSET.trim_start_matches("https://")
             )
         );
-        assert_eq!(urls[2], format!("https://ghfast.top/{ASSET}"));
+        for (url, prefix) in urls[2..].iter().zip(crate::config::DSH_MIRROR_PREFIXES) {
+            assert_eq!(url, &format!("{prefix}{ASSET}"), "镜像应保留完整资产路径");
+        }
     }
 
     #[test]

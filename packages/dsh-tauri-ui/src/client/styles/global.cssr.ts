@@ -4,7 +4,59 @@ export const GLOBAL_STYLE_ID = 'dsh-tauri-ui-global-styles'
 
 const { c } = cssr
 
+const INPUT_DOCK_SELECTOR = '[data-slot="conversation.input.dock"]:has(> :nth-child(3 of :not([data-dsh-tauri-worktree-mode-anchor])))'
+
 export default c([
+  c(`:where(${INPUT_DOCK_SELECTOR})`, {
+    display: 'flex !important',
+    flexDirection: 'column',
+    width: 'calc(100% - var(--dsh-composer-side-clearance, 0px) * 2)',
+    maxWidth: 'var(--dsh-composer-card-max-width, 100%)',
+    marginInline: 'auto',
+    rowGap: '0',
+  }),
+  // The outlet now owns the side clearance; avoid subtracting it again in card widths.
+  c(`${INPUT_DOCK_SELECTOR} > :not([data-dsh-tauri-worktree-mode-anchor])`, {
+    '--dsh-composer-side-clearance': '0px',
+  }),
+  ...[2, 3, 4].flatMap((index) => {
+    const child = `> :nth-last-child(${index} of :not([data-dsh-tauri-worktree-mode-anchor]))`
+    return [
+      c(`${INPUT_DOCK_SELECTOR} ${child}`, {
+        position: 'relative',
+        height: 'auto',
+        minHeight: '0',
+        marginBlock: '0',
+        boxSizing: 'border-box',
+        overflow: 'clip',
+        transformOrigin: 'top center',
+        interpolateSize: 'allow-keywords',
+        transition: 'height 220ms ease, transform 220ms ease, margin-bottom 220ms ease',
+      }),
+      c(`${INPUT_DOCK_SELECTOR}:not(:has(> :not([data-dsh-tauri-worktree-mode-anchor]):hover)):not(:focus-within) ${child}`, {
+        height: '12px',
+        transform: `scale(${1 - (index - 1) * 0.02})`,
+      }),
+      c(`${INPUT_DOCK_SELECTOR}:is(:has(> :not([data-dsh-tauri-worktree-mode-anchor]):hover), :focus-within) ${child}`, {
+        transform: 'scale(1)',
+        marginBottom: '6px',
+        overflow: 'visible',
+      }),
+      c(`${INPUT_DOCK_SELECTOR}:is(:has(> :not([data-dsh-tauri-worktree-mode-anchor]):hover), :focus-within) ${child}::after`, {
+        content: '""',
+        position: 'absolute',
+        top: '100%',
+        left: '0',
+        right: '0',
+        height: '8px',
+      }),
+    ]
+  }),
+  c('@media (prefers-reduced-motion: reduce)', [
+    c(`${INPUT_DOCK_SELECTOR} > :not([data-dsh-tauri-worktree-mode-anchor])`, {
+      transition: 'none !important',
+    }),
+  ]),
   c('[data-slot="sidebar.right.tab.guide"]', [
     c('[class$="guide"]', {
       gap: '8px',
@@ -74,6 +126,10 @@ export default c([
   c('[class*="collapsed"] [class$="logoRow"]', {
     justifyContent: 'flex-start !important',
   }),
+  c('[data-slot="settings.section"] > div', {
+    maxWidth: 'none !important',
+    paddingBottom: '24px',
+  }),
   c('[data-slot="conversation.chat.turnTail"]', [
     c('[class$="card"]', {
       borderRadius: '14px !important',
@@ -95,6 +151,17 @@ export default c([
       background: 'var(--dsw-alias-label-primary)',
     }),
   ]),
+  // issue #1023: hidden="until-found" 必须保留 UA 隐藏样式，且不能带估算占位尺寸。
+  c('[data-chat-flow] > [data-chat-anchor-key]:not([hidden])', {
+    contentVisibility: 'auto',
+    containIntrinsicSize: 'auto 320px',
+    // issue #1085: 为 outside 列表标记扩展绘制盒，负外边距保持正文位置。
+    paddingLeft: '24px',
+    marginLeft: '-24px',
+  }),
+  c('[data-chat-flow-key]:has(> [data-slot="conversation.chat.node"] > [data-dsh-tauri-ui-continue-notice])', {
+    display: 'none !important',
+  }),
 
   c('[class$="sidebarCol"]', {
     borderRight: 'none !important',

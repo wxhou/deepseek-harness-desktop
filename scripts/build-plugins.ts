@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, relative, resolve, sep } from 'node:path'
 import process from 'node:process'
 import { pathToFileURL } from 'node:url'
@@ -114,6 +114,13 @@ const ATTRIBUTION_BASENAMES = /^(?:licen[cs]e|notice|copying)/i
 const DOCUMENTATION_BASENAMES = /^(?:readme|changelog|changes|history|authors|contributors)/i
 const DOCUMENTATION_EXTENSIONS = /\.md$/i
 
+/**
+ * 技能目录段：插件随包分发的 `skills/<name>/SKILL.md` 是运行期资源，技能提供者
+ * （`@deepseek-ai/dsh-skill-filesystem` 的 customSkillDirs）在装载时扫描该子树，
+ * 因此整棵保留，不按文档扩展名裁剪。
+ */
+const SKILL_DIRECTORY_NAME = 'skills'
+
 /** 仅服务开发/测试/浏览器条件的目录段，需配合守护集判断。 */
 const PRUNE_SEGMENTS = new Set(['src', 'test', 'tests', '__tests__', 'browser'])
 
@@ -125,8 +132,13 @@ const RUNTIME_CONDITIONS = ['node', 'import', 'require'] as const
 const FALLBACK_CONDITION = 'default'
 
 const RUNTIME_FILE_PATTERN = /\.(?:js|cjs|mjs)$/
+const BUILD_TOOL_PEERS = ['typescript', '@genapi/shared'] as const
 
 export function relativeSpecifiers(source: string): string[] {
+  return moduleSpecifiers(source).filter(specifier => specifier.startsWith('.'))
+}
+
+function moduleSpecifiers(source: string): string[] {
   const specifiers: string[] = []
   const file = ts.createSourceFile('runtime.js', source, ts.ScriptTarget.Latest, false, ts.ScriptKind.JS)
   ts.forEachChild(file, visit)
@@ -143,7 +155,7 @@ export function relativeSpecifiers(source: string): string[] {
     )) {
       target = node.arguments[0]
     }
-    if (target && ts.isStringLiteralLike(target) && target.text.startsWith('.')) {
+    if (target && ts.isStringLiteralLike(target)) {
       specifiers.push(target.text)
     }
     ts.forEachChild(node, visit)
@@ -151,7 +163,9 @@ export function relativeSpecifiers(source: string): string[] {
 }
 
 interface PackageManifest {
+  name?: string
   dependencies?: Record<string, string>
+  optionalDependencies?: Record<string, string>
   peerDependencies?: Record<string, string>
   peerDependenciesMeta?: Record<string, { optional?: boolean }>
   exports?: unknown
@@ -225,7 +239,7 @@ function deploymentIndex(root: string): DeploymentIndex {
 
 /** 可达性用宽松口径：可选 peer 也可能被动态 import，一律计入，只裁真正无人声明的包。 */
 function reachabilityDependencies(manifest: PackageManifest): string[] {
-  return [...Object.keys(manifest.dependencies ?? {}), ...Object.keys(manifest.peerDependencies ?? {})]
+  return [...Object.keys(manifest.dependencies ?? {}), ...Object.keys(manifest.optionalDependencies ?? {}), ...Object.keys(manifest.peerDependencies ?? {})]
 }
 
 /** 校验用严格口径：显式依赖与必需 peer 必须可解析；可选 peer 允许缺席。 */
@@ -291,16 +305,24 @@ function collectFiles(dir: string, out: string[] = []): string[] {
   return out
 }
 
-/** 版权与许可声明必须随包分发，其余说明性文档与 sourcemap、类型声明一律可裁。 */
-function isNonRuntimeFile(rel: string): boolean {
+/** 版权与许可声明必须随包分发，技能子树同样整棵保留，其余说明性文档与 sourcemap、类型声明一律可裁。 */
+export function isNonRuntimeFile(rel: string): boolean {
   const name = basename(rel)
   if (ATTRIBUTION_BASENAMES.test(name)) {
+    return false
+  }
+  if (inSkillDirectory(rel)) {
     return false
   }
   if (DOCUMENTATION_BASENAMES.test(name) || DOCUMENTATION_EXTENSIONS.test(name)) {
     return true
   }
   return NON_RUNTIME_EXTENSIONS.some(pattern => pattern.test(rel))
+}
+
+/** 路径中任意一段为技能目录即属技能子树（`<pkg>/skills/<name>/SKILL.md`）。 */
+function inSkillDirectory(rel: string): boolean {
+  return rel.split(sep).includes(SKILL_DIRECTORY_NAME)
 }
 
 function removeEmptyDirectories(root: string): void {
@@ -404,6 +426,11 @@ function pruneNonRuntimeFiles(root: string): number {
   for (const dir of index.dirs) {
     for (const file of collectFiles(dir)) {
       const rel = relative(root, file)
+      // 技能子树是运行期资源（技能提供者在装载时扫描）：整棵保留，既不看扩展名，
+      // 也不按 src/test/browser 目录段裁剪。
+      if (inSkillDirectory(rel)) {
+        continue
+      }
       // 非运行期文件无条件裁剪：即便紧邻被守护的代码（如 require('.') 命中的包根），
       // Node 也不会去加载它们。
       if (isNonRuntimeFile(rel)) {
@@ -462,9 +489,10 @@ function pruneOrphanPackages(root: string, pluginNames: readonly string[]): stri
 
 /** 裁剪可能删掉入口之外的内部模块（如 `require('./common')`），逐条验证相对说明符仍可解析。 */
 function verifyRelativeSpecifiers(root: string): number {
+  const index = deploymentIndex(root)
   const missing: string[] = []
   let checked = 0
-  for (const dir of packageDirs(root)) {
+  for (const dir of index.dirs) {
     const rel = relative(root, dir)
     if (RUNTIME_PROVIDED_SCOPES.some(scope => rel === scope || rel.startsWith(`${scope}${sep}`))) {
       continue
@@ -473,7 +501,17 @@ function verifyRelativeSpecifiers(root: string): number {
       if (!RUNTIME_FILE_PATTERN.test(file)) {
         continue
       }
-      for (const specifier of relativeSpecifiers(readFileSync(file, 'utf8'))) {
+      for (const specifier of moduleSpecifiers(readFileSync(file, 'utf8'))) {
+        if (specifier === 'dsh-h3/genapi' || specifier.startsWith('dsh-h3/genapi/')) {
+          throw new Error(`PLUGIN_DEPLOY_BUILD_TOOL_REQUIRED: ${relative(root, file)} -> ${specifier}`)
+        }
+        const peer = BUILD_TOOL_PEERS.find(name => specifier === name || specifier.startsWith(`${name}/`))
+        if (peer && index.resolveFrom(dir, peer) === null) {
+          throw new Error(`PLUGIN_DEPLOY_DEPENDENCY_MISSING: ${relative(root, file)} -> ${specifier}`)
+        }
+        if (!specifier.startsWith('.')) {
+          continue
+        }
         checked++
         // `.node` 原生绑定是可选加载（ssh2 缺绑定时回退纯 JS，S1 决策显式
         // 阻断其原生构建），文件缺失不代表部署树不完整，跳过存在性校验。
@@ -511,18 +549,51 @@ function verifyDeployedClosure(root: string): void {
   }
 }
 
-/**
- * `pnpm deploy` 产出的是「npm 包原样」，含 sourcemap、类型声明、源码、测试与浏览器分支等
- * 运行期从不加载的内容（实测占产物近七成），而 Tauri 会把整棵树打进安装包。裁剪在
- * verifyMaterialized 之前完成，任一校验失败即中止，绝不留下半成品资源。
- */
-function pruneDeployment(root: string, pluginNames: readonly string[]): void {
+function pruneBuildTools(root: string): void {
+  const index = deploymentIndex(root)
+  const peers = BUILD_TOOL_PEERS
+  const matches = (specifier: string, name: string): boolean => specifier === name || specifier.startsWith(`${name}/`)
+  for (const dir of index.dirs) {
+    const manifest = index.manifests.get(dir) as PackageManifest
+    if (manifest.name !== 'dsh-h3') {
+      continue
+    }
+    const exports = manifest.exports as Record<string, unknown> | undefined
+    const tool = join(dir, 'dist', 'genapi.mjs')
+    if (exports?.['./genapi'] !== './dist/genapi.mjs' || !existsSync(tool)
+      || peers.some(name => !manifest.peerDependencies?.[name]
+        || manifest.peerDependenciesMeta?.[name]?.optional !== true
+        || manifest.dependencies?.[name] || manifest.optionalDependencies?.[name])) {
+      throw new Error(`PLUGIN_DEPLOY_BUILD_TOOL_CONTRACT: ${relative(root, dir)}`)
+    }
+    for (const file of collectFiles(dir)) {
+      if (file === tool || !RUNTIME_FILE_PATTERN.test(file)) {
+        continue
+      }
+      for (const specifier of moduleSpecifiers(readFileSync(file, 'utf8'))) {
+        if (peers.some(name => matches(specifier, name))) {
+          throw new Error(`PLUGIN_DEPLOY_BUILD_TOOL_REQUIRED: ${relative(root, file)} -> ${specifier}`)
+        }
+      }
+    }
+    delete exports['./genapi']
+    for (const name of peers) {
+      delete manifest.peerDependencies?.[name]
+      delete manifest.peerDependenciesMeta?.[name]
+    }
+    writeFileSync(join(dir, 'package.json'), `${JSON.stringify(manifest, null, 2)}\n`)
+    rmSync(tool)
+  }
+}
+
+export function pruneDeployment(root: string, pluginNames: readonly string[]): void {
   for (const scope of RUNTIME_PROVIDED_SCOPES) {
     rmSync(join(root, scope), { recursive: true, force: true })
   }
   for (const subtree of DEAD_SUBTREES) {
     rmSync(join(root, subtree), { recursive: true, force: true })
   }
+  pruneBuildTools(root)
   const orphans = pruneOrphanPackages(root, pluginNames)
   const files = pruneNonRuntimeFiles(root)
   for (const name of DEPLOY_METADATA) {

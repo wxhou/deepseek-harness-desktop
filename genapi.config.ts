@@ -1,29 +1,57 @@
 import { defineConfig } from '@genapi/core'
-import { pluginPipeline } from './genapi.pipeline'
+import pipeline from '@genapi/pipeline'
+import { ofetch } from '@genapi/presets'
+import { original } from 'dsh-h3/genapi'
 
-// 本列表的判据是「有需要生成的宿主 HTTP 路由」，不是「有宿主半区」：
-// `dsh-tauri`（3 条路由）与 `dsh-tauri-pet`（3 条）都自行手写调用层，没有列出。
-// `dsh-tauri-model-config` 是官方 `ui-settings-models` 的原样 fork：宿主半区只有
-// webserver 全局注入（`webserver/index-inject`），没有 HTTP 路由，因此没有可生成的 API；
-// 本仓库自有的 5 条路由已随自动配置/打开配置文件能力迁到 `dsh-tauri-ui`。
 const plugins = [
   'dsh-tauri-extension',
   'dsh-tauri-scheduler',
   'dsh-tauri-rightclick',
   'dsh-tauri-archive',
   'dsh-tauri-experimental',
+  'dsh-tauri-model',
   'dsh-tauri-ui',
+  'dsh-tauri-notification',
   'dsh-tauri-worktree',
+  'dsh-tauri-remote',
+  'dsh-tauri-kernel',
 ]
 
 export default defineConfig({
-  preset: pluginPipeline,
+  preset: pipeline(
+    (config) => {
+      const read = ofetch.ts.config(config)
+      for (const entry of read.graphs.scopes.main.imports) {
+        if (entry.value === 'ofetch') {
+          entry.value = read.config.meta!.import!.http!
+          entry.type = true
+        }
+      }
+      return read
+    },
+    original,
+    ofetch.ts.parser,
+    ofetch.ts.compiler,
+    ofetch.ts.generate,
+    ofetch.ts.dest,
+  ),
   meta: { import: { http: 'dsh-tauri/client' } },
-  // worktree 的根级 routes/post.ts、routes/delete.ts 生成名是 `post` / 保留字 `delete`
-  patch: { operations: { delete: 'deleteWorktree', post: 'postWorktree' } },
-  servers: plugins.map(plugin => ({
-    input: `packages/${plugin}/src/host/routes`,
-    output: { main: `packages/${plugin}/src/client/apis/index.ts` },
-    meta: { baseURL: JSON.stringify(`/api/desktop/${plugin}`) },
-  })),
+  transform: {
+    operation: name => name.replace(/ApiTauri(?:Extension|Scheduler|Rightclick|Archive|Experimental|Model|Ui|Notification|Worktree|Bridge|Remote)/, ''),
+  },
+  patch: { operations: { post: 'postWorktree', delete: 'deleteWorktree' } },
+  servers: [
+    ...plugins.map(plugin => ({
+      input: `packages/${plugin}/src/host/server/index.ts`,
+      output: {
+        main: `packages/${plugin}/src/client/apis/index.ts`,
+        type: `packages/${plugin}/src/client/apis/index.type.ts`,
+      },
+    })),
+    {
+      input: 'packages/dsh-tauri-remote/src/host/server/index.ts',
+      output: { main: 'src/apis/remote.ts', type: 'src/apis/remote.types.ts' },
+      meta: { import: { http: './http' } },
+    },
+  ],
 })

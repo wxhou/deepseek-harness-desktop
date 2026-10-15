@@ -9,6 +9,7 @@
 //!   Windows RedirectionGuard(448) 逃逸重拉
 //! - [`install`]：安装环境（Node.js 运行时 + Harness 发行版 + pnpm + MinGit）
 //! - [`health`]：健康检查（Rust 代理，避免 WebView CORS 问题）
+//! - [`startup`]：启动耗时观测（spawn → 首个 HTTP 响应 → 客户端模块就绪）
 //! - [`status`] / [`utils`] / [`win_inspector`] / [`win_spawn`]：既有子模块
 
 pub mod status;
@@ -22,13 +23,15 @@ mod heap;
 mod install;
 mod launch;
 mod process;
+mod startup;
 mod sweep;
 
-pub use health::proxy_health_check;
+pub use health::{proxy_health_check, recheck_ownership};
+pub(crate) use heap::effective_heap_limit_mb;
 pub use install::install;
 pub use launch::{launch, restart, start};
 pub use process::{
-    acquire_core_transition, has_owned_process, stop, stop_for_installer, stop_on_exit,
-    terminate_stale_harness_processes,
+    acquire_core_transition, has_owned_process, owned_process_pid, stop, stop_for_installer,
+    stop_on_exit, terminate_stale_harness_processes,
 };
 pub use sweep::sweep_orphan_harness;

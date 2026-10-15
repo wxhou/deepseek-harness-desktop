@@ -10,6 +10,11 @@ on:
       source_ref:
         required: true
         type: string
+      version:
+        description: 注入的版本号；为空时沿用仓库内版本，仅夜间构建使用
+        required: false
+        type: string
+        default: ''
     secrets:
       TAURI_SIGNING_PRIVATE_KEY:
         required: false
@@ -63,6 +68,10 @@ jobs:
           ref: ${{ inputs.source_ref }}
           persist-credentials: false
 
+      - name: Setup Xcode
+        if: steps.check.outputs.should_run == 'true'
+        uses: ./.github/actions/setup-xcode
+
       - name: Setup Node.js and pnpm
         if: steps.check.outputs.should_run == 'true'
         uses: ./.github/actions/setup-node-pnpm
@@ -77,6 +86,12 @@ jobs:
       - name: Install frontend dependencies
         if: steps.check.outputs.should_run == 'true'
         run: pnpm install --frozen-lockfile
+
+      - name: Stamp injected version
+        if: steps.check.outputs.should_run == 'true' && inputs.version != ''
+        env:
+          STAMP_VERSION: ${{ inputs.version }}
+        run: node scripts/stamp-version.mjs "$STAMP_VERSION"
 
       - name: Validate signing secrets
         if: steps.check.outputs.should_run == 'true'
@@ -121,7 +136,7 @@ jobs:
               unset "$name"
             fi
           done
-          pnpm tauri build --target ${{ matrix.target }}
+          pnpm tauri build ${{ inputs.version != '' && '--config src-tauri/tauri.nightly.conf.json' || '' }} --target ${{ matrix.target }}
 
       - name: Verify signature and notarization
         if: steps.check.outputs.should_run == 'true'
@@ -143,6 +158,10 @@ jobs:
           codesign --verify --deep --strict --verbose=2 "$app_path"
           xcrun stapler validate "$app_path"
           spctl --assess --type execute --verbose=4 "$app_path"
+
+      - name: Normalize release asset names
+        if: steps.check.outputs.should_run == 'true'
+        run: node scripts/rename-release-assets.mjs src-tauri/target/${{ matrix.target }}/release/bundle/dmg
 
       - name: Upload build output
         if: steps.check.outputs.should_run == 'true'

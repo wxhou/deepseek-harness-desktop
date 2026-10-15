@@ -31,10 +31,14 @@
 //! - [`patch_entries`]：补丁层悬空 `insert` 条目的启动前预检与显式清理（错误页恢复入口）
 //! - [`cancel`]：Windows 下取消正在进行的安装
 //! - [`watch`]：已安装插件文件监控（轮询指纹比对 + `dsh-plugins-updated` 事件推送）
+//! - [`hmr`]：本地路径插件的热重载（把已挂载的本地插件源码目录写进桌面端独占的
+//!   补丁层，随启动以 `--patch` 注入核心 HMR，源码改动即时生效）
 
 mod cancel;
+pub mod compat;
 pub mod disable;
 pub mod errors;
+mod hmr;
 mod install;
 mod installed;
 mod internal;
@@ -52,11 +56,22 @@ pub mod watch;
 pub(crate) use crate::service::profile::ensure_profile_pnpm_policy;
 pub use cancel::cancel;
 pub(crate) use cancel::terminate_active_installs_blocking;
+pub(crate) use process::{acquire_operation_lock, is_process_cleanup_failure};
 pub(crate) use install::harness_prefer_bundled_pnpm;
+pub(crate) use install::local_spec_from_path;
 pub(crate) use install::uninstall_deprecated_plugins;
-pub use install::{install, remove, update};
-pub(crate) use installed::{ensure_profile_npmrc, installed_name, list_installed, profile_dir};
+pub(crate) use install::packument;
+pub use install::{
+    allow_policy_versions, allow_version_exemptions, inspect_specs, install, install_specs,
+    remove_many, update_many, IncompatibleVersion, PolicyBlockedVersion,
+};
+pub(crate) use installed::{
+    declared_packages, ensure_profile_npmrc, installed_name, list_installed, profile_dir,
+    ProfilePackageJson,
+};
 pub use installed::{list, PreinstallPlugin};
+pub(crate) use hmr::{status as local_plugin_hmr_status, sync_layer as local_plugin_hmr_sync};
+pub use hmr::LocalHmrStatus;
 pub(crate) use internal::cancel as cancel_internal_plugins;
 pub(crate) use internal::ensure as ensure_internal_plugins;
 pub use preset::repo_url_of;

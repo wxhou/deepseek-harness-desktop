@@ -5,17 +5,18 @@ import type { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type { HostContext, RunStatus, RunTrigger, SchedulerTask } from '../types'
 import type { PlatformModuleLoader, SetupAgentLike } from '../utils/agent-runtime.types'
 import type { PermissionPresetService } from '../utils/permission.types'
+import type { SessionEventWatch } from './executor.utils'
 import { randomUUID } from 'node:crypto'
 import { mkdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import process from 'node:process'
+import { getServerContext } from 'dsh-h3/utils'
 import { defineService } from 'dsh-tauri'
 import { join } from 'pathe'
-import { getCurrentHostInstance } from '../config/runtime'
+import { server } from '../server'
 import { loadSchedulerRuntimeModules, resolveSetupAgent } from '../utils/agent-runtime'
 import { applyUnattendedPermission } from '../utils/permission'
-import { schedulerSessionTitle } from '../utils/session-title'
-import { decideRunOutcome, summarizeRun, waitForTurnStart } from './executor.utils'
+import { decideRunOutcome, isPluginUnloadError, summarizeCollectedRun, waitForTurnStart, watchSessionEvents } from './executor.utils'
 import { runs } from './runs'
 
 const SCHEDULER_RUN_TIMEOUT_MS = 30 * 60 * 1000
@@ -34,23 +35,27 @@ interface ExecuteOutcome {
 }
 
 export const executor = defineService({
-  async run(task: SchedulerTask, trigger: RunTrigger): Promise<ExecuteOutcome> {
-    const ctx = getCurrentHostInstance()
+  async run(task: SchedulerTask, trigger: RunTrigger, scheduledFor?: string): Promise<ExecuteOutcome> {
+    const ctx = getServerContext<HostContext>(server)
     const runId = `run-${randomUUID()}`
-    const scheduledFor = new Date().toISOString()
+    const startedAt = new Date().toISOString()
+    const dueAt = trigger === 'manual' ? startedAt : scheduledFor ?? task.nextRunAt ?? startedAt
     const sessionId = `task-${randomUUID()}`
+    const prompt = task.prompt
 
     await runs.save({
       id: runId,
       taskId: task.id,
       taskName: task.name,
+      prompt,
       trigger,
       status: 'running',
-      scheduledFor,
-      startedAt: scheduledFor,
+      scheduledFor: dueAt,
+      startedAt,
       sessionId,
-    })
+    }, structuredClone(task))
 
+    let watched: SessionEventWatch | undefined
     try {
       const runtime = await loadSchedulerRuntimeModules(
         (ctx as HostContext & { loader: PlatformModuleLoader }).loader,
@@ -87,9 +92,10 @@ export const executor = defineService({
         await pinTitle(ctx, handle.agent.session, task.name)
 
         const firstSeq = handle.agent.session.seq
+        watched = watchSessionEvents(ctx, handle.agent.session, firstSeq)
         handle.agent.followup(runtime.createUserMessage({
-          content: [{ type: 'text', text: task.prompt }],
-          source: { kind: 'scheduler', taskId: task.id, runId, scheduledFor },
+          content: [{ type: 'text', text: prompt }],
+          source: { kind: 'scheduler', taskId: task.id, runId, scheduledFor: dueAt },
         }))
 
         const started = await waitForTurnStart(handle.agent.session, firstSeq)
@@ -110,8 +116,10 @@ export const executor = defineService({
           result = { status: 'failed', error: { code: 'cancel_convergence_timeout', message: '定时任务取消后未能在安全时限内停止。' } }
         }
         else {
-          await (ctx.sessions as { flush: (session: unknown) => Promise<unknown> }).flush(handle.agent.session)
-          const outcome = summarizeRun(handle.agent.session, firstSeq)
+          const flushed = await (ctx.sessions as { flush: (session: unknown) => Promise<unknown> }).flush(handle.agent.session)
+          if (flushed === false)
+            throw new Error('定时任务会话日志保存失败。')
+          const outcome = summarizeCollectedRun(watched?.events ?? [], handle.agent.session, firstSeq)
 
           const decision = decideRunOutcome({ started, timedOut, reason: outcome.reason })
           result = decision.error ? { status: 'failed', error: decision.error } : { status: 'succeeded' }
@@ -133,9 +141,17 @@ export const executor = defineService({
       return outcome
     }
     catch (error) {
-      const outcome: ExecuteOutcome = { ok: false, sessionId, error: error instanceof Error ? error.message : String(error) }
-      await settle(runId, 'failed', outcome)
+      const unloaded = isPluginUnloadError(error)
+      const outcome: ExecuteOutcome = {
+        ok: false,
+        sessionId,
+        error: unloaded ? '定时任务因插件卸载被取消。' : error instanceof Error ? error.message : String(error),
+      }
+      await settle(runId, unloaded ? 'cancelled' : 'failed', outcome)
       return outcome
+    }
+    finally {
+      watched?.stop()
     }
   },
 })
@@ -223,7 +239,7 @@ async function createAgent(
 async function pinTitle(ctx: HostContext, session: unknown, taskName: string): Promise<void> {
   try {
     const title = ctx.get?.('sessionTitle') as { rename?: (target: unknown, value: string) => unknown } | undefined
-    title?.rename?.(session, schedulerSessionTitle(taskName))
+    title?.rename?.(session, taskName)
   }
   catch (error) {
     ctx.logger?.warn?.(`dsh-tauri-scheduler: failed to pin session title: ${error instanceof Error ? error.message : String(error)}`)
@@ -243,10 +259,10 @@ async function settle(id: string, status: RunStatus, outcome: ExecuteOutcome): P
   })
 }
 
-function settlesWithin(promise: Promise<unknown>, timeoutMs: number): Promise<boolean> {
+async function settlesWithin(promise: Promise<unknown>, timeoutMs: number): Promise<boolean> {
   let timer: ReturnType<typeof setTimeout> | undefined
   try {
-    return Promise.race([
+    return await Promise.race([
       promise.then(() => true, () => false),
       new Promise<false>((resolve) => { timer = setTimeout(resolve, timeoutMs, false) }),
     ])

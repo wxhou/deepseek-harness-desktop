@@ -26,8 +26,8 @@
 //! 中断的首次初始化、外部 mkdir、用户手工编辑清单都会留下缺 web 层的档案。此时
 //! 宿主不会提供 webServer/connection/webRuntime，内置插件与市场插件全部停在
 //! pending，服务启动必然失败。因此 [`init_profile_dir`] 与 spawn 前自愈
-//! （[`ensure_active_profile_core_bundles`]）都会校核并**补齐**核心层：只前插
-//! 缺失的核心 bundle，绝不删除或改写任何用户/内置插件条目。
+//! （[`ensure_active_profile_core_bundles`]）都会补齐核心层，并禁用与内置调度冲突的
+//! 历史官方实验调度 bundle；依赖与其它插件条目保留。
 
 use crate::config;
 use crate::service::fs_guard;
@@ -37,6 +37,8 @@ use serde_yaml::{Mapping, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
 use tauri::AppHandle;
+
+pub mod migrate;
 
 /// 桌面端默认档案（内置，不可删除）
 pub const DEFAULT_PROFILE: &str = "web";
@@ -151,8 +153,112 @@ pub(crate) fn parse_workspace_document(content: &str) -> Result<(Value, bool), S
     }
 }
 
+/// 保证档案具备桌面端预设所需的发布时长策略豁免（见 [`PROFILE_MINIMUM_RELEASE_AGE_EXCLUDES`]）。
 pub(crate) fn ensure_profile_pnpm_policy(app_handle: &AppHandle) -> Result<(), String> {
+    let entries: Vec<String> = PROFILE_MINIMUM_RELEASE_AGE_EXCLUDES
+        .iter()
+        .map(|package| (*package).to_string())
+        .collect();
+    release_age_excludes_at(&profile_dir_of(app_handle, &active_profile(app_handle)), &entries)
+}
+
+/// 档案的 `minimumReleaseAgeExclude` 里是否已经有这个精确 `包名@版本`。
+///
+/// 用来区分「升级没落地」的两种成因：已经授权过这个版本还是不动，说明瓶颈不是发布时长
+/// 策略（而是档案把来源钉死），界面就不该再提供「授权」这个没用的动作。档案缺失或读不出
+/// 来时返回 false（宁可多给一次授权机会，也不替用户判定成钉死）。
+pub(crate) fn profile_release_age_excluded(app_handle: &AppHandle, entry: &str) -> bool {
     let path = profile_dir_of(app_handle, &active_profile(app_handle)).join("pnpm-workspace.yaml");
+    let Ok(content) = fs::read_to_string(&path) else {
+        return false;
+    };
+    let Ok((document, _)) = parse_workspace_document(&content) else {
+        return false;
+    };
+    let Some(sequence) = document
+        .as_mapping()
+        .and_then(|mapping| mapping.get(Value::String("minimumReleaseAgeExclude".to_string())))
+        .and_then(|value| value.as_sequence())
+    else {
+        return false;
+    };
+    release_age_excluded(sequence, entry)
+}
+
+fn release_age_package(entry: &str) -> Option<(&str, &str)> {
+    static NAME: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"^(?:@[a-zA-Z0-9._-]+/)?[a-zA-Z0-9._-]+$").unwrap()
+    });
+    let (name, versions) = entry.rsplit_once('@')?;
+    (NAME.is_match(name) && versions.split("||").all(|part| !part.trim().is_empty()))
+        .then_some((name, versions))
+}
+
+fn release_age_excluded(sequence: &[Value], entry: &str) -> bool {
+    let Some((name, version)) = release_age_package(entry) else {
+        return false;
+    };
+    sequence.iter().filter_map(Value::as_str).any(|item| {
+        release_age_package(item).is_some_and(|(package, versions)| {
+            package == name && versions.split("||").any(|part| part.trim() == version)
+        })
+    })
+}
+
+fn normalize_release_age_excludes(sequence: &[Value]) -> Vec<Value> {
+    let mut result = Vec::with_capacity(sequence.len());
+    let mut packages = std::collections::HashMap::<String, usize>::new();
+    for item in sequence {
+        let Some((name, versions)) = item.as_str().and_then(release_age_package) else {
+            if !result.contains(item) {
+                result.push(item.clone());
+            }
+            continue;
+        };
+        let index = *packages.entry(name.to_string()).or_insert_with(|| {
+            result.push(Value::String(format!("{name}@")));
+            result.len() - 1
+        });
+        let value = result[index].as_str().unwrap();
+        let mut merged: Vec<&str> = value[name.len() + 1..]
+            .split("||")
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+            .collect();
+        for version in versions.split("||").map(str::trim) {
+            if !merged.contains(&version) {
+                merged.push(version);
+            }
+        }
+        result[index] = Value::String(format!("{name}@{}", merged.join(" || ")));
+    }
+    result
+}
+
+pub(crate) fn allow_profile_release_age(
+    app_handle: &AppHandle,
+    entries: &[String],
+    expected_profile: Option<&str>,
+) -> Result<(), String> {
+    if entries.is_empty() {
+        return Err("PROFILE_RELEASE_AGE_EMPTY: no release-age exemption to record".to_string());
+    }
+    let profile = active_profile(app_handle);
+    if expected_profile.is_some_and(|expected| expected != profile) {
+        return Err(
+            "PROFILE_RELEASE_AGE_CHANGED: active profile changed before authorization".to_string(),
+        );
+    }
+    release_age_excludes_at(&profile_dir_of(app_handle, &profile), entries)
+}
+
+/// 把 `entries` 并入**指定档案目录** `pnpm-workspace.yaml` 的 `minimumReleaseAgeExclude`
+/// （按需落盘）。
+///
+/// 收目录而不是 `AppHandle`：调用方可能持有「操作开始时捕获」的档案路径，半途用户切了
+/// 当前档案时，写入不能被改道到新档案（档案迁移即如此）。
+pub(crate) fn release_age_excludes_at(dir: &Path, entries: &[String]) -> Result<(), String> {
+    let path = dir.join("pnpm-workspace.yaml");
     let existing = match fs::read_to_string(&path) {
         Ok(content) => content,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -179,15 +285,11 @@ pub(crate) fn ensure_profile_pnpm_policy(app_handle: &AppHandle) -> Result<(), S
     let sequence = excludes.as_sequence_mut().ok_or_else(|| {
         "PROFILE_WORKSPACE_POLICY_INVALID: minimumReleaseAgeExclude must be a sequence".to_string()
     })?;
-    // 归一化（多文档 → 单文档）本身就是需要落盘的改动：不写回的话 pnpm 依然读不了。
-    let mut changed = normalized;
-    for package in PROFILE_MINIMUM_RELEASE_AGE_EXCLUDES {
-        let value = Value::String(package.to_string());
-        if !sequence.iter().any(|item| item == &value) {
-            sequence.push(value);
-            changed = true;
-        }
-    }
+    let mut combined = sequence.clone();
+    combined.extend(entries.iter().cloned().map(Value::String));
+    let merged = normalize_release_age_excludes(&combined);
+    let changed = normalized || *sequence != merged;
+    *sequence = merged;
     if changed {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|e| format!("PROFILE_WORKSPACE_MKDIR: {e}"))?;
@@ -324,7 +426,15 @@ pub fn create(app_handle: &AppHandle, name: &str) -> Result<Profile, String> {
     if dir.is_dir() {
         return Err(format!("PROFILE_EXISTS: profile {id} already exists"));
     }
-    init_profile_dir(&dir, &id)?;
+    if let Err(error) = init_profile_dir(&dir, &id) {
+        // 初始化中途失败会留下半成品目录，此后同名档案永远撞上 `PROFILE_EXISTS`：用户
+        // 反复看到的只有「创建档案失败」，真实原因再也复现不出来。目录是本函数刚刚
+        // 创建的（上面已确认不存在），因此整体回滚，让重试与首次尝试完全等价。
+        if let Err(cleanup) = fs::remove_dir_all(&dir) {
+            log::warn!("failed to roll back the half-initialized profile {id}: {cleanup}");
+        }
+        return Err(error);
+    }
     Ok(Profile {
         id,
         name: trimmed.to_string(),
@@ -663,7 +773,7 @@ fn copy_dir_tree(src: &Path, dst: &Path) -> Result<(), String> {
             let name = entry.file_name();
             // 仅跳过运行时产物（不随克隆迁移）
             if let Some(s) = name.to_str() {
-                if s == ".harness.pid" || s == ".backups" {
+                if crate::config::HARNESS_PID_MARKER_NAMES.contains(&s) || s == ".backups" {
                     return Ok(());
                 }
             }
@@ -742,22 +852,8 @@ fn web_profile_manifest(id: &str) -> serde_json::Value {
     })
 }
 
-/// 校核并补齐档案的核心 web bundle 层，返回是否写回了清单。
-///
-/// 覆盖三种状态，全部只做「补齐」、绝不删除或改写其它字段：
-/// - 清单缺失（目录被外部创建、初始化中断、被清理）→ 按官方 `initProfile` 形态
-///   写入 web 模板清单；
-/// - 清单存在但缺核心 bundle（典型：`dsh plugin add` 用
-///   `DEFAULT_PROFILE_BUNDLES` 初始化出的「只有 dsh-base + 插件」档案）→ 把核心
-///   bundle 前插回列表头部，保持 `dsh-base` → `dsh-web-app` 的补丁应用顺序；
-/// - 清单已含核心 bundle → 不写盘（幂等，避免无谓改写用户文件）。
-///
-/// 清单不可读/不可解析（外部截断、非对象、`dsh`/`profile` 非对象）时报错交由
-/// 调用方告警：这种状态可能承载用户数据，宁可留着让人工处理，也绝不静默重建。
-///
-/// 非 web 表面的档案（CLI 侧 headless/acp/sdk 模板）一律不动：它们与 web 层有
-/// 同名 insert（如 `code-runtime`），叠加会触发 `duplicate loader entry` 硬崩溃；
-/// 桌面端无法承载这类档案，但绝不能为了「修好桌面端」而破坏 CLI 用途的档案。
+/// 补齐 web 核心层，禁用与内置调度冲突的历史官方实验 bundle；不卸载依赖。
+/// 非 web 档案保持原样；损坏清单报错，不静默重建。返回是否写回清单。
 fn ensure_profile_core_bundles(dir: &Path, id: &str) -> Result<bool, String> {
     let manifest_path = dir.join("package.json");
     let mut manifest: serde_json::Value = match fs::read_to_string(&manifest_path) {
@@ -808,9 +904,7 @@ fn ensure_profile_core_bundles(dir: &Path, id: &str) -> Result<bool, String> {
         return Ok(false);
     }
 
-    // 核心层固定在列表最前（补丁层按 `dsh.profile.bundles` 顺序应用，
-    // dsh-web-app 的覆写行必须在 dsh-base 之后落地）；其余条目原样保留相对顺序，
-    // 因此已就绪的档案得到与输入完全一致的列表（幂等）。
+    // 历史实验调度若排在桌面调度后，禁用覆写会落空；直接关闭组合包，不改核心加载器。
     let mut desired: Vec<String> = WEB_PROFILE_BUNDLES
         .iter()
         .map(|bundle| (*bundle).to_string())
@@ -818,7 +912,10 @@ fn ensure_profile_core_bundles(dir: &Path, id: &str) -> Result<bool, String> {
     desired.extend(
         current
             .iter()
-            .filter(|bundle| !WEB_PROFILE_BUNDLES.contains(&bundle.as_str()))
+            .filter(|bundle| {
+                !WEB_PROFILE_BUNDLES.contains(&bundle.as_str())
+                    && bundle.as_str() != "@deepseek-ai/dsh-experimental-schedule-bundle"
+            })
             .cloned(),
     );
     if existing.is_some() && current == desired {
@@ -851,10 +948,9 @@ fn ensure_profile_core_bundles(dir: &Path, id: &str) -> Result<bool, String> {
     profile.insert("bundles".to_string(), serde_json::json!(desired));
     write_profile_manifest_file(&manifest_path, &manifest)?;
     log::warn!(
-        "PROFILE_CORE_BUNDLES_RESTORED: profile {id} was missing the web core bundle layer; \
-         restored {:?} before {:?} in {}",
-        WEB_PROFILE_BUNDLES,
+        "PROFILE_CORE_BUNDLES_RESTORED: profile {id} web bundles normalized from {:?} to {:?} in {}",
         current,
+        desired,
         manifest_path.display()
     );
     Ok(true)
@@ -970,7 +1066,9 @@ mod clone_tests {
         let tmp = std::env::temp_dir().join(format!("dsh-clone-ok-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         let root = tmp.join("profiles");
-        scaffold_source(&root, "web");
+        let source = scaffold_source(&root, "web");
+        std::fs::write(source.join(".harness.pid"), "12345").unwrap();
+        std::fs::write(source.join(".harness-nightly.pid"), "23456").unwrap();
 
         let profile = clone_with_root(&root, "web", None).unwrap();
         assert_eq!(profile.id, "web-1");
@@ -982,6 +1080,8 @@ mod clone_tests {
         assert!(dst.join("package.json").is_file());
         assert!(dst.join("cordis.patch.yml").is_file());
         assert!(dst.join("sub/deep.txt").is_file());
+        assert!(!dst.join(".harness.pid").exists());
+        assert!(!dst.join(".harness-nightly.pid").exists());
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -1148,6 +1248,74 @@ mod tests {
     fn parse_workspace_document_keeps_real_syntax_errors() {
         let duplicate = "allowBuilds:\n  node-pty: true\n  node-pty: true\n";
         assert!(parse_workspace_document(duplicate).is_err());
+    }
+
+    #[test]
+    fn release_age_excludes_merge_every_exact_package_without_expanding_ranges() {
+        let dir = std::env::temp_dir().join(format!("dsh-policy-merge-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("pnpm-workspace.yaml");
+        std::fs::write(&path, "packages:\n  - .\nnodeLinker: hoisted\nminimumReleaseAgeExclude:\n  - foo@^1.0.0\n  - '@scope/pkg@2.0.0'\n  - foo@1.2.3\n  - foo@1.2.3 || 1.3.0\n  - '@scope/pkg@2.1.0'\n  - '@scope/*@3.0.0'\n  - '@scope/other@3.1.0'\n  - zod@4.4.3\n").unwrap();
+        release_age_excludes_at(&dir, &["zod@4.4.3".to_string()]).unwrap();
+        let first = std::fs::read_to_string(&path).unwrap();
+        let document: Value = serde_yaml::from_str(&first).unwrap();
+        let entries: Vec<&str> = document["minimumReleaseAgeExclude"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .map(|entry| entry.as_str().unwrap())
+            .collect();
+        assert_eq!(
+            entries,
+            vec![
+                "foo@^1.0.0 || 1.2.3 || 1.3.0",
+                "@scope/pkg@2.0.0 || 2.1.0",
+                "@scope/*@3.0.0",
+                "@scope/other@3.1.0",
+                "zod@4.4.3"
+            ]
+        );
+        assert_eq!(document["nodeLinker"].as_str(), Some("hoisted"));
+        release_age_excludes_at(
+            &dir,
+            &["foo@1.4.0".to_string(), "@scope/pkg@2.1.0".to_string()],
+        )
+        .unwrap();
+        let merged = std::fs::read_to_string(&path).unwrap();
+        let document: Value = serde_yaml::from_str(&merged).unwrap();
+        assert_eq!(
+            document["minimumReleaseAgeExclude"][0].as_str(),
+            Some("foo@^1.0.0 || 1.2.3 || 1.3.0 || 1.4.0")
+        );
+        release_age_excludes_at(&dir, &["zod@4.4.3".to_string(), "foo@1.4.0".to_string()]).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), merged);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn release_age_excluded_reads_exact_or_branches_not_ranges_or_other_packages() {
+        let sequence: Value = serde_yaml::from_str(
+            "- foo@^1.0.0 || 1.2.3 || 1.3.0\n- '@scope/pkg@2.0.0 || 2.1.0'\n- '@scope/*@3.0.0'\n",
+        )
+        .unwrap();
+        let sequence = sequence.as_sequence().unwrap();
+        for entry in [
+            "foo@1.2.3",
+            "foo@1.3.0",
+            "@scope/pkg@2.0.0",
+            "@scope/pkg@2.1.0",
+        ] {
+            assert!(release_age_excluded(sequence, entry), "{entry}");
+        }
+        for entry in [
+            "foo@1.1.0",
+            "foo@1.2.30",
+            "foo@1.4.0",
+            "@scope/other@2.1.0",
+            "@scope/other@3.0.0",
+        ] {
+            assert!(!release_age_excluded(sequence, entry), "{entry}");
+        }
     }
 
     #[test]
@@ -1517,6 +1685,55 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    #[test]
+    fn core_bundles_disable_legacy_official_schedule_without_removing_dependencies() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("package.json");
+        for bundles in [
+            serde_json::json!([
+                "@deepseek-ai/dsh-base",
+                "@deepseek-ai/dsh-web-app",
+                "dsh-tauri-scheduler",
+                "user-plugin",
+                "@deepseek-ai/dsh-experimental-schedule-bundle"
+            ]),
+            serde_json::json!([
+                "@deepseek-ai/dsh-base",
+                "@deepseek-ai/dsh-web-app",
+                "@deepseek-ai/dsh-experimental-schedule-bundle",
+                "dsh-tauri-scheduler",
+                "user-plugin",
+                "@deepseek-ai/dsh-experimental-schedule-bundle"
+            ]),
+        ] {
+            let mut expected = serde_json::json!({
+                "name": "dsh-profile-tauri",
+                "private": true,
+                "dependencies": {
+                    "@deepseek-ai/dsh-experimental-schedule-bundle": "0.2.0-rc.2",
+                    "user-plugin": "1.0.0"
+                },
+                "dsh": { "profile": { "bundles": bundles, "custom": "keep" } }
+            });
+            std::fs::write(&path, serde_json::to_string(&expected).unwrap()).unwrap();
+            expected["dsh"]["profile"]["bundles"] = serde_json::json!([
+                "@deepseek-ai/dsh-base",
+                "@deepseek-ai/dsh-web-app",
+                "dsh-tauri-scheduler",
+                "user-plugin"
+            ]);
+
+            assert!(ensure_profile_core_bundles(dir.path(), "tauri").unwrap());
+            let repaired = std::fs::read_to_string(&path).unwrap();
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&repaired).unwrap(),
+                expected
+            );
+            assert!(!ensure_profile_core_bundles(dir.path(), "tauri").unwrap());
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), repaired);
+        }
+    }
+
     /// 非 web 表面（CLI 的 headless/acp/sdk 档案）不参与 web 层补齐：web 层与其
     /// 存在同名 insert（`code-runtime`），叠加会 duplicate loader entry 硬崩溃。
     #[test]
@@ -1524,7 +1741,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("dsh-profile-surface-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let raw = r#"{"name":"dsh-profile-headless","private":true,"dependencies":{},"dsh":{"profile":{"bundles":["@deepseek-ai/dsh-base","@deepseek-ai/dsh-headless"]}}}"#;
+        let raw = r#"{"name":"dsh-profile-headless","private":true,"dependencies":{},"dsh":{"profile":{"bundles":["@deepseek-ai/dsh-base","@deepseek-ai/dsh-headless","@deepseek-ai/dsh-experimental-schedule-bundle"]}}}"#;
         std::fs::write(dir.join("package.json"), raw).unwrap();
 
         assert!(!ensure_profile_core_bundles(&dir, "headless").unwrap());
@@ -1630,17 +1847,11 @@ mod tests {
         let profiles_root = tmp.join("profiles");
         let sessions = tmp.join("sessions");
 
-        // 档案：模板初始化后再塞入用户数据（插件依赖、补丁层、桌面禁用清单）
+        // 档案：模板初始化后再塞入用户数据（插件依赖）
         init_profile_dir(&profiles_root.join("web"), "web").unwrap();
         std::fs::write(
             profiles_root.join("web").join("package.json"),
             r#"{"name":"dsh-profile-web","dependencies":{"some-plugin":"1.2.3"}}"#,
-        )
-        .unwrap();
-        std::fs::write(profiles_root.join("web").join("cordis.patch.yml"), "[]\n").unwrap();
-        std::fs::write(
-            profiles_root.join("web").join("disabled-plugins.json"),
-            r#"["some-plugin"]"#,
         )
         .unwrap();
         // 会话位于档案目录之外，重置不得触碰
@@ -1660,10 +1871,6 @@ mod tests {
             manifest["dsh"]["profile"]["bundles"],
             serde_json::json!(["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app"])
         );
-        assert!(!profiles_root
-            .join("web")
-            .join("disabled-plugins.json")
-            .exists());
         // 会话数据完整保留
         assert!(sessions.join("_no-cwd").join("s1.json").is_file());
 

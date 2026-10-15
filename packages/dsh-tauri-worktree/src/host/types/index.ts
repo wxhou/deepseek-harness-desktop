@@ -18,16 +18,12 @@ export interface Binding {
   linkedDependencies?: string[]
 }
 
-export type Ledger = Record<string, Binding>
-
 export interface CheckoutContext {
   projectPath: string
   branch?: string
   worktreePath?: string
   checkedOutAt: string
 }
-
-export type CheckoutContexts = Record<string, CheckoutContext>
 
 export interface GitOptions {
   timeout?: number
@@ -51,12 +47,6 @@ export interface CheckoutOptions extends GitOptions {
 export interface CheckoutInfo {
   branch?: string
   worktreePath?: string
-}
-
-export interface PendingHandoff {
-  sourceAgent: any
-  targetSessionId: string
-  binding: Binding
 }
 
 export type OperationResult<T extends object = object>

@@ -57,7 +57,7 @@ export function ToastProvider(props: ToastProviderProps) {
                         <Toast.Title>{content?.title}</Toast.Title>
                       </If>
                       <If cond={content?.description !== undefined}>
-                        <Toast.Description className="line-clamp-2">
+                        <Toast.Description>
                           {content?.description}
                         </Toast.Description>
                       </If>

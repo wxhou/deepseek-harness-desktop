@@ -69,13 +69,10 @@ pub fn get_pet_window_position<R: Runtime>(app: &AppHandle<R>) -> PetWindowPosit
         .store(store_dat_file_name())
         .expect("Failed to load store for pet window position");
     let raw = store.get(STORE_PET_WINDOW_STATE_KEY);
-    let value = raw.as_ref().and_then(|v| {
-        v.as_str()
-            .and_then(|s| serde_json::from_str(s).ok())
-            .or_else(|| Some(v.clone()))
-    });
-    value
-        .and_then(|v| serde_json::from_value(v).ok())
+    raw.as_ref()
+        .and_then(|value| {
+            serde_json::from_value(crate::config::unwrap_json_value(value).into_owned()).ok()
+        })
         .unwrap_or_default()
 }
 
@@ -279,6 +276,35 @@ pub fn move_pet_window<R: Runtime>(
         &PetWindowPosition {
             x: Some(x),
             y: Some(y),
+        },
+    );
+    Ok(())
+}
+
+/// 只把桌宠窗口当前位置落盘，不做任何显示器夹取。
+///
+/// # 为什么不复用 `move_pet_window(app, 0, 0)`
+///
+/// `move_pet_window` 夹的是**整个窗口**，而宠物只是窗口底部居中的一小块，四周是
+/// 透明留白（`PET_WINDOW_PAD_X` / `PET_WINDOW_TOP_PAD` / 窗口最小宽度
+/// `PET_WINDOW_MIN_WIDTH`）。前端跟手时按「宠物本体 / 脚底」边界把窗口夹进显示器
+/// 工作区（与飞行共用边界），整窗夹取会把这些留白也算进去，于是贴边松手的瞬间把
+/// 宠物从边缘推开一段（100% 大小时左侧约 `(420 - 220) / 2 = 100` 物理像素）。
+///
+/// 因此拖拽收尾只负责持久化：位置由前端保证在可见工作区内（见
+/// `src/pet/hooks/use-pet-window-clamp.ts` 与 `src/hooks/use-window-draggable.ts`）。
+pub fn persist_pet_window_position<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+    let window = app
+        .get_webview_window(PET_WINDOW_LABEL)
+        .ok_or_else(|| "PET_WINDOW_NOT_FOUND: pet window has not been created".to_string())?;
+    let current = window.outer_position().map_err(|error| {
+        format!("PET_WINDOW_POSITION_FAILED: failed to read pet window position: {error}")
+    })?;
+    save_pet_window_position(
+        app,
+        &PetWindowPosition {
+            x: Some(current.x),
+            y: Some(current.y),
         },
     );
     Ok(())
@@ -531,6 +557,34 @@ mod tests {
         assert!(is_builtin(Some("another-preset")));
         assert!(!is_builtin(Some("codex:blue_whale")));
         assert!(!is_builtin(Some("chat:cat")));
+    }
+
+    #[test]
+    fn pet_window_width_crosses_bubble_minimum_at_large_sizes() {
+        assert_eq!(
+            pet_window_logical_size(50.0, PET_BUILTIN_ASPECT),
+            (420.0, 143.875)
+        );
+        assert_eq!(
+            pet_window_logical_size(100.0, PET_BUILTIN_ASPECT),
+            (420.0, 205.75)
+        );
+        assert_eq!(
+            pet_window_logical_size(200.0, PET_BUILTIN_ASPECT),
+            (472.0, 329.5)
+        );
+    }
+
+    #[test]
+    fn clamp_window_position_handles_extreme_coordinates_and_sizes() {
+        assert_eq!(
+            clamp_window_position(i32::MAX, i32::MIN, 20, 10, -1920, -1080, 1920, 1080),
+            (-20, -1080)
+        );
+        assert_eq!(
+            clamp_window_position(0, 0, u32::MAX, u32::MAX, i32::MIN, i32::MIN, 0, 0),
+            (i32::MIN, i32::MIN)
+        );
     }
 
     #[test]

@@ -1,26 +1,15 @@
-import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
+import { readSource } from './setup/read-source'
 
-const builderSource = readFileSync(
-  new URL('../src-tauri/src/desktop/builder.rs', import.meta.url),
-  'utf8',
-)
-const i18nSource = readFileSync(
-  new URL('../src-tauri/src/config/i18n.rs', import.meta.url),
-  'utf8',
-)
-const navbarSource = readFileSync(
-  new URL('../src/layout/components/navbar.tsx', import.meta.url),
-  'utf8',
-)
+const builderSource = readSource('src-tauri/src/desktop/builder.rs')
+const i18nSource = readSource('src-tauri/src/config/i18n.rs')
+const navbarSource = readSource('src/layout/components/navbar.tsx')
 
 describe('menu restart backend contract', () => {
-  it('places desktop-restart menu item after run_logs in help submenu', () => {
-    // 源码按项分行，不再是一行字面量：改为断言三者在该子菜单里的相对顺序。
-    const helpMenu = builderSource.slice(builderSource.indexOf('"desktop-help-menu"'))
-    const order = ['&run_logs', '&restart', '&check_update'].map(item => helpMenu.indexOf(item))
-    expect(order.every(index => index >= 0)).toBe(true)
-    expect(order).toEqual([...order].sort((a, b) => a - b))
+  it('places desktop-restart after the configuration tabs in the Run submenu', () => {
+    const runMenu = builderSource.match(/"desktop-run-menu",[\s\S]*?&\[([^\]]+)\]/)
+    expect(runMenu).not.toBeNull()
+    expect(runMenu![1]).toMatch(/&harness,\s*&run_separator,\s*&restart/)
   })
 
   it('emits macos-menu-action for desktop-restart in on_menu_event', () => {
@@ -30,9 +19,9 @@ describe('menu restart backend contract', () => {
 
   it('provides menu.restart i18n key with zh/en translations', () => {
     // 断言键→值的关系，而非孤立 token：要求 "menu.restart" 同时映射到
-    // 中文 "重启" 与英文 "Restart"，避免 token 出现在无关代码中时仍能通过。
+    // 中文/英文都明确重启的是 Harness，避免 token 出现在无关代码中时仍能通过。
     expect(i18nSource).toMatch(
-      /"menu\.restart"\s*=>\s*\("重启",\s*"Restart"\)/,
+      /"menu\.restart"\s*=>\s*\("重启 Harness",\s*"Restart Harness"\)/,
     )
   })
 })
@@ -51,6 +40,7 @@ describe('menu restart frontend contract', () => {
       'desktop-copy-run-logs',
       'desktop-check-update',
       'desktop-restart',
+      'desktop-keyboard-shortcuts',
     ]) {
       expect(navbarSource).toContain(`case '${action}':`)
     }

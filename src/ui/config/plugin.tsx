@@ -1,32 +1,27 @@
-import type { DshPlugin } from '@/types'
-import { ChevronRight, CircleExclamation } from '@gravity-ui/icons'
-import { Button, Chip, Label, Spinner, Tooltip } from '@heroui/react'
+import type { Plugin, PluginProcess, PluginSearchProblem, PluginSearchResult } from '@/store/modules/plugins'
+import { ChevronRight, CircleExclamation, FolderOpen, Rocket } from '@gravity-ui/icons'
+import { Button, Chip, Description, Input, Label, Spinner, Switch, Tooltip } from '@heroui/react'
 import { useOverlay } from '@overlastic/react'
-import { useMount, useToggle } from '@reause/core'
+import { useToggle } from '@reause/core'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { invoke } from '@tauri-apps/api/core'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { If } from 'react-if-lite'
 import { tv } from 'tailwind-variants'
-import { useStore } from 'valtio-define'
 import { Ellipsis as TextEllipsis } from '@/components/ellipsis'
 import { Empty } from '@/components/empty'
 import { Item } from '@/components/item'
 import { Modal } from '@/components/modal'
 import { Panel } from '@/components/panel'
 import { queryKeys } from '@/config/query-keys'
-import { useListen } from '@/hooks/use-listen'
+import { useDshPluginsManager } from '@/hooks/use-plugins-manager'
 import { store } from '@/store'
 import { silence } from '@/utils/silence'
 import { toast } from '@/utils/toast'
 
-/**
- * 操作 chip 的样式变体：busy 时禁止点击并降低透明度，否则可点击。
- * 统一各操作 chip 的 busy 样式，避免内联三元重复。
- */
+/** 操作 chip 的样式变体：busy 时禁止点击并降低透明度，否则可点击。 */
 const actionChip = tv({
-  base: 'rounded-md',
   variants: {
     busy: {
       true: 'cursor-not-allowed opacity-50',
@@ -38,113 +33,77 @@ const actionChip = tv({
   },
 })
 
+/** 队列里的进程类型 → 面板行内动作名（队列叫 upgrade/uninstall，按钮叫 update/remove） */
+const QUEUED_ACTIONS: Record<PluginProcess['type'], string> = {
+  install: 'install',
+  upgrade: 'update',
+  uninstall: 'remove',
+  disable: 'disable',
+  enable: 'enable',
+}
+
+/** 兼容性检查的问题码 → i18n key：管理器把宿主返回的 problem 原样透传给调用方 */
+const searchProblemKeys: Record<PluginSearchProblem, string> = {
+  'local-missing': 'plugins.search_local_missing',
+  'not-found': 'plugins.search_not_found',
+  'network': 'plugins.search_network',
+  'unsupported': 'plugins.search_unsupported',
+  'unknown': 'plugins.search_unknown',
+}
+
 /**
- * 「插件」面板：展示已安装插件，作为「插件出问题时」的卸载/升级入口。
+ * 安装框文本 → spec 列表：默认按逗号/空白拆分（可一次装多个），但目录选择器回填的那
+ * 一条要整体保留——路径里的空格属于路径本身，拆开只会得到两条都不存在的 spec。
+ */
+function splitRefs(value: string, picked: string | null): string[] {
+  const trimmed = value.trim()
+  if (trimmed === '')
+    return []
+  if (picked !== null && trimmed === picked)
+    return [trimmed]
+  return trimmed.split(/[\s,]+/).filter(Boolean)
+}
+
+/** 宿主 `get_local_plugin_hmr` 的返回：开关值、补丁层路径与当前真正被监听的源码目录。 */
+interface LocalHmrStatus {
+  enabled: boolean
+  watching: boolean
+  patchPath: string | null
+  roots: string[]
+}
+
+/**
+ * 「插件」面板：已安装插件的安装/升级/卸载/禁用/启用全部经 `useDshPluginsManager` 收口
+ * （队列、授权、Toast、组结算重启由管理器统一负责），面板只保留确认对话框与行内 busy。
  *
- * - 列表来自 `get_dsh_plugins` 查询；后端（`service/plugin/watch`）秒级监控 profile
- *   插件文件，变化时经 `dsh-plugins-updated` 推送完整列表，由根布局统一写入该查询
- *   缓存（面板 / 配置对话框角标 / 导航栏共用同一份缓存，无需重新拉取）。
- * - 升级 `update_dsh_plugin` / 卸载 `remove_dsh_plugin` 已接入后端
- *   （`dsh plugin --profile <当前档案> update|remove <id>`，进程输出经
- *   `preinstall-log` 事件实时推送）。
- * - 「异常」标记：插件带 `error` 字段（安装/升级/卸载失败或页面运行期上报）
- *   时显示 danger 图标按钮，Tooltip 展示错误详情，行内可直接升级/卸载修复。
+ * 快照（创建/还原/删除）不在管理器范围内
+ * 仍由面板直接调用宿主命令；这些操作同样会改写插件状态，因此成功后失效插件列表查询。
  */
 export function ConfigPlugin() {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
-  const preinstall = useStore(store.preinstall)
+  const manager = useDshPluginsManager()
 
-  const { data: pluginList, isLoading, error: pluginError } = useQuery({
-    queryKey: queryKeys.plugins,
-    queryFn: () => invoke<DshPlugin[]>('get_dsh_plugins'),
-  })
-
-  // 重新探测更新可用性并写回缓存（Rust 侧 30min 缓存；失败静默按「无更新」处理，
-  // 插件管理器仍可用）。升级入口只在确有更新（或异常修复）时显示，而不是常驻。
-  function refreshUpdates() {
-    void invoke<DshPlugin[]>('refresh_plugin_updates')
-      .then(list => queryClient.setQueryData(queryKeys.plugins, list))
-      .catch(err => console.error('[ConfigPlugin] refresh_plugin_updates failed:', err))
-  }
-
-  // 打开面板补齐一次；之后插件文件变化（安装/升级/卸载会改写版本与 spec）重新探测
-  useMount(refreshUpdates)
-  useListen<DshPlugin[]>('dsh-plugins-updated', refreshUpdates)
-
-  const loading = isLoading
-  const error = pluginError ? String(pluginError) : ''
-
-  /** 「内置插件」分组是否展开：默认折叠，内置插件由启动自愈维护，不作为常规可管理项 */
-  const [showInternal, toggleShowInternal] = useToggle()
-  // 内置插件（internal）随包分发、由启动自愈安装与维护，排到列表末尾并收进默认折叠的
-  // 分组：与可升级/可卸载的插件并列只会让用户把它们当作普通插件。它们仍可升级
-  // （切换核心版本后内置包可能落后），但不提供卸载/禁用/快照入口。
-  const plugins = pluginList ?? []
+  const plugins = manager.installed
   const internalPlugins = plugins.filter(plugin => plugin.internal)
   const managedPlugins = plugins.filter(plugin => !plugin.internal)
 
+  const [showInternal, toggleShowInternal] = useToggle()
+  const [advanced, toggleAdvanced] = useToggle()
+  /** 行内动作标记 `<id>:<action>`：按行独立，某行的动作不阻塞其他行继续入队 */
+  const [busy, setBusy] = useState<string[]>([])
+  /** 安装输入的原始文本：支持逗号/空白分隔的多个 spec */
+  const [installRef, setInstallRef] = useState('')
+  /** 目录选择器回填的整条 spec：与输入框内容逐字相等时才按单条处理（见 {@link splitRefs}） */
+  const [pickedSpec, setPickedSpec] = useState<string | null>(null)
+  const [installing, setInstalling] = useState(false)
+  /** 兼容性预检结果：安装前先经 manager.search 展示解析到的版本与兼容性 */
+  const [searchResults, setSearchResults] = useState<PluginSearchResult[] | null>(null)
+  const [upgradingAll, toggleUpgradingAll] = useToggle()
+  const upgradable = managedPlugins.filter(plugin => (plugin.updateAvailable || plugin.error != null) && !rowBusy(plugin.id))
+
   const [dialogHolder, openDialog] = useOverlay(Modal, { type: 'holder' })
 
-  /** 行内操作进行中状态：id + 操作类型（update/remove/disable/enable/snapshot/restore/delete-snapshot），保证单例运行 */
-  const [busy, setBusy] = useState<{ id: string, action: 'update' | 'remove' | 'disable' | 'enable' | 'snapshot' | 'restore' | 'delete-snapshot' } | null>(null)
-
-  const upgrade = useMutation({
-    mutationFn: (id: string) => invoke<void>('update_dsh_plugin', { id }),
-    onSuccess: (_data, id) => {
-      const name = plugins.find(p => p.id === id)?.name ?? id
-      // 失效插件列表查询：dsh-plugins-updated 事件在停服务重启场景下可能丢失
-      // （插件操作会停止运行中的服务），必须显式重拉以确保列表落盘后刷新。
-      void queryClient.invalidateQueries({ queryKey: queryKeys.plugins })
-      toast(t('plugins.updated_toast', { name }), {})
-    },
-    onError: (err, id) => {
-      const name = plugins.find(p => p.id === id)?.name ?? id
-      console.error('[ConfigPlugin] upgrade failed:', err)
-      toast(t('plugins.upgrade_failed', { name }), {})
-    },
-  })
-  const remove = useMutation({
-    mutationFn: (id: string) => invoke<void>('remove_dsh_plugin', { id }),
-    onSuccess: (_data, id) => {
-      const name = plugins.find(p => p.id === id)?.name ?? id
-      // 同上：卸载成功后显式重拉插件列表，避免事件推送丢失导致列表未更新。
-      void queryClient.invalidateQueries({ queryKey: queryKeys.plugins })
-      toast(t('plugins.removed_toast', { name }), {})
-    },
-    onError: (err, id) => {
-      const name = plugins.find(p => p.id === id)?.name ?? id
-      console.error('[ConfigPlugin] remove failed:', err)
-      toast(t('plugins.remove_failed', { name }), {})
-    },
-  })
-  const disable = useMutation({
-    mutationFn: (id: string) => invoke<void>('disable_dsh_plugin', { id }),
-    onSuccess: (_data, id) => {
-      const name = plugins.find(p => p.id === id)?.name ?? id
-      void queryClient.invalidateQueries({ queryKey: queryKeys.plugins })
-      toast(t('plugins.disable_toast', { name }), {})
-    },
-    onError: (err, id) => {
-      const name = plugins.find(p => p.id === id)?.name ?? id
-      console.error('[ConfigPlugin] disable failed:', err)
-      toast(t('plugins.disable_failed', { name }), {})
-    },
-  })
-  const enable = useMutation({
-    mutationFn: (args: { id: string, clearConfigOverride: boolean }) =>
-      invoke<void>('enable_dsh_plugin', { id: args.id, clearConfigOverride: args.clearConfigOverride }),
-    onSuccess: (_data, args) => {
-      const name = plugins.find(p => p.id === args.id)?.name ?? args.id
-      void queryClient.invalidateQueries({ queryKey: queryKeys.plugins })
-      toast(t('plugins.enable_toast', { name }), {})
-    },
-    onError: (err, args) => {
-      const name = plugins.find(p => p.id === args.id)?.name ?? args.id
-      console.error('[ConfigPlugin] enable failed:', err)
-      toast(t('plugins.enable_failed', { name }), {})
-    },
-  })
   const snapshot = useMutation({
     mutationFn: (id: string) => invoke<void>('snapshot_plugin', { id }),
     onSuccess: (_data, id) => {
@@ -161,7 +120,6 @@ export function ConfigPlugin() {
   const restore = useMutation({
     mutationFn: (id: string) => invoke<void>('restore_plugin', { id }),
     onSuccess: (_data, _id) => {
-      // 还原后快照仍在（覆盖式不删快照），插件版本回到快照态：重拉列表。
       void queryClient.invalidateQueries({ queryKey: queryKeys.plugins })
     },
     onError: (err, id) => {
@@ -184,26 +142,137 @@ export function ConfigPlugin() {
     },
   })
 
-  async function onUpgrade(id: string) {
-    if (busy)
+  /** 热重载状态只读展示：补丁层与被监听的源码目录都由后端按已挂载的本地插件算出来。 */
+  const hmr = useQuery({
+    queryKey: queryKeys.localPluginHmr,
+    queryFn: () => invoke<LocalHmrStatus>('get_local_plugin_hmr'),
+  })
+  const setHmr = useMutation({
+    mutationFn: (nextEnabled: boolean) => invoke<LocalHmrStatus>('set_local_plugin_hmr', { enabled: nextEnabled }),
+    onSuccess: (status) => {
+      queryClient.setQueryData(queryKeys.localPluginHmr, status)
+      const key = toast(t('plugins.hmr_restart_hint'), {
+        variant: 'accent',
+        timeout: 10_000,
+        actionProps: {
+          children: t('app.restart'),
+          onPress: () => {
+            store.harness.restart()
+            toast.close(key)
+          },
+        },
+      })
+    },
+    onError: (error: unknown) => {
+      console.error('[ConfigPlugin] local plugin hot reload update failed:', error)
+      toast(t('plugins.hmr_save_failed'), { variant: 'danger' })
+    },
+  })
+
+  /**
+   * 目录选择器只把选中的目录回填进安装框（`link:` spec），安装仍走与手打完全相同的链路：
+   * 用户可以先核对路径再点安装，也能就地改掉。
+   */
+  async function onPickLocalDir() {
+    if (installing)
       return
-    setBusy({ id, action: 'update' })
+    setInstalling(true)
     try {
-      await upgrade.mutateAsync(id)
+      const spec = await invoke<string | null>('pick_local_plugin_dir')
+      if (spec == null)
+        return
+      setInstallRef(spec)
+      setPickedSpec(spec)
+      setSearchResults(null)
     }
     catch (e) {
-      silence(e, 'plugin upgrade: error already shown by mutation onError')
+      console.error('[ConfigPlugin] pick local plugin dir failed:', e)
+      toast(t('plugins.local_dir_failed'), { variant: 'danger' })
     }
     finally {
-      setBusy(null)
-      // 插件操作会停掉运行中的服务（即使失败也已被后端停止），这里统一拉起服务并
-      // 同步前端运行状态，避免留下「服务已死但界面仍显示运行中」的过期状态。
-      void store.harness.restart()
+      setInstalling(false)
+    }
+  }
+
+  /** 该插件在管理器队列里的进程类型（不在队列里为 null）。 */
+  function queuedType(id: string): PluginProcess['type'] | null {
+    return manager.processes.find(process => process.name === id)?.type ?? null
+  }
+
+  /**
+   * 管理器动作只等待组结算：授权等待期间的横幅与结果 Toast 都由管理器弹出，
+   * 面板仅负责行内 busy 与「同一行不重复派发」。不同行的动作互不禁用，
+   * 后续点击会作为新组进入管理器队列。
+   *
+   * 队列里已有该插件的同义动作时也算忙（升级 = 更新、卸载 = 移除）：Spinner 跟着队列走，
+   * 不必等宿主返回；整行禁点由 [`rowBusy`](self) 负责。
+   */
+  function busyWith(id: string, action: string): boolean {
+    if (busy.includes(`${id}:${action}`))
+      return true
+    const queued = queuedType(id)
+    return queued !== null && QUEUED_ACTIONS[queued] === action
+  }
+
+  /** 队列里已有该插件的进程时整行禁点：再点只会把它作为新组塞进同一个队列。 */
+  function rowBusy(id: string): boolean {
+    return queuedType(id) !== null || busy.some(item => item.startsWith(`${id}:`))
+  }
+
+  function markBusy(id: string, action: string): void {
+    setBusy(current => [...current, `${id}:${action}`])
+  }
+
+  function clearBusy(id: string, action: string): void {
+    setBusy(current => current.filter(item => item !== `${id}:${action}`))
+  }
+
+  async function runAction(id: string, action: 'update' | 'remove' | 'disable' | 'enable', run: () => Promise<unknown>) {
+    if (rowBusy(id))
+      return
+    markBusy(id, action)
+    try {
+      await run()
+    }
+    catch (e) {
+      silence(e, 'plugin action: error already reported by the manager')
+    }
+    finally {
+      clearBusy(id, action)
+    }
+  }
+
+  async function onUpgrade(id: string, latest: string | null) {
+    // 面板此刻显示着目标版本，把它一起交给管理器：宿主据此核验「装的到底是不是这个版本」，
+    // 并在来源被钉死时用显式安装兜底（见 `update_dsh_plugins`）。
+    const ref = latest === null ? id : { spec: id, version: latest }
+    await runAction(id, 'update', () => manager.upgrade(ref))
+  }
+
+  async function onUpgradeAll() {
+    if (upgradingAll || upgradable.length === 0)
+      return
+    toggleUpgradingAll(true)
+    const targets = upgradable
+    for (const plugin of targets)
+      markBusy(plugin.id, 'update')
+    try {
+      await manager.upgrade(targets.map(plugin => (
+        plugin.latest === null ? plugin.id : { spec: plugin.id, version: plugin.latest }
+      )))
+    }
+    catch (e) {
+      silence(e, 'plugin upgrade all: error already reported by the manager')
+    }
+    finally {
+      for (const plugin of targets)
+        clearBusy(plugin.id, 'update')
+      toggleUpgradingAll(false)
     }
   }
 
   async function onRemove(id: string, name: string) {
-    if (busy)
+    if (rowBusy(id))
       return
     try {
       await openDialog({
@@ -221,80 +290,63 @@ export function ConfigPlugin() {
       silence(e, 'plugin remove: dialog cancelled')
       return
     }
-    setBusy({ id, action: 'remove' })
+    await runAction(id, 'remove', () => manager.uninstall(id))
+  }
+
+  /**
+   * 新增安装入口：`manager.search` 只把解析到的版本与兼容性标记显示出来（只读，不改 Profile），
+   * 安装本身一律交给 `manager.install`；不兼容由宿主拒绝后在管理器里弹授权气泡，面板不提前拦。
+   */
+  async function onInstall() {
+    const refs = splitRefs(installRef, pickedSpec)
+    if (refs.length === 0 || installing)
+      return
+    setInstalling(true)
     try {
-      await remove.mutateAsync(id)
+      const results = await manager.search(refs)
+      setSearchResults(results)
+      setInstallRef('')
+      setPickedSpec(null)
+      await manager.install(refs)
     }
     catch (e) {
-      silence(e, 'plugin remove: error already shown by mutation onError')
+      silence(e, 'plugin install: error already reported by the manager')
     }
     finally {
-      setBusy(null)
-      // 同上：卸载后统一拉起服务，避免服务被后端停止后前端状态过期。
-      void store.harness.restart()
+      setInstalling(false)
     }
   }
 
   async function onDisable(id: string) {
-    if (busy)
+    if (rowBusy(id))
       return
-    // 禁用是可逆操作（保留包体，启用即可恢复），无需确认对话框。
-    setBusy({ id, action: 'disable' })
-    try {
-      await disable.mutateAsync(id)
-    }
-    catch (e) {
-      silence(e, 'plugin disable: error already shown by mutation onError')
-    }
-    finally {
-      setBusy(null)
-      // 禁用后统一拉起服务，使新的 bundles 列表生效。
-      void store.harness.restart()
-    }
-  }
-
-  async function onEnable(id: string, clearConfigOverride = false) {
-    if (busy)
-      return
-    // 配置覆盖禁用：启用会修改用户的 cordis.patch.yml（仅移除该插件的禁用覆盖，
-    // 其余配置条目保留），属于改写用户配置文件的操作，必须先明确确认。
-    if (clearConfigOverride) {
-      const name = plugins.find(p => p.id === id)?.name ?? id
+    const plugin = plugins.find(p => p.id === id)
+    if (plugin?.internal) {
       try {
         await openDialog({
           status: 'warning',
-          title: t('plugins.enable_override_confirm_title'),
-          description: (
-            <p>
-              {t('plugins.enable_override_confirm_desc', { name })}
-            </p>
-          ),
-          confirmText: t('plugins.enable_override_confirm'),
+          title: t('plugins.disable_builtin_confirm_title'),
+          description: <p>{t('plugins.disable_builtin_confirm_desc', { name: plugin.name })}</p>,
+          confirmText: t('plugins.disable'),
         })
       }
       catch (e) {
-        silence(e, 'plugin enable: config override dialog cancelled')
+        silence(e, 'plugin disable: dialog cancelled')
         return
       }
     }
-    setBusy({ id, action: 'enable' })
-    try {
-      await enable.mutateAsync({ id, clearConfigOverride })
-    }
-    catch (e) {
-      silence(e, 'plugin enable: error already shown by mutation onError')
-    }
-    finally {
-      setBusy(null)
-      // 启用后统一拉起服务，使新的 bundles 列表生效。
-      void store.harness.restart()
-    }
+    await runAction(id, 'disable', () => manager.disable(id))
+  }
+
+  async function onEnable(id: string) {
+    if (rowBusy(id))
+      return
+    await runAction(id, 'enable', () => manager.enable(id))
   }
 
   async function onSnapshot(id: string, name: string, hasSnapshot: boolean) {
-    if (busy)
+    if (rowBusy(id))
       return
-    // 已存在快照：覆盖式，先确认再覆盖（快照语义 = 覆盖当前状态）。
     if (hasSnapshot) {
       try {
         await openDialog({
@@ -313,7 +365,7 @@ export function ConfigPlugin() {
         return
       }
     }
-    setBusy({ id, action: 'snapshot' })
+    markBusy(id, 'snapshot')
     try {
       await snapshot.mutateAsync(id)
     }
@@ -321,12 +373,12 @@ export function ConfigPlugin() {
       silence(e, 'plugin snapshot: error already shown by mutation onError')
     }
     finally {
-      setBusy(null)
+      clearBusy(id, 'snapshot')
     }
   }
 
   async function onRestore(id: string, name: string) {
-    if (busy)
+    if (rowBusy(id))
       return
     try {
       await openDialog({
@@ -344,7 +396,7 @@ export function ConfigPlugin() {
       silence(e, 'plugin restore: dialog cancelled')
       return
     }
-    setBusy({ id, action: 'restore' })
+    markBusy(id, 'restore')
     try {
       await restore.mutateAsync(id)
       // 还原期间后端已停止服务：复用 ui/config/backup 的「重启服务」toast 交互
@@ -364,12 +416,12 @@ export function ConfigPlugin() {
       silence(e, 'plugin restore: error already shown by mutation onError')
     }
     finally {
-      setBusy(null)
+      clearBusy(id, 'restore')
     }
   }
 
   async function onDeleteSnapshot(id: string, name: string) {
-    if (busy)
+    if (rowBusy(id))
       return
     try {
       await openDialog({
@@ -387,7 +439,7 @@ export function ConfigPlugin() {
       silence(e, 'plugin delete-snapshot: dialog cancelled')
       return
     }
-    setBusy({ id, action: 'delete-snapshot' })
+    markBusy(id, 'delete-snapshot')
     try {
       await deleteSnapshot.mutateAsync(id)
     }
@@ -395,12 +447,12 @@ export function ConfigPlugin() {
       silence(e, 'plugin delete-snapshot: error already shown by mutation onError')
     }
     finally {
-      setBusy(null)
+      clearBusy(id, 'delete-snapshot')
     }
   }
 
   /** 插件行：可管理插件列表与「内置插件」折叠分组共用同一行结构 */
-  function renderPluginRow(plugin: DshPlugin) {
+  function renderPluginRow(plugin: Plugin) {
     return (
       <Item
         key={plugin.id}
@@ -413,7 +465,7 @@ export function ConfigPlugin() {
                     isIconOnly
                     size="sm"
                     variant="ghost"
-                    className="size-6 shrink-0 rounded-md text-danger"
+                    className="size-6 shrink-0 text-danger"
                     aria-label={t('plugins.abnormal_tooltip')}
                   >
                     <CircleExclamation />
@@ -443,16 +495,11 @@ export function ConfigPlugin() {
                   {t('plugins.preset')}
                 </Chip>
               </If>
-              <If cond={plugin.disabled}>
+              {/* 禁用态：profile 的 cordis.patch.yml 中的 disabled 覆盖（内置插件同样标注，
+                  issue #399：Scheduler/Pet 行此前只有「内置」） */}
+              <If cond={plugin.patchDisabled}>
                 <Chip size="sm" variant="soft" color="default">
                   {t('plugins.disabled_badge')}
-                </Chip>
-              </If>
-              {/* 配置覆盖禁用：展示在 cordis.patch.yml 中被显式禁用的真实状态
-                  （内置插件同样标注，issue #399：Scheduler/Pet 行此前只有「内置」） */}
-              <If cond={plugin.patchDisabled}>
-                <Chip size="sm" variant="soft" color="warning">
-                  {t('plugins.patch_disabled_badge')}
                 </Chip>
               </If>
               <If cond={plugin.internal}>
@@ -470,103 +517,102 @@ export function ConfigPlugin() {
         )}
         right={(
           <>
-            {/* 升级入口仅在确有更新（updateAvailable）或插件异常（error，修复入口）时显示；
-                与文档 P1「对 dshmarket 点击升级」一致，且不会常驻——up-to-date 插件不显示升级按钮 */}
+            {/* 升级入口仅在确有更新（updateAvailable）或插件异常（error，修复入口）时显示 */}
             <If cond={plugin.updateAvailable || plugin.error != null}>
               <Chip
-                className={actionChip({ busy: !!busy })}
+                className={actionChip({ busy: rowBusy(plugin.id) })}
                 variant="primary"
                 color="accent"
                 size="sm"
-                onClick={() => onUpgrade(plugin.id)}
+                onClick={() => onUpgrade(plugin.id, plugin.latest)}
               >
                 <span className="flex items-center gap-1">
-                  <If cond={busy?.id === plugin.id && busy.action === 'update'} then={<Spinner size="sm" color="current" />} />
+                  <If cond={busyWith(plugin.id, 'update')} then={<Spinner size="sm" color="current" />} />
                   {t('plugins.upgrade')}
-                  <If cond={plugin.latestVersion != null && plugin.error == null}>
+                  <If cond={plugin.latest != null && plugin.error == null}>
                     <span className="font-mono text-[10px] opacity-80 max-w-[80px] truncate">
-                      {plugin.latestVersion && plugin.latestVersion.length >= 40 ? `${plugin.latestVersion.slice(0, 8)}…` : plugin.latestVersion}
+                      {plugin.latest && plugin.latest.length >= 40 ? `${plugin.latest.slice(0, 8)}…` : plugin.latest}
                     </span>
                   </If>
                 </span>
               </Chip>
             </If>
-            {/* 启用入口：配置覆盖禁用（含内置插件）或桌面禁用清单 → 可启用。
-                配置覆盖禁用时点击会先弹确认框，确认后后端才移除该覆盖 */}
-            <If cond={plugin.patchDisabled || (!plugin.internal && plugin.disabled)}>
+            <If cond={plugin.patchDisabled}>
               <Chip
-                className={actionChip({ busy: !!busy })}
+                className={actionChip({ busy: rowBusy(plugin.id) })}
                 variant="primary"
                 color="accent"
                 size="sm"
-                onClick={() => onEnable(plugin.id, plugin.patchDisabled)}
+                onClick={() => onEnable(plugin.id)}
               >
                 <span className="flex items-center gap-1">
-                  <If cond={busy?.id === plugin.id && busy.action === 'enable'} then={<Spinner size="sm" color="current" />} />
+                  <If cond={busyWith(plugin.id, 'enable')} then={<Spinner size="sm" color="current" />} />
                   {t('plugins.enable')}
                 </span>
               </Chip>
             </If>
-            <If cond={!plugin.internal && !plugin.patchDisabled && !plugin.disabled}>
+            <If cond={!plugin.patchDisabled}>
               <Chip
-                className={actionChip({ busy: !!busy })}
+                className={actionChip({ busy: rowBusy(plugin.id) })}
                 size="sm"
                 onClick={() => onDisable(plugin.id)}
               >
                 <span className="flex items-center gap-1">
-                  <If cond={busy?.id === plugin.id && busy.action === 'disable'} then={<Spinner size="sm" color="current" />} />
+                  <If cond={busyWith(plugin.id, 'disable')} then={<Spinner size="sm" color="current" />} />
                   {t('plugins.disable')}
                 </span>
               </Chip>
             </If>
             <If cond={!plugin.internal}>
-              {/* 单插件快照：快照始终可用（已存在时覆盖确认）；还原/删除快照仅在
-                  存在快照时显示。还原会停服务，还原后 toast 提示重启（issue #303） */}
-              <Chip
-                className={actionChip({ busy: !!busy })}
-                variant="primary"
-                color="accent"
-                size="sm"
-                onClick={() => onSnapshot(plugin.id, plugin.name, plugin.hasSnapshot)}
-              >
-                <span className="flex items-center gap-1">
-                  <If cond={busy?.id === plugin.id && busy.action === 'snapshot'} then={<Spinner size="sm" color="current" />} />
-                  {t('plugins.snapshot')}
-                </span>
-              </Chip>
-              <If cond={plugin.hasSnapshot}>
+              <If cond={advanced}>
+                {/* 单插件快照：快照始终可用（已存在时覆盖确认）；还原/删除快照仅在
+                    存在快照时显示。还原会停服务，还原后 toast 提示重启（issue #303） */}
                 <Chip
-                  className={actionChip({ busy: !!busy })}
+                  className={actionChip({ busy: rowBusy(plugin.id) })}
                   variant="primary"
                   color="accent"
                   size="sm"
-                  onClick={() => onRestore(plugin.id, plugin.name)}
+                  onClick={() => onSnapshot(plugin.id, plugin.name, plugin.hasSnapshot)}
                 >
                   <span className="flex items-center gap-1">
-                    <If cond={busy?.id === plugin.id && busy.action === 'restore'} then={<Spinner size="sm" color="current" />} />
-                    {t('plugins.restore')}
+                    <If cond={busyWith(plugin.id, 'snapshot')} then={<Spinner size="sm" color="current" />} />
+                    {t('plugins.snapshot')}
                   </span>
                 </Chip>
-                <Chip
-                  className={actionChip({ busy: !!busy })}
-                  size="sm"
-                  onClick={() => onDeleteSnapshot(plugin.id, plugin.name)}
-                >
-                  <span className="flex items-center gap-1">
-                    <If cond={busy?.id === plugin.id && busy.action === 'delete-snapshot'} then={<Spinner size="sm" color="current" />} />
-                    {t('plugins.delete_snapshot')}
-                  </span>
-                </Chip>
+                <If cond={plugin.hasSnapshot}>
+                  <Chip
+                    className={actionChip({ busy: rowBusy(plugin.id) })}
+                    variant="primary"
+                    color="accent"
+                    size="sm"
+                    onClick={() => onRestore(plugin.id, plugin.name)}
+                  >
+                    <span className="flex items-center gap-1">
+                      <If cond={busyWith(plugin.id, 'restore')} then={<Spinner size="sm" color="current" />} />
+                      {t('plugins.restore')}
+                    </span>
+                  </Chip>
+                  <Chip
+                    className={actionChip({ busy: rowBusy(plugin.id) })}
+                    size="sm"
+                    onClick={() => onDeleteSnapshot(plugin.id, plugin.name)}
+                  >
+                    <span className="flex items-center gap-1">
+                      <If cond={busyWith(plugin.id, 'delete-snapshot')} then={<Spinner size="sm" color="current" />} />
+                      {t('plugins.delete_snapshot')}
+                    </span>
+                  </Chip>
+                </If>
               </If>
               <Chip
-                className={actionChip({ busy: !!busy })}
+                className={actionChip({ busy: rowBusy(plugin.id) })}
                 variant="primary"
                 color="danger"
                 size="sm"
                 onClick={() => onRemove(plugin.id, plugin.name)}
               >
                 <span className="flex items-center gap-1">
-                  <If cond={busy?.id === plugin.id && busy.action === 'remove'} then={<Spinner size="sm" color="current" />} />
+                  <If cond={busyWith(plugin.id, 'remove')} then={<Spinner size="sm" color="current" />} />
                   {t('plugins.uninstall')}
                 </span>
               </Chip>
@@ -584,27 +630,159 @@ export function ConfigPlugin() {
         title={t('plugins.title')}
         testId="dsh-config-panel-title"
         action={(
-          <Tooltip delay={0}>
-            <Button
+          <div className="flex shrink-0 items-center gap-3">
+            <Switch
               size="sm"
-              variant="primary"
-              className="rounded-md"
-              onPress={store.preinstall.open}
-              isDisabled={preinstall.installing}
+              isSelected={advanced}
+              onChange={() => toggleAdvanced()}
+              aria-label={t('plugins.advanced_options')}
             >
-              {t('preinstall.open_preset')}
-            </Button>
-            <Tooltip.Content>
-              <p>{t('preinstall.settings_hint')}</p>
-            </Tooltip.Content>
-          </Tooltip>
+              <Switch.Content className="gap-2">
+                <Switch.Control>
+                  <Switch.Thumb />
+                </Switch.Control>
+                <span className="text-xs font-medium text-muted">{t('plugins.advanced_options')}</span>
+              </Switch.Content>
+            </Switch>
+            <If cond={upgradable.length}>
+              <Tooltip delay={0}>
+                <Button
+                  size="sm"
+                  variant="tertiary"
+                  onPress={() => void onUpgradeAll()}
+                  isDisabled={upgradingAll}
+                >
+
+                  <If cond={upgradingAll} then={<Spinner size="sm" color="current" />} else={<Rocket className="size-3.5" />} />
+                  {t('plugins.upgrade_all')}
+                </Button>
+                <Tooltip.Content>
+                  <p>
+                    <If
+                      cond={upgradable.length > 0}
+                      then={t('plugins.upgrade_all_hint', { count: upgradable.length })}
+                      else={t('plugins.upgrade_all_empty')}
+                    />
+                  </p>
+                </Tooltip.Content>
+              </Tooltip>
+            </If>
+            <Tooltip delay={0}>
+              <Button
+                size="sm"
+                variant="primary"
+                onPress={store.preinstall.open}
+                isDisabled={store.preinstall.installing}
+              >
+                {t('preinstall.open_preset')}
+              </Button>
+              <Tooltip.Content>
+                <p>{t('preinstall.settings_hint')}</p>
+              </Tooltip.Content>
+            </Tooltip>
+
+          </div>
         )}
         description={t('plugins.panel_tooltip')}
       />
 
-      {/* 加载 / 失败 / 空态 */}
-      <Panel.Loadable loading={loading} error={error}>
+      <Panel.Loadable loading={manager.loading} error={manager.error}>
         <div className="flex flex-col gap-4">
+          {/* 安装入口：接受 npm spec（可逗号/空白分隔多个），搜索结果只作展示，安装统一入队 */}
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center gap-2">
+              <Input
+                variant="secondary"
+                className="h-8 flex-1 font-mono text-xs"
+                placeholder={t('plugins.install_placeholder')}
+                aria-label={t('plugins.install_placeholder')}
+                value={installRef}
+                onChange={e => setInstallRef(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter')
+                    void onInstall()
+                }}
+              />
+              <Button
+                size="sm"
+                variant="tertiary"
+                className="h-8 shrink-0"
+                isDisabled={installRef.trim() === ''}
+                onPress={() => void onInstall()}
+              >
+                <span className="flex items-center gap-1">
+                  <If cond={installing} then={<Spinner size="sm" color="current" />} />
+                  {t('plugins.install')}
+                </span>
+              </Button>
+              <Tooltip delay={0}>
+                <Button
+                  isIconOnly
+                  size="sm"
+                  variant="tertiary"
+                  className="size-8 shrink-0"
+                  isDisabled={installing}
+                  aria-label={t('plugins.local_dir')}
+                  onPress={() => void onPickLocalDir()}
+                >
+                  <FolderOpen />
+                </Button>
+                <Tooltip.Content className="max-w-[320px]">
+                  <p>{t('plugins.local_dir')}</p>
+                </Tooltip.Content>
+              </Tooltip>
+            </div>
+            <If cond={searchResults != null}>
+              <div className="flex flex-col gap-1 px-1">
+                {(searchResults ?? []).map(result => (
+                  <div key={result.spec} className="flex items-center gap-2 text-[11px] text-muted">
+                    <span className="min-w-0 truncate font-mono">{result.spec}</span>
+                    <If cond={result.version != null}>
+                      <code className="shrink-0 rounded bg-default px-1.5 py-0.5 font-mono text-[10px]">
+                        {result.version}
+                      </code>
+                    </If>
+                    <If cond={result.compatible === false}>
+                      <Chip size="sm" variant="soft" color="danger" className="shrink-0">
+                        {t('plugins.search_incompatible_badge')}
+                      </Chip>
+                    </If>
+                    <If cond={result.problem != null}>
+                      <span className="shrink-0 text-danger">
+                        {t(searchProblemKeys[result.problem ?? 'unknown'])}
+                      </span>
+                    </If>
+                  </div>
+                ))}
+              </div>
+            </If>
+          </div>
+
+          <If cond={advanced}>
+            <div className="flex flex-col gap-1 px-1">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-medium text-ink">{t('plugins.hmr')}</span>
+                <Switch
+                  size="sm"
+                  isSelected={hmr.data?.enabled ?? false}
+                  isDisabled={hmr.isFetching || setHmr.isPending}
+                  onChange={enabled => setHmr.mutate(enabled)}
+                  aria-label={t('plugins.hmr')}
+                >
+                  <Switch.Content>
+                    <Switch.Control>
+                      <Switch.Thumb />
+                    </Switch.Control>
+                  </Switch.Content>
+                </Switch>
+              </div>
+              <Description className="text-[10px] text-muted/70">{t('plugins.hmr_hint')}</Description>
+              <If cond={hmr.data != null && !hmr.data.watching}>
+                <Description className="text-[10px] text-warning">{t('plugins.hmr_idle')}</Description>
+              </If>
+            </div>
+          </If>
+
           <If cond={managedPlugins.length > 0} else={<Empty>{t('plugins.empty')}</Empty>}>
             {managedPlugins.map(plugin => renderPluginRow(plugin))}
           </If>

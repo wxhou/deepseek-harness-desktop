@@ -13,19 +13,24 @@ export default {
         'line': 'var(--color-line)',
         'line-strong': 'var(--color-line-strong)',
         'ink': 'var(--color-ink)',
-        'muted': 'var(--color-muted)',
-        'accent': 'var(--color-accent)',
-        'accent2': 'var(--color-accent-2)',
-        'danger': 'var(--color-danger)',
+        // muted / accent / danger 与 HeroUI 语义变量同名，取值以 HeroUI 为准
+        // （HeroUI 的 @theme inline 会把变量内联进工具类，见 src/styles/main.css）
+        'muted': 'var(--muted)',
+        'accent': 'var(--accent)',
+        'danger': 'var(--danger)',
+        'info': 'var(--color-info)',
+        'info-hover': 'var(--color-info-hover)',
         'ok': 'var(--color-ok)',
         'log-bg': 'var(--color-log-bg)',
         'log-ink': 'var(--color-log-ink)',
         // 加载页 token：与主色不同，必须在此注册才会生成对应工具类
         // （漏掉会整条回退 currentColor，spinner 变成同色整圈、看不出旋转）
-        'load-bg': 'var(--color-load-bg)',
         'load-ink': 'var(--color-load-ink)',
         'load-muted': 'var(--color-load-muted)',
         'load-ring': 'var(--color-load-ring)',
+        // 启动页底色：默认等于画布色，开启透明度时由外观投影换成与 navbar 同 alpha 的
+        // 启动填充（见 src/hooks/use-appearance.ts 的 --color-startup）
+        'startup': 'var(--color-startup)',
         // 按钮 token：官方 dsw alias 中性色（非蓝色），同样需注册才能生成工具类
         'btn-fill': 'var(--color-btn-fill)',
         'btn-fill-hover': 'var(--color-btn-fill-hover)',

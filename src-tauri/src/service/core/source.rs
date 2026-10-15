@@ -1,8 +1,8 @@
 //! 核心来源判定与「当前活动核心」入口选择。
 //!
 //! 承载 [`CoreSource`] / [`HarnessCore`] 两个公开类型，以及
-//! [`active_source`] / [`active_dsh_binary`] / [`active_version`] 三个供服务启动
-//! 与插件操作统一取用的入口。本地核心探测见 [`super::local`]。
+//! [`active_source`] / [`active_dsh_binary`] / [`active_core_dir`] / [`active_version`]
+//! 四个供服务启动与插件操作统一取用的入口。本地核心探测见 [`super::local`]。
 
 use crate::config;
 use serde::Serialize;
@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 use tauri::AppHandle;
 
-use super::local::local_core;
+use super::local::{local_core, local_core_package_dir};
 use crate::service::download::parse_version_from_tag;
 
 /// 核心来源
@@ -59,6 +59,10 @@ pub struct HarnessCore {
     pub present: bool,
     /// 当前是否使用中的核心
     pub active: bool,
+    /// 能否卸载：只有磁盘上存在独立槽位目录（`dependencies/<tag>`）的行才有卸载落点。
+    /// 就地安装的激活副本只有 `dependencies/dsh` 一份目录，按 tag 找不到槽位，卸载必然
+    /// 失败（issue #790）。
+    pub removable: bool,
     /// 是否预览版（GitHub Release 标记 Pre-release，或 tag 命名含预览标记，见
     /// `download::is_preview_tag`）：预览版不参与自动更新提示，但可在核心列表
     /// 手动下载安装，并以「预览版」标签展示。
@@ -158,6 +162,22 @@ pub fn active_dsh_binary(app_handle: &AppHandle) -> PathBuf {
             .map(|c| c.bin)
             .unwrap_or_else(|| config::get_dsh_binary_path(app_handle)),
         CoreSource::App => config::get_dsh_binary_path(app_handle),
+    }
+}
+
+/// 当前活动核心的安装目录：本地核心用其包目录（全局安装路径），预打包用桌面端目录。
+///
+/// 该目录同时是核心与 `dsh plugin` 子进程的 cwd（`CreateProcessW` 的 lpCurrentDirectory
+/// 必须真实存在），也是本地 spec 绝对化的基准。本地核心生效时桌面端依赖根不会被创建
+/// （`runtime::prepare_active_runtime` 跳过），误用依赖根会让核心启动卡在插件安装阶段：
+/// `PREINSTALL_SPAWN: 目录名称无效。 (os error 267)`。
+///
+/// 与 [`active_dsh_binary`] 的取舍一致——本地核心解析在调用瞬间失效时回退预打包目录。
+pub fn active_core_dir(app_handle: &AppHandle) -> PathBuf {
+    match active_source(app_handle) {
+        CoreSource::Local => local_core_package_dir(app_handle)
+            .unwrap_or_else(|| config::get_dsh_install_path(app_handle)),
+        CoreSource::App => config::get_dsh_install_path(app_handle),
     }
 }
 

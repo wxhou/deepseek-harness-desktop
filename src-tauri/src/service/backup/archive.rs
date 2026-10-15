@@ -26,11 +26,7 @@ fn create_symlink(target: &Path, dst: &Path) -> std::io::Result<()> {
         .or_else(|_| std::os::windows::fs::symlink_file(target, dst))
 }
 
-/// 需要从归档中排除的相对路径组件（前缀匹配）。
-const EXCLUDED_NAMES: &[&str] = &[".backups", ".harness.pid", ".plugin-backups"];
-
-/// 需要从归档中排除的相对路径（精确匹配）。
-const EXCLUDED_PATHS: &[&str] = &["node_modules/.modules.yaml"];
+const EXCLUDED_NAMES: &[&str] = &[".backups", ".plugin-backups", "node_modules"];
 
 /// 凭据文件名。
 const CREDENTIALS_FILE: &str = ".credentials.yaml";
@@ -39,19 +35,17 @@ const CREDENTIALS_FILE: &str = ".credentials.yaml";
 ///
 /// - `.backups/` 自身必须排除（防递归包含）。
 /// - `.harness.pid` 等运行时产物必须排除。
+/// - `node_modules/` 是可重建的运行时依赖，始终排除。
 /// - `.credentials.yaml` 按 `include_credentials` 决定。
 fn is_excluded(rel: &Path, include_credentials: bool) -> bool {
     if let Some(name) = rel.file_name().and_then(|n| n.to_str()) {
-        if EXCLUDED_NAMES.contains(&name) {
+        if EXCLUDED_NAMES.contains(&name) || crate::config::HARNESS_PID_MARKER_NAMES.contains(&name)
+        {
             return true;
         }
         if name == CREDENTIALS_FILE && !include_credentials {
             return true;
         }
-    }
-    let rel_str = rel.to_string_lossy().replace('\\', "/");
-    if EXCLUDED_PATHS.iter().any(|p| rel_str == *p) {
-        return true;
     }
     false
 }
@@ -66,6 +60,7 @@ fn append_dir_filtered(
     source: &Path,
     rel: &Path,
     include_credentials: bool,
+    reject_links: bool,
 ) -> Result<(), String> {
     for entry in fs::read_dir(dir).map_err(|e| format!("BACKUP_ARCHIVE_READDIR: {e}"))? {
         let entry = entry.map_err(|e| format!("BACKUP_ARCHIVE_ENTRY: {e}"))?;
@@ -84,11 +79,19 @@ fn append_dir_filtered(
         let ty = entry
             .file_type()
             .map_err(|e| format!("BACKUP_ARCHIVE_TYPE: {e}"))?;
+        #[cfg(windows)]
+        if reject_links {
+            use std::os::windows::fs::MetadataExt;
+            let meta = fs::symlink_metadata(&path).map_err(|e| format!("BACKUP_ARCHIVE_TYPE: {e}"))?;
+            if meta.file_attributes() & 0x400 != 0 {
+                return Err(format!("RECOVERY_LINK_UNSUPPORTED: {}", path.display()));
+            }
+        }
         if ty.is_dir() {
             builder
                 .append_dir(&archived, &path)
                 .map_err(|e| format!("BACKUP_ARCHIVE_APPEND_DIR: {e}"))?;
-            append_dir_filtered(builder, &path, source, &archived, include_credentials)?;
+            append_dir_filtered(builder, &path, source, &archived, include_credentials, reject_links)?;
         } else if ty.is_file() {
             builder
                 .append_file(
@@ -97,25 +100,29 @@ fn append_dir_filtered(
                 )
                 .map_err(|e| format!("BACKUP_ARCHIVE_APPEND_FILE: {e}"))?;
         } else if ty.is_symlink() {
-            // 符号链接：读取 target，tar Symlink 存储（GNU header 限制 100 字节）
+            if reject_links {
+                return Err(format!("RECOVERY_LINK_UNSUPPORTED: {}", path.display()));
+            }
+            // 符号链接：读取 target，tar Symlink 存储（GNU header 链接名上限 100 字节）
             let target =
                 std::fs::read_link(&path).map_err(|e| format!("BACKUP_ARCHIVE_READLINK: {e}"))?;
-            if target.as_os_str().len() > 100 {
-                eprintln!(
-                    "[backup] 跳过超长符号链接: {} -> {}",
-                    path.display(),
-                    target.display()
-                );
-            } else {
-                let mut header = tar::Header::new_gnu();
-                header.set_entry_type(tar::EntryType::Symlink);
-                header.set_size(0);
-                header
-                    .set_link_name(&target)
-                    .map_err(|e| format!("BACKUP_ARCHIVE_LINK_NAME: {e}"))?;
-                builder
-                    .append_link(&mut header, &archived, &target)
-                    .map_err(|e| format!("BACKUP_ARCHIVE_APPEND_LINK: {e}"))?;
+            let mut header = tar::Header::new_gnu();
+            header.set_entry_type(tar::EntryType::Symlink);
+            header.set_size(0);
+            match header.set_link_name(&target) {
+                Ok(()) => {
+                    builder
+                        .append_link(&mut header, &archived, &target)
+                        .map_err(|e| format!("BACKUP_ARCHIVE_APPEND_LINK: {e}"))?;
+                }
+                // 单个链接放不进 tar header 不能拖垮整份备份：跳过并继续
+                Err(e) => {
+                    eprintln!(
+                        "[backup] 跳过无法归档的符号链接: {} -> {} ({e})",
+                        path.display(),
+                        target.display()
+                    );
+                }
             }
         } else {
             // socket/FIFO/设备：runtime 资源，跳过
@@ -128,15 +135,23 @@ fn append_dir_filtered(
 /// 创建 tar.zst 归档。
 ///
 /// 把 `source` 目录打包到 `dest` 文件。`include_credentials` 控制是否包含
-/// `.credentials.yaml`。始终排除 `.backups/`、`.harness.pid`、
-/// `node_modules/.modules.yaml`。使用 zstd 多线程压缩（级别 0 = 默认 3，
+/// `.credentials.yaml`。始终排除 `.backups/`、`.plugin-backups/`、`.harness.pid`、
+/// `node_modules/`。使用 zstd 多线程压缩（级别 0 = 默认 3，
 /// 启用 multithread 加速）。
 pub fn create_archive(source: &Path, dest: &Path, include_credentials: bool) -> Result<(), String> {
+    create_archive_impl(source, dest, include_credentials, false)
+}
+
+pub(super) fn create_recovery_archive(source: &Path, dest: &Path, include_credentials: bool) -> Result<(), String> {
+    create_archive_impl(source, dest, include_credentials, true)
+}
+
+fn create_archive_impl(source: &Path, dest: &Path, include_credentials: bool, reject_links: bool) -> Result<(), String> {
     let file = fs::File::create(dest).map_err(|e| format!("BACKUP_ARCHIVE_CREATE: {e}"))?;
     // 级别 0 使用 zstd 默认压缩级别（3），在速度与压缩率间取得平衡。
     // 多线程压缩：利用多核 CPU 并行压缩块，速度比单线程快 3-5 倍。
     let workers = std::thread::available_parallelism()
-        .map(|n| n.get() as u32)
+        .map(|n| if reject_links { n.get().min(2) } else { n.get() } as u32)
         .unwrap_or(1);
     let mut enc =
         zstd::stream::Encoder::new(file, 0).map_err(|e| format!("BACKUP_ARCHIVE_ENCODER: {e}"))?;
@@ -149,6 +164,7 @@ pub fn create_archive(source: &Path, dest: &Path, include_credentials: bool) -> 
         source,
         Path::new("."),
         include_credentials,
+        reject_links,
     )?;
     archive
         .finish()
@@ -191,11 +207,41 @@ pub fn extract_archive_gzip(archive: &Path, dest: &Path) -> Result<(), String> {
     extract_tar_entries(&mut archive, dest)
 }
 
+/// 判断条目的中间目录里是否存在链接（symlink / junction）。
+///
+/// 只检查 `relative` 的父级组件，不含 `dest` 自身：目标目录本身就是链接是
+/// 调用方的选择（例如用户把 `$DSH_HOME/sessions` 软链到别处），不属于越界。
+fn has_link_parent(dest: &Path, relative: &Path) -> bool {
+    let Some(parent) = relative.parent() else {
+        return false;
+    };
+    let mut current = dest.to_path_buf();
+    for component in parent.components() {
+        current.push(component);
+        let Ok(metadata) = current.symlink_metadata() else {
+            continue;
+        };
+        let file_type = metadata.file_type();
+        #[cfg(windows)]
+        let is_link = {
+            use std::os::windows::fs::FileTypeExt;
+            file_type.is_symlink() || file_type.is_symlink_dir()
+        };
+        #[cfg(not(windows))]
+        let is_link = file_type.is_symlink();
+        if is_link {
+            return true;
+        }
+    }
+    false
+}
+
 /// 从 tar 归档安全解压所有条目到 `dest`（压缩格式无关）。
 ///
-/// 逐个条目：拒绝含 `..` 的路径（防逃逸）、拒绝硬链接、目录直接创建、
-/// 符号链接按 target 创建、普通文件先写临时文件再原子 rename。自定义
-/// 解压（替代 `entry.unpack`）是为了规避 macOS 上的 tar bug。
+/// 逐个条目：拒绝绝对路径/`..`/盘符前缀（防逃逸）、拒绝中间目录为链接的
+/// 条目、拒绝硬链接、目录直接创建、符号链接按 target 创建、普通文件先写
+/// 临时文件再原子 rename。自定义解压（替代 `entry.unpack`）是为了规避
+/// macOS 上的 tar bug。
 fn extract_tar_entries<R: Read>(archive: &mut tar::Archive<R>, dest: &Path) -> Result<(), String> {
     // 禁用 ownership 保留：归档里 uid/gid 可能是 root（uid=0），非 root 用户无法 chown
     archive.set_preserve_ownerships(false);
@@ -211,13 +257,17 @@ fn extract_tar_entries<R: Read>(archive: &mut tar::Archive<R>, dest: &Path) -> R
             .map_err(|e| format!("BACKUP_EXTRACT_PATH: {e}"))?
             .into_owned();
 
-        // 拒绝含 `..` 组件的条目（防路径穿越）
-        if path
-            .components()
-            .any(|c| matches!(c, std::path::Component::ParentDir))
+        // 拒绝绝对路径与含 `..` / 盘符前缀的条目（防路径穿越）
+        if path.has_root()
+            || path.components().any(|c| {
+                matches!(
+                    c,
+                    std::path::Component::ParentDir | std::path::Component::Prefix(_)
+                )
+            })
         {
             return Err(format!(
-                "BACKUP_EXTRACT_PATH_ESCAPE: entry {:?} contains ..",
+                "BACKUP_EXTRACT_PATH_ESCAPE: entry {:?} escapes the restore directory",
                 path
             ));
         }
@@ -227,6 +277,14 @@ fn extract_tar_entries<R: Read>(archive: &mut tar::Archive<R>, dest: &Path) -> R
         let stripped: std::path::PathBuf = path.clone();
 
         let dest_path = dest.join(&stripped);
+
+        // 中间目录是链接时，create_dir_all + 写入会顺着链接落到 dest 之外，直接拒绝
+        if has_link_parent(dest, &stripped) {
+            return Err(format!(
+                "BACKUP_EXTRACT_LINK_PARENT: entry {:?} is under a linked directory",
+                path
+            ));
+        }
 
         // 拒绝硬链接
         let entry_type = entry.header().entry_type();
@@ -522,29 +580,116 @@ mod tests {
     }
 
     #[test]
-    fn excludes_pid_and_modules_yaml() {
-        let source = setup_source_dir(&[
+    fn rejects_absolute_path_on_restore() {
+        let dir = std::env::temp_dir().join(format!("dsh-backup-absolute-{}", unique_suffix()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let archive_path = dir.join("evil.tar.zst");
+        // 以裸字节写 zstd（tar crate 的 set_path 会拒绝绝对路径，故绕开）
+        let file = fs::File::create(&archive_path).unwrap();
+        let mut enc = zstd::stream::Encoder::new(file, 0).unwrap();
+        write_raw_tar_entry(&mut enc, "/tmp/dsh-evil-absolute", b"evil").unwrap();
+        enc.write_all(&[0u8; 1024]).unwrap();
+        enc.finish().unwrap();
+
+        let dest = dir.join("dest");
+        let result = extract_archive(&archive_path, &dest);
+        assert!(result.is_err(), "绝对路径条目应被拒绝: {result:?}");
+        assert!(
+            !dest.join("tmp").join("dsh-evil-absolute").exists(),
+            "绝对路径条目不应被解压"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn excludes_runtime_dependencies_and_restores_configuration() {
+        let config = [
+            ("package.json", "{\"dependencies\":{\"example\":\"1.0.0\"}}"),
+            ("pnpm-lock.yaml", "lockfileVersion: '9.0'"),
+            ("pnpm-workspace.yaml", "packages: ['plugins/*']"),
+            (".npmrc", "confirmModulesPurge=false"),
+            ("cordis.patch.yml", "plugins: {}"),
+            ("plugins/local/package.json", "{\"name\":\"local\"}"),
+            ("plugins/local/index.js", "export default {}"),
+            ("node_modules-config.json", "{}"),
+        ];
+        let mut files = config.to_vec();
+        files.extend([
             (".harness.pid", "12345"),
+            (".harness-nightly.pid", "23456"),
             ("node_modules/.modules.yaml", "modules: {}"),
-            ("real.txt", "keep"),
+            (
+                "node_modules/.pnpm/example@1.0.0/node_modules/example/index.js",
+                "runtime",
+            ),
+            (
+                "plugins/local/node_modules/example/index.js",
+                "nested runtime",
+            ),
         ]);
+        let source = setup_source_dir(&files);
         let dest = archive_dest(&source);
         create_archive(&source, &dest, false).unwrap();
         let entries = list_archive_entries(&dest).unwrap();
         assert!(
-            entries.iter().all(|e| !e.contains(".harness.pid")),
-            ".harness.pid 应被排除"
+            entries
+                .iter()
+                .all(|entry| !Path::new(entry).components().any(|component| {
+                    component.as_os_str() == "node_modules"
+                        || component.as_os_str() == ".harness.pid"
+                        || component.as_os_str() == ".harness-nightly.pid"
+                })),
+            "运行时依赖和 PID 应被排除，实际条目: {entries:?}"
         );
-        assert!(
-            entries.iter().all(|e| !e.contains(".modules.yaml")),
-            "node_modules/.modules.yaml 应被排除"
-        );
-        assert!(
-            entries.iter().any(|e| e.contains("real.txt")),
-            "real.txt 应存在"
-        );
+        let restore_dir = source.join("restored");
+        extract_archive(&dest, &restore_dir).unwrap();
+        for (path, content) in config {
+            assert_eq!(
+                fs::read_to_string(restore_dir.join(path)).unwrap(),
+                content,
+                "{path}"
+            );
+        }
+        assert!(!restore_dir.join("node_modules").exists());
+        assert!(!restore_dir.join("plugins/local/node_modules").exists());
         let _ = fs::remove_dir_all(&source);
         let _ = fs::remove_file(&dest);
+    }
+
+    #[test]
+    fn excludes_linked_node_modules_before_reading_target() {
+        let source = setup_source_dir(&[("config.yaml", "keep")]);
+        let target = setup_source_dir(&[("example/index.js", "runtime")]);
+        let link = source.join("node_modules");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            let created = std::process::Command::new("cmd")
+                .arg("/C")
+                .raw_arg(format!(
+                    "mklink /J \"{}\" \"{}\"",
+                    link.display(),
+                    target.display()
+                ))
+                .creation_flags(0x08000000)
+                .status()
+                .unwrap();
+            assert!(created.success(), "目录联接创建应成功");
+        }
+        let dest = archive_dest(&source);
+        create_archive(&source, &dest, false).unwrap();
+        assert_eq!(list_archive_entries(&dest).unwrap(), ["config.yaml"]);
+        fs::remove_dir_all(&source).unwrap();
+        assert_eq!(
+            fs::read_to_string(target.join("example/index.js")).unwrap(),
+            "runtime"
+        );
+        fs::remove_dir_all(&target).unwrap();
+        fs::remove_file(&dest).unwrap();
     }
 
     /// 多线程压缩回归：archive 创建后能用 extract_archive 完整还原内容。
@@ -761,5 +906,105 @@ mod tests {
         let _ = fs::remove_dir_all(&source);
         let _ = fs::remove_file(&dest);
         let _ = fs::remove_dir_all(&restore_dir);
+    }
+
+    /// 建立目录链接：Unix 用符号链接，Windows 用无需特权的 junction。
+    fn create_dir_link(target: &Path, link: &Path) {
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, link).unwrap();
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            let created = std::process::Command::new("cmd")
+                .arg("/C")
+                .raw_arg(format!(
+                    "mklink /J \"{}\" \"{}\"",
+                    link.display(),
+                    target.display()
+                ))
+                .creation_flags(0x08000000)
+                .status()
+                .unwrap();
+            assert!(created.success(), "目录联接创建应成功");
+        }
+    }
+
+    /// Windows：junction 同样被识别为符号链接，其 target 超过 tar 链接名上限时应跳过，
+    /// 而不是让整份备份失败（回归用户报告的 BACKUP_ARCHIVE_LINK_NAME 备份失败）。
+    #[cfg(windows)]
+    #[test]
+    fn skips_overlong_junction_targets() {
+        let root = std::env::temp_dir().join(format!("dsh-backup-junction-{}", unique_suffix()));
+        let _ = fs::remove_dir_all(&root);
+        let mut deep = root.join("real");
+        for i in 0..6 {
+            deep = deep.join(format!("segment_{i}_padding_padding"));
+        }
+        fs::create_dir_all(&deep).unwrap();
+        let source = root.join("source");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("target.txt"), "content").unwrap();
+        create_dir_link(&deep, &source.join("link"));
+        assert!(
+            fs::read_link(source.join("link")).unwrap().as_os_str().len() > 100,
+            "夹具链接名应超过 tar 链接名上限"
+        );
+
+        let dest = root.join("out.tar.zst");
+        create_archive(&source, &dest, false).expect("超长 junction 应被跳过，备份仍应成功");
+
+        let entries = list_archive_entries(&dest).unwrap();
+        assert!(
+            entries.iter().any(|e| e.contains("target.txt")),
+            "普通文件应已备份"
+        );
+        assert!(
+            !entries.iter().any(|e| e.ends_with("link")),
+            "超长 junction 不应写入归档"
+        );
+
+        let restore = root.join("restore");
+        extract_archive(&dest, &restore).unwrap();
+        assert_eq!(
+            fs::read_to_string(restore.join("target.txt")).unwrap(),
+            "content"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// 回归 CodeRabbit：解压遇到既有链接父级必须拒绝，不能顺着链接把文件写到 dest 之外。
+    #[test]
+    fn extract_rejects_entries_under_a_linked_parent() {
+        let root =
+            std::env::temp_dir().join(format!("dsh-backup-link-extract-{}", unique_suffix()));
+        let _ = fs::remove_dir_all(&root);
+        let source = root.join("source");
+        fs::create_dir_all(source.join("sub")).unwrap();
+        fs::write(source.join("sub").join("child.txt"), b"escaped").unwrap();
+
+        let dest = root.join("out.tar.zst");
+        create_archive(&source, &dest, false).unwrap();
+
+        // 目标处预先存在指向外部目录的链接（Unix 符号链接 / Windows junction）
+        let target = root.join("target");
+        let outside = root.join("outside");
+        fs::create_dir_all(&target).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        let link = target.join("sub");
+        create_dir_link(&outside, &link);
+
+        let err = extract_archive(&dest, &target).unwrap_err();
+        assert!(
+            err.contains("BACKUP_EXTRACT_LINK_PARENT"),
+            "父级是链接的条目必须被拒绝，实际错误: {err}"
+        );
+        assert!(
+            !outside.join("child.txt").exists(),
+            "不得跟随链接把文件写到解压目录之外"
+        );
+
+        let _ = fs::remove_dir(&link);
+        let _ = fs::remove_dir_all(&root);
     }
 }

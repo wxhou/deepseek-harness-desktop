@@ -86,13 +86,13 @@ export function Recovery({ fullScreen = false }: { fullScreen?: boolean }) {
   return (
     <div
       className={fullScreen
-        ? 'flex h-full w-full items-center justify-center overflow-auto bg-canvas p-6'
-        : 'fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4'}
+        ? 'flex h-full w-full items-center justify-center overflow-auto bg-startup p-6'
+        : 'fixed inset-0 z-50 flex items-center justify-center bg-backdrop p-4'}
     >
       <div className={`w-full ${fullScreen ? 'max-w-[640px]' : 'max-w-[560px]'}`}>
         {/* 运行期弹窗必须是**不透明**面板：`bg-panel2/40` 只有 40% 不透明度，页面内容会直接
-            透出来（表现为「弹窗透明、与页面内容重叠」）；全屏恢复页底下是实心 `bg-canvas`，
-            半透明面板才是想要的层次感，故只在非 fullScreen 分支换成实心 `bg-panel`。 */}
+            透出来（表现为「弹窗透明、与页面内容重叠」）；全屏恢复页底下是与 navbar 同 alpha
+            的启动底色，半透明面板才是想要的层次感，故只在非 fullScreen 分支换成实心 `bg-panel`。 */}
         <div className={fullScreen
           ? 'rounded-xl border border-line bg-panel2/40 p-6'
           : 'rounded-xl border border-line bg-panel p-6 shadow-lg'}
@@ -140,7 +140,6 @@ export function Recovery({ fullScreen = false }: { fullScreen?: boolean }) {
                 仅传「确有快照」的 id，无快照的插件保持不动（还原会 SNAPSHOT_NOT_FOUND） */}
             <If cond={restorableIds.length > 0}>
               <Button
-                className="rounded-md"
                 variant="primary"
                 onPress={() => store.recovery.restoreAndRedetect(restorableIds)}
               >
@@ -151,7 +150,6 @@ export function Recovery({ fullScreen = false }: { fullScreen?: boolean }) {
               </Button>
             </If>
             <Button
-              className="rounded-md"
               variant="danger"
               onPress={() => store.recovery.recoverAndRedetect(info.plugins)}
             >
@@ -160,16 +158,16 @@ export function Recovery({ fullScreen = false }: { fullScreen?: boolean }) {
                 {recovery.busy ? t('recovery.removing') : primaryLabel}
               </span>
             </Button>
-            <Button className="rounded-md" variant="tertiary" onPress={() => store.harness.restart()}>
+            <Button variant="tertiary" onPress={() => store.harness.restart()}>
               {t('recovery.restart')}
             </Button>
-            <Button className="rounded-md" variant="ghost" onPress={() => store.harness.enterSafeMode()}>
+            <Button variant="ghost" onPress={() => store.harness.enterSafeMode()}>
               <span className="flex items-center gap-1">
                 <ShieldCheck className="size-4" />
                 {t('buttons.safe_mode')}
               </span>
             </Button>
-            <Button className="rounded-md" variant="ghost" onPress={() => store.recovery.dismissRecovery()}>
+            <Button variant="ghost" onPress={() => store.recovery.dismissRecovery()}>
               {t('recovery.dismiss')}
             </Button>
           </div>

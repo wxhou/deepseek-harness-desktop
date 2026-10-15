@@ -6,7 +6,6 @@ export const SETTINGS_SECTION_SLOT = 'settings.section'
 export const SESSION_REGISTRANT = PLUGIN_ID
 export const SESSION_SECTION_ID = PLUGIN_ID
 
-export const SESSION_STYLE_ID = `${PLUGIN_ID}-styles`
 export const SESSION_MENU_STYLE_ID = `${PLUGIN_ID}-menu-styles`
 
 export const LOCALE_EFFECT = `${PLUGIN_ID}: locale`

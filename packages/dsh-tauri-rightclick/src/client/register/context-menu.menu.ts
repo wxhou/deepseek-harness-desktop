@@ -6,7 +6,7 @@ import type {
   WorkspaceViewLike,
 } from '../types'
 import type { MenuComposer } from './context-menu.types'
-import { reject } from 'dsh-tauri/client'
+import { invoke } from 'dsh-tauri/client'
 import { confirmDialog } from '../components/confirm-dialog'
 import { locale } from '../locales'
 import {
@@ -20,18 +20,21 @@ import {
   openExternalUrl,
   openInExplorer,
   renameSession,
+  startWorkspaceSession,
   supportsSessionPin,
   togglePinSession,
 } from '../service/menu'
 import { readClipboard } from '../utils/clipboard'
 import { pasteInto, replaceSelection, selectAll, selectSurface } from '../utils/editable'
 import { externalUrl, selectedUrl } from '../utils/url'
+import { redoShortcutLabel, shortcutLabel } from './context-menu.utils'
 import { officialAction } from './locate'
 import { officialSelect } from './official-menu'
 
-const RENAME_LABELS = [/^重命名$/, /^rename$/i]
-const ARCHIVE_SESSION_LABELS = [/^归档会话$/, /^archive( session)?$/i]
-const FORK_SESSION_LABELS = [/^分叉会话$/, /^fork( session)?$/i]
+// 官方行菜单项文本会带上当前快捷键绑定（如「分叉会话⇧⌘F」），因此只做前缀匹配、不用全串锚定。
+const RENAME_LABELS = [/^重命名/, /^rename\b/i]
+const ARCHIVE_SESSION_LABELS = [/^归档会话/, /^archive( session)?\b/i]
+const FORK_SESSION_LABELS = [/^分叉会话/, /^fork( session)?\b/i]
 
 export function buildSessionMenu(
   composer: MenuComposer,
@@ -92,15 +95,32 @@ export function buildSessionMenu(
 
   composer.split()
   composer.add(locale.text('forkSession'), async () => {
-    if (officialAction(row))
-      return officialSelect(row, FORK_SESSION_LABELS, locale.text('officialForkUnavailable'), composer.delegate(false))
     if (!current)
       throw new Error(locale.text('sessionUnknown'))
-    return forkSession({ sessions: composer.sessions, sessionId: current.id })
+    const byService = () => forkSession({ sessions: composer.sessions, sessionId: current.id })
+    if (officialAction(row)) {
+      try {
+        // 优先点官方行菜单里的分叉项；菜单项缺失时 onFailure 退到官方 sessions 服务，而不是只报「无法调用」。
+        await officialSelect(row, FORK_SESSION_LABELS, locale.text('officialForkUnavailable'), {
+          ...composer.delegate(false),
+          onFailure: (message) => {
+            void byService().then((outcome) => {
+              if (!outcome.ok)
+                composer.toast(outcome.error || message)
+            })
+          },
+        })
+        return
+      }
+      catch {
+        // 官方行操作按钮取不到：落到下面的服务路径
+      }
+    }
+    return byService()
   })
 
   const visible = current
-    ? reject(extensions, entry => entry.visible?.({ session: current, row }) === false)
+    ? extensions.filter(entry => entry.visible?.({ session: current, row }) !== false)
     : []
   if (visible.length) {
     composer.split()
@@ -116,7 +136,13 @@ export function buildSessionMenu(
   }
 
   composer.split()
-  composer.add(locale.text('refresh'), reload, 'Ctrl+R')
+  if (current && 'dshDesktop' in globalThis) {
+    composer.add(locale.text('openInNewWindow'), () => invoke<void>('create_app_window', {
+      sessionId: current.id,
+      iframeUrl: window.location.origin,
+    }))
+  }
+  composer.add(locale.text('refresh'), reload, shortcutLabel('R'))
 }
 
 export function buildUngroupedMenu(composer: MenuComposer): void {
@@ -135,7 +161,7 @@ export function buildUngroupedMenu(composer: MenuComposer): void {
       await archiveAll(composer, sessionIds)
   })
   composer.split()
-  composer.add(locale.text('refresh'), reload, 'Ctrl+R')
+  composer.add(locale.text('refresh'), reload, shortcutLabel('R'))
 }
 
 export function buildWorkspaceMenu(
@@ -144,10 +170,10 @@ export function buildWorkspaceMenu(
 ): void {
   const workspace = target.workspace
 
-  composer.add(locale.text('newSession'), () => {
-    // 工作区投影与 workspaces 服务来自两份内核代各自的包实例，保留既有的运行时交界断言。
-    composer.workspaces.startSession?.(workspace.workspaceId as unknown as WorkspaceId)
-  })
+  composer.add(locale.text('newSession'), () => startWorkspaceSession({
+    workspaces: composer.workspaces,
+    workspaceId: workspace.workspaceId as unknown as WorkspaceId,
+  }))
   composer.add(locale.text('openInExplorer'), () => openInExplorer({ path: workspace.path }))
 
   composer.split()
@@ -189,20 +215,20 @@ export function buildWorkspaceMenu(
   }, '', true)
 
   composer.split()
-  composer.add(locale.text('refresh'), reload, 'Ctrl+R')
+  composer.add(locale.text('refresh'), reload, shortcutLabel('R'))
 }
 
 export function buildEditableMenu(composer: MenuComposer, editable: HTMLElement, selection: string): void {
   composer.add(locale.text('undo'), () => {
     editable.focus()
     if (!document.execCommand('undo'))
-      throw new Error(locale.text('useUndoShortcut'))
-  }, 'Ctrl+Z')
+      throw new Error(locale.text('useUndoShortcut', { key: shortcutLabel('Z') }))
+  }, shortcutLabel('Z'))
   composer.add(locale.text('redo'), () => {
     editable.focus()
     if (!document.execCommand('redo'))
-      throw new Error(locale.text('useRedoShortcut'))
-  }, 'Ctrl+Y')
+      throw new Error(locale.text('useRedoShortcut', { key: redoShortcutLabel() }))
+  }, redoShortcutLabel())
 
   composer.split()
   composer.add(locale.text('cut'), async () => {
@@ -210,21 +236,21 @@ export function buildEditableMenu(composer: MenuComposer, editable: HTMLElement,
       await composer.copyText(selection, locale.text('cutDone'))
     if (!replaceSelection(editable, ''))
       throw new Error(locale.text('editPositionUnknown'))
-  }, 'Ctrl+X')
-  composer.add(locale.text('copy'), () => composer.copyText(selection, locale.text('copied')), 'Ctrl+C')
+  }, shortcutLabel('X'))
+  composer.add(locale.text('copy'), () => composer.copyText(selection, locale.text('copied')), shortcutLabel('C'))
   composer.add(locale.text('paste'), async () => {
     const clipboard = await readClipboard()
     if (clipboard === null)
-      throw new Error(locale.text('clipboardReadFailed'))
+      throw new Error(locale.text('clipboardReadFailed', { key: shortcutLabel('V') }))
     if (!pasteInto(editable, clipboard))
       throw new Error(locale.text('editPositionUnknown'))
-  }, 'Ctrl+V')
+  }, shortcutLabel('V'))
 
   composer.split()
-  composer.add(locale.text('selectAll'), () => selectAll(editable), 'Ctrl+A')
+  composer.add(locale.text('selectAll'), () => selectAll(editable), shortcutLabel('A'))
 
   composer.split()
-  composer.add(locale.text('refresh'), reload, 'Ctrl+R')
+  composer.add(locale.text('refresh'), reload, shortcutLabel('R'))
 }
 
 export function buildSelectionMenu(
@@ -234,7 +260,7 @@ export function buildSelectionMenu(
   surface: HTMLElement | null,
 ): void {
   if (selection)
-    composer.add(locale.text('copySelectedText'), () => composer.copyText(selection, locale.text('copied')), 'Ctrl+C')
+    composer.add(locale.text('copySelectedText'), () => composer.copyText(selection, locale.text('copied')), shortcutLabel('C'))
 
   const url = externalUrl(link?.href || '') || selectedUrl(selection)
   if (url) {
@@ -248,11 +274,11 @@ export function buildSelectionMenu(
   if (surfaceNode) {
     if (selection || url)
       composer.split()
-    composer.add(locale.text('selectCurrentContent'), () => selectSurface(surfaceNode), 'Ctrl+A')
+    composer.add(locale.text('selectCurrentContent'), () => selectSurface(surfaceNode), shortcutLabel('A'))
   }
 
   composer.split()
-  composer.add(locale.text('refresh'), reload, 'Ctrl+R')
+  composer.add(locale.text('refresh'), reload, shortcutLabel('R'))
 }
 
 // --- internal ---

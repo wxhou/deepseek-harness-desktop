@@ -13,16 +13,13 @@ import {
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import { SlotOutlet } from '@deepseek-ai/dsh-client-ui-renderer'
 import { useCallback, useRef, useState } from 'react'
+import { Chip } from '../components/chip'
 import { ChevronDown, Folder as FolderClose, FolderOpen, Plus } from '../components/icons'
+import { Text } from '../components/text'
 import {
-  HERO_WORKSPACE_CHIP_CLASS,
   HERO_WORKSPACE_FLOW_SLOT,
 } from '../constants'
-import { useMountStyle } from '../hooks/use-mount-style'
 import { locale } from '../locales'
-import heroWorkspaceStyle from './hero-workspace.cssr'
-
-const HERO_WORKSPACE_STYLE_ID = 'dsh-tauri-ui-hero-workspace-styles'
 
 /** 官方 `WorkspacePickFlow` 的「添加工作区」条目 id，逐字复用以免与官方菜单语义分叉。 */
 const ADD_WORKSPACE_ID = '::add-workspace'
@@ -38,7 +35,6 @@ const absentFlow: SelectorHook<boolean> = select => select(false)
 
 export function HeroWorkspace(props: HeroWorkspaceProps): ReactElement {
   const { open, selectedId, onPick, onClose, createWorkspace, startUngrouped } = props
-  useMountStyle(heroWorkspaceStyle, HERO_WORKSPACE_STYLE_ID)
   locale.useLocale()
   const [expanded, setExpanded] = useState(false)
   const [flowOpen, setFlowOpen] = useState(false)
@@ -132,23 +128,22 @@ export function HeroWorkspace(props: HeroWorkspaceProps): ReactElement {
 
   return (
     <>
-      <button
+      <Chip
         ref={chipRef}
-        type="button"
-        className={HERO_WORKSPACE_CHIP_CLASS}
+        variant="seat"
+        data-hero-workspace="1"
+        className="max-w-[min(100%,360px)]"
         aria-label={locale.text('chooseWorkspace')}
         aria-haspopup="menu"
         aria-expanded={visible}
+        icon={label === undefined
+          ? <FolderClose width={16} height={16} />
+          : <FolderOpen width={16} height={16} />}
+        chevron={<ChevronDown width={12} height={12} />}
         onClick={onChipClick}
       >
-        {label === undefined
-          ? <FolderClose className={`${HERO_WORKSPACE_CHIP_CLASS}__folder`} width={16} height={16} />
-          : <FolderOpen className={`${HERO_WORKSPACE_CHIP_CLASS}__folder`} width={16} height={16} />}
-        <span className={`${HERO_WORKSPACE_CHIP_CLASS}__label`}>
-          {label ?? locale.text('chooseWorkspace')}
-        </span>
-        <ChevronDown className={`${HERO_WORKSPACE_CHIP_CLASS}__chevron`} width={12} height={12} />
-      </button>
+        {label ?? locale.text('chooseWorkspace')}
+      </Chip>
       <Menu
         open={visible}
         anchor={null}
@@ -162,7 +157,7 @@ export function HeroWorkspace(props: HeroWorkspaceProps): ReactElement {
         getAnchorRect={() => chipRef.current?.getBoundingClientRect() ?? null}
       />
       {visible && phase === 'pending' && (
-        <div className={`${HERO_WORKSPACE_CHIP_CLASS}__status`} role="status">
+        <div className="text-tertiary text-[12px] leading-[20px]" role="status">
           {locale.text('loading')}
         </div>
       )}
@@ -188,14 +183,14 @@ export function HeroWorkspace(props: HeroWorkspaceProps): ReactElement {
           <>
             <Button
               variant="outline"
-              className={`${HERO_WORKSPACE_CHIP_CLASS}__action`}
+              className="min-w-[72px]"
               onClick={() => setFolderError(null)}
             >
               {locale.text('cancel')}
             </Button>
             <Button
               variant="primary"
-              className={`${HERO_WORKSPACE_CHIP_CLASS}__action`}
+              className="min-w-[72px]"
               disabled={!flowAvailable}
               onClick={openFlow}
             >
@@ -204,7 +199,7 @@ export function HeroWorkspace(props: HeroWorkspaceProps): ReactElement {
           </>
         )}
       >
-        <div className={`${HERO_WORKSPACE_CHIP_CLASS}__error`} role="alert">{folderError}</div>
+        <Text tone="error" role="alert">{folderError}</Text>
       </Modal>
     </>
   )

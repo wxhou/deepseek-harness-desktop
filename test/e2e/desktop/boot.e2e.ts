@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import process from 'node:process'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { Key } from 'webdriverio'
 import { startDesktopApp } from '../support/desktop'
 import { completePreinstall } from '../support/preinstall'
 import { SETUP_ERROR, SHELL_IFRAME, SHELL_ROOT } from '../support/selectors'
@@ -137,4 +138,86 @@ describe.skipIf(process.platform === 'darwin')('桌面端启动冒烟', () => {
     const shellErrors = await browser.execute(readPageErrors)
     expect(shellErrors, '壳层出现报错').toEqual([])
   }, ASSEMBLY_TIMEOUT_MS)
+
+  it('persists appearance through the native bridge and restores defaults', async () => {
+    expect(await browser.execute(() => (window as unknown as { __DSH_STORE_FILE__: string }).__DSH_STORE_FILE__), '前端必须使用原生测试配置文件').toBe('.store.test.dat')
+    async function click(id: string) {
+      const element = await browser.$(`[data-testid="${id}"]`)
+      await element.waitForClickable()
+      await element.click()
+    }
+    async function config() {
+      return browser.execute(async () => {
+        const bridge = (window as unknown as { __TAURI_INTERNALS__: { invoke: (command: string) => Promise<{ zoom_factor: number, appearance: { palette: string, terminal: boolean, transparency: boolean, opacity: number, blur: boolean, sidebarOnly: boolean } }> } }).__TAURI_INTERNALS__
+        return bridge.invoke('get_app_config')
+      })
+    }
+    async function appearance() {
+      return (await config()).appearance
+    }
+    await click('dsh-navbar-menu-config')
+    await click('dsh-navbar-item-appearance')
+    await click('dsh-appearance-palette')
+    await click('dsh-appearance-palette-nord')
+    await browser.waitUntil(async () => (await appearance()).palette === 'nord', { timeoutMsg: '原生设置未保存 Nord 配色' })
+    const terminal = await browser.$('[data-testid="dsh-appearance-terminal"] input[role="switch"]')
+    await terminal.waitForEnabled()
+    // 内嵌驱动调用 HTMLElement.click；React Aria 的 label 会拦截它，须激活真实 input。
+    await terminal.click()
+    await browser.waitUntil(async () => (await appearance()).terminal, { timeoutMsg: '终端开关未通过原生桥保存' })
+    const transparency = await browser.$('[data-testid="dsh-appearance-transparency"] input[role="switch"]')
+    await transparency.waitForEnabled()
+    await transparency.click()
+    await browser.waitUntil(async () => (await appearance()).transparency)
+    expect(await appearance(), '开启原生透明未应用默认组合').toEqual({ palette: 'nord', terminal: true, transparency: true, opacity: 80, blur: true, sidebarOnly: true })
+    const opacity = await browser.$('[data-testid="dsh-appearance-opacity"] input[type="range"]')
+    await opacity.waitForEnabled()
+    await browser.execute(() => document.querySelector<HTMLInputElement>('[data-testid="dsh-appearance-opacity"] input[type="range"]')!.focus())
+    await browser.keys(Key.ArrowLeft)
+    await browser.waitUntil(async () => (await appearance()).opacity === 79, { timeoutMsg: '原生设置未保存滑块的 79% 不透明度' })
+    const sidebarOnly = await browser.$('[data-testid="dsh-appearance-sidebar-only"] input[role="switch"]')
+    await sidebarOnly.waitForEnabled()
+    await sidebarOnly.click()
+    await browser.waitUntil(async () => !(await appearance()).sidebarOnly, { timeoutMsg: '原生设置未保存内容区不透明开关' })
+    await click('dsh-appearance-zoom')
+    await click('dsh-appearance-zoom-1.2')
+    await browser.waitUntil(async () => (await config()).zoom_factor === 1.2, { timeoutMsg: '本机界面缩放未从外观面板保存' })
+    expect(await appearance(), '原生设置与所选外观不一致').toEqual({ palette: 'nord', terminal: true, transparency: true, opacity: 79, blur: true, sidebarOnly: false })
+    await click('dsh-appearance-reset')
+    await browser.waitUntil(async () => (await appearance()).palette === 'default', { timeoutMsg: '原生外观设置未恢复默认值' })
+    expect(await appearance(), '重置未还原完整原生外观设置').toEqual({ palette: 'default', terminal: false, transparency: false, opacity: 100, blur: false, sidebarOnly: false })
+    expect((await config()).zoom_factor, '重置未还原本机界面缩放').toBe(1)
+    await click('dsh-config-dialog-close')
+  })
+
+  it('persists shell zoom shortcuts without changing other native settings', async () => {
+    async function config() {
+      return browser.execute(() => {
+        const bridge = (window as unknown as { __TAURI_INTERNALS__: { invoke: (command: string) => Promise<{ zoom_factor: number, appearance: unknown, backup_include_credentials: boolean }> } }).__TAURI_INTERNALS__
+        return bridge.invoke('get_app_config')
+      })
+    }
+    async function shortcut(key: string) {
+      await browser.execute((key) => {
+        document.dispatchEvent(new KeyboardEvent('keydown', { key, ctrlKey: true, bubbles: true }))
+      }, key)
+    }
+    const original = await config()
+    try {
+      await shortcut('0')
+      await browser.waitUntil(async () => (await config()).zoom_factor === 1, { timeoutMsg: '缩放重置未写入原生设置' })
+      await shortcut('+')
+      await shortcut('+')
+      await browser.waitUntil(async () => (await config()).zoom_factor === 1.2, { timeoutMsg: '连续缩放快捷键未保存到原生设置' })
+      const saved = await config()
+      expect(saved.appearance, '缩放不应覆盖原生外观设置').toEqual(original.appearance)
+      expect(saved.backup_include_credentials, '缩放不应覆盖凭证备份偏好').toBe(original.backup_include_credentials)
+    }
+    finally {
+      await browser.execute(async (zoomFactor) => {
+        const bridge = (window as unknown as { __TAURI_INTERNALS__: { invoke: (command: string, args: unknown) => Promise<unknown> } }).__TAURI_INTERNALS__
+        await bridge.invoke('update_app_config', { zoomFactor })
+      }, original.zoom_factor)
+    }
+  })
 })

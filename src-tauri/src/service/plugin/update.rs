@@ -14,7 +14,7 @@
 //!   `latest > installed` 才视为有更新（避免把 `latest` 指向更旧版本误判为可升级）。
 //!
 //! 与 market 相同的兜底：任何一次判定失败都报告「无更新」，绝不因一次网络抖动或
-//! 404 让整个插件管理器不可用；结果按 (id, spec, 版本, Git 锁定提交) 缓存 30 分钟
+//! 404 让整个插件管理器不可用；结果按 (id, 代理, spec, 版本, Git 锁定提交) 缓存 30 分钟
 //! （TTL），期间
 //! 重复调用直接命中缓存、不重复打网络。缓存缺失/未判定时 `update_available=false`，
 //! 前端由 `refresh_plugin_updates` 在挂载后补齐，因此首次展示短暂无按钮、随后自动
@@ -56,13 +56,38 @@ fn cache() -> &'static Mutex<HashMap<String, CacheEntry>> {
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// 缓存键：spec、版本或该直接依赖的 Git 锁定提交变化后，旧结果自动失效。
-fn cache_key(id: &str, spec: &str, version: &str, locked: &HashMap<String, String>) -> String {
+/// 缓存键包含请求使用的代理，防止切换代理后复用旧失败或被旧请求回填覆盖。
+fn cache_key(
+    id: &str,
+    spec: &str,
+    version: &str,
+    locked: &HashMap<String, String>,
+    proxy_url: &str,
+) -> String {
     let locked_commit = extract_github_target(spec)
         .and_then(|_| locked.get(id))
         .map(String::as_str)
         .unwrap_or_default();
-    format!("{id}\u{0}{spec}\u{0}{version}\u{0}{locked_commit}")
+    format!("{id}\u{0}{proxy_url}\u{0}{spec}\u{0}{version}\u{0}{locked_commit}")
+}
+
+/// 探测缓存里该插件的「最新版本」；没探测过或缓存里没有它时返回 `None`。
+///
+/// 升级「以 0 退出但版本没动」时需要知道本该装到哪个版本：发布时长豁免是按精确
+/// `包名@版本` 写的，没有目标版本就给不出可授权的条目。这里只读缓存、不新发请求
+/// （探测由 [`refresh`] 统一负责），仅采信当前代理下的结果。
+pub(crate) fn known_latest(app_handle: &AppHandle, id: &str) -> Option<String> {
+    let proxy_url = crate::config::get_store_dat_setting(app_handle).proxy_url;
+    cached_latest(&cache().lock().unwrap(), id, &proxy_url)
+}
+
+fn cached_latest(cache: &HashMap<String, CacheEntry>, id: &str, proxy_url: &str) -> Option<String> {
+    let prefix = format!("{id}\u{0}{proxy_url}\u{0}");
+    cache
+        .iter()
+        .filter(|(key, _)| key.starts_with(&prefix))
+        .max_by_key(|(_, entry)| entry.at)
+        .and_then(|(_, entry)| entry.info.latest.clone())
 }
 
 // ---------------------------------------------------------------------------
@@ -376,15 +401,8 @@ fn percent_decode_once(value: &str) -> Option<String> {
     String::from_utf8(decoded).ok()
 }
 
-/// percent decode 只接受十六进制字节；非法 nibble 返回 None，使 selector
-/// 解析 fail closed 而不是生成被截断的 ref。
 fn hex_value(value: u8) -> Option<u8> {
-    match value {
-        b'0'..=b'9' => Some(value - b'0'),
-        b'a'..=b'f' => Some(value - b'a' + 10),
-        b'A'..=b'F' => Some(value - b'A' + 10),
-        _ => None,
-    }
+    char::from(value).to_digit(16).map(|digit| digit as u8)
 }
 
 /// `owner/repo` 形态校验（owner/repo 各仅允许字母数字 `._-`，避免误吞 URL 首位）。
@@ -412,7 +430,10 @@ fn is_upgrade(installed: &str, latest: &str) -> bool {
 }
 
 /// 把 npm 包名编码为 registry 路径（`@scope/name` → `@scope%2Fname`）。
-fn encode_registry_name(name: &str) -> String {
+///
+/// `pub(crate)`：插件 spec 兼容性检查（`install::inspect`）需要读同一个 registry，
+/// 复用这里的编码与请求形状，避免两处 URL 拼装漂移。
+pub(crate) fn encode_registry_name(name: &str) -> String {
     name.replace('@', "%40").replace('/', "%2F")
 }
 
@@ -420,7 +441,8 @@ fn encode_registry_name(name: &str) -> String {
 // 网络判定
 // ---------------------------------------------------------------------------
 
-async fn fetch_json(client: &reqwest::Client, url: &str) -> Option<Value> {
+/// registry/API 的 JSON GET（非 2xx 与网络错误统一返回 `None`）。
+pub(crate) async fn fetch_json(client: &reqwest::Client, url: &str) -> Option<Value> {
     let res = client
         .get(url)
         .header("accept", "application/json")
@@ -523,11 +545,12 @@ async fn compute_update(
 pub fn apply_cache(app_handle: &AppHandle, plugins: &mut [DshPlugin]) {
     let specs = read_specs(app_handle);
     let locked = read_locked_commits(&profile_dir(app_handle), &specs);
+    let proxy_url = crate::config::get_store_dat_setting(app_handle).proxy_url;
     let cache = cache().lock().unwrap();
     let now = Instant::now();
     for p in plugins.iter_mut() {
         let spec = specs.get(&p.id).cloned().unwrap_or_default();
-        let key = cache_key(&p.id, &spec, &p.version, &locked);
+        let key = cache_key(&p.id, &spec, &p.version, &locked, &proxy_url);
         if let Some(entry) = cache.get(&key) {
             if now.duration_since(entry.at) < UPDATES_TTL {
                 p.update_available = entry.info.update_available;
@@ -545,7 +568,8 @@ pub async fn refresh(app_handle: &AppHandle) -> Result<Vec<DshPlugin>, String> {
     let mut plugins = super::watch::list(app_handle);
     let specs = read_specs(app_handle);
     let locked = read_locked_commits(&profile_dir(app_handle), &specs);
-    let client = reqwest::Client::builder()
+    let proxy_url = crate::config::get_store_dat_setting(app_handle).proxy_url;
+    let client = crate::config::proxy::client_builder(&proxy_url)?
         .user_agent("deepseek-harness-desktop")
         .timeout(Duration::from_secs(10))
         .build()
@@ -565,7 +589,7 @@ pub async fn refresh(app_handle: &AppHandle) -> Result<Vec<DshPlugin>, String> {
         let cache = cache().lock().unwrap();
         for (idx, p) in plugins.iter_mut().enumerate() {
             let spec = specs.get(&p.id).cloned().unwrap_or_default();
-            let key = cache_key(&p.id, &spec, &p.version, &locked);
+            let key = cache_key(&p.id, &spec, &p.version, &locked, &proxy_url);
             if let Some(entry) = cache.get(&key) {
                 if now.duration_since(entry.at) < UPDATES_TTL {
                     p.update_available = entry.info.update_available;
@@ -621,6 +645,149 @@ pub async fn refresh(app_handle: &AppHandle) -> Result<Vec<DshPlugin>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_update_cache_is_not_reused_after_proxy_changes() {
+        let locked = HashMap::new();
+        for (before, after) in [
+            ("", "http://127.0.0.1:7897/"),
+            ("http://127.0.0.1:7897/", "socks5h://127.0.0.1:1080"),
+            ("http://127.0.0.1:7897/", ""),
+            (
+                "http://user:old@proxy.example/",
+                "http://user:new@proxy.example/",
+            ),
+        ] {
+            let entries = HashMap::from([(
+                cache_key("plugin", "^1.0.0", "1.0.0", &locked, before),
+                CacheEntry {
+                    info: UpdateInfo {
+                        update_available: false,
+                        latest: None,
+                    },
+                    at: Instant::now(),
+                },
+            )]);
+            let key = cache_key("plugin", "^1.0.0", "1.0.0", &locked, after);
+            assert!(
+                !entries.contains_key(&key),
+                "proxy change reused a cached failure"
+            );
+        }
+    }
+
+    #[test]
+    fn normalized_equivalent_proxies_reuse_update_cache() {
+        let locked = HashMap::new();
+        let before =
+            crate::config::proxy::normalize_proxy_url(" HTTP://proxy.example:80 ").unwrap();
+        let after = crate::config::proxy::normalize_proxy_url("http://proxy.example/").unwrap();
+        let entries = HashMap::from([(
+            cache_key("plugin", "^1.0.0", "1.0.0", &locked, &before),
+            CacheEntry {
+                info: UpdateInfo {
+                    update_available: true,
+                    latest: Some("2.0.0".into()),
+                },
+                at: Instant::now(),
+            },
+        )]);
+        let key = cache_key("plugin", "^1.0.0", "1.0.0", &locked, &after);
+        let entry = entries
+            .get(&key)
+            .expect("unchanged proxy lost its cached result");
+        assert!(entry.info.update_available);
+        assert_eq!(entry.info.latest.as_deref(), Some("2.0.0"));
+        assert_eq!(
+            cached_latest(&entries, "plugin", &after).as_deref(),
+            Some("2.0.0")
+        );
+    }
+
+    #[test]
+    fn late_old_proxy_result_does_not_replace_current_update_or_install_target() {
+        let locked = HashMap::new();
+        let proxy = "http://127.0.0.1:7897/";
+        let key = cache_key("plugin", "^1.0.0", "1.0.0", &locked, proxy);
+        let now = Instant::now();
+        let mut entries = HashMap::from([(
+            key.clone(),
+            CacheEntry {
+                info: UpdateInfo {
+                    update_available: true,
+                    latest: Some("2.0.0".into()),
+                },
+                at: now,
+            },
+        )]);
+        entries.insert(
+            cache_key("plugin", "^1.0.0", "1.0.0", &locked, ""),
+            CacheEntry {
+                info: UpdateInfo {
+                    update_available: false,
+                    latest: Some("1.0.0".into()),
+                },
+                at: now + Duration::from_millis(1),
+            },
+        );
+        let entry = entries.get(&key).unwrap();
+        assert!(entry.info.update_available);
+        assert_eq!(entry.info.latest.as_deref(), Some("2.0.0"));
+        assert_eq!(
+            cached_latest(&entries, "plugin", proxy).as_deref(),
+            Some("2.0.0")
+        );
+    }
+
+    #[test]
+    fn cached_install_target_ignores_another_proxy() {
+        let entries = HashMap::from([(
+            cache_key("plugin", "^1.0.0", "1.0.0", &HashMap::new(), ""),
+            CacheEntry {
+                info: UpdateInfo {
+                    update_available: true,
+                    latest: Some("2.0.0".into()),
+                },
+                at: Instant::now(),
+            },
+        )]);
+        assert_eq!(
+            cached_latest(&entries, "plugin", "http://127.0.0.1:7897/"),
+            None
+        );
+        assert_eq!(cached_latest(&entries, "different-plugin", ""), None);
+    }
+
+    #[test]
+    fn hex_value_accepts_only_ascii_hex_nibbles() {
+        for byte in 0..=u8::MAX {
+            let expected = b"0123456789abcdef"
+                .iter()
+                .position(|candidate| *candidate == byte.to_ascii_lowercase())
+                .map(|position| position as u8);
+            assert_eq!(hex_value(byte), expected, "byte={byte}");
+        }
+    }
+
+    #[test]
+    fn percent_decode_preserves_single_pass_and_rejects_invalid_escapes() {
+        for (encoded, expected) in [
+            ("branch%2Ffeature", Some("branch/feature")),
+            ("%41%4a%4F", Some("AJO")),
+            ("%252F", Some("%2F")),
+            ("%E4%B8%AD", Some("中")),
+            ("%", None),
+            ("%2", None),
+            ("%2G", None),
+            ("%FF", None),
+        ] {
+            assert_eq!(
+                percent_decode_once(encoded).as_deref(),
+                expected,
+                "{encoded}"
+            );
+        }
+    }
 
     fn target(repo: &str, reference: Option<&str>) -> Option<GitHubTarget> {
         Some(GitHubTarget {
@@ -993,11 +1160,11 @@ importers:\n  .:\n    dependencies:\n      stable-plugin:\n        specifier: gi
 
         std::fs::write(&path, format!("{prefix}1111111\n")).unwrap();
         let before = read_locked_commits(&dir, &specs);
-        let before_key = cache_key("plugin", "github:owner/repo", "1.0.0", &before);
+        let before_key = cache_key("plugin", "github:owner/repo", "1.0.0", &before, "");
 
         std::fs::write(&path, format!("{prefix}2222222\n")).unwrap();
         let after = read_locked_commits(&dir, &specs);
-        let after_key = cache_key("plugin", "github:owner/repo", "1.0.0", &after);
+        let after_key = cache_key("plugin", "github:owner/repo", "1.0.0", &after, "");
 
         assert_eq!(before.get("plugin"), Some(&"1111111".to_string()));
         assert_eq!(after.get("plugin"), Some(&"2222222".to_string()));
@@ -1070,23 +1237,23 @@ importers:\n  .:\n    dependencies:\n      plugin:\n        specifier: github:ow
     #[test]
     fn cache_key_changes_with_version() {
         let locked = HashMap::new();
-        let a = cache_key("p", "spec", "1.0.0", &locked);
-        let b = cache_key("p", "spec", "1.0.1", &locked);
+        let a = cache_key("p", "spec", "1.0.0", &locked, "");
+        let b = cache_key("p", "spec", "1.0.1", &locked, "");
         assert_ne!(a, b);
-        let c = cache_key("p", "spec2", "1.0.0", &locked);
+        let c = cache_key("p", "spec2", "1.0.0", &locked, "");
         assert_ne!(a, c);
     }
 
     #[test]
     fn cache_key_changes_with_locked_git_commit() {
         let missing = HashMap::new();
-        let missing_key = cache_key("p", "github:Owner/Repo", "1.0.0", &missing);
+        let missing_key = cache_key("p", "github:Owner/Repo", "1.0.0", &missing, "");
         let mut locked = HashMap::from([("p".into(), "aaaaaaa".into())]);
-        let a = cache_key("p", "github:Owner/Repo", "1.0.0", &locked);
+        let a = cache_key("p", "github:Owner/Repo", "1.0.0", &locked, "");
         let cache = HashMap::from([(a.clone(), true)]);
 
         locked.insert("p".into(), "bbbbbbb".into());
-        let b = cache_key("p", "github:Owner/Repo", "1.0.0", &locked);
+        let b = cache_key("p", "github:Owner/Repo", "1.0.0", &locked, "");
 
         assert_ne!(missing_key, a);
         assert_ne!(a, b);
@@ -1096,10 +1263,10 @@ importers:\n  .:\n    dependencies:\n      plugin:\n        specifier: github:ow
     #[test]
     fn registry_cache_key_ignores_unrelated_git_commits() {
         let mut locked = HashMap::from([("other-plugin".into(), "aaaaaaa".into())]);
-        let a = cache_key("p", "^1.0.0", "1.0.0", &locked);
+        let a = cache_key("p", "^1.0.0", "1.0.0", &locked, "");
 
         locked.insert("other-plugin".into(), "bbbbbbb".into());
-        let b = cache_key("p", "^1.0.0", "1.0.0", &locked);
+        let b = cache_key("p", "^1.0.0", "1.0.0", &locked, "");
 
         assert_eq!(a, b);
     }

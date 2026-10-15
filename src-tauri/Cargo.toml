@@ -1,9 +1,13 @@
 [package]
 name = "deepseek-harness-desktop"
-version = "0.18.0"
+version = "0.24.0"
 description = "Desktop application for DeepSeek Harness (dsh)"
 authors = [ "deepseek-harness-desktop contributors" ]
 edition = "2021"
+
+[workspace]
+members = [ "vendor/tauri-plugin-notifications" ]
+resolver = "2"
 
 [lib]
 # The `_lib` suffix may seem redundant but it is necessary
@@ -18,13 +22,17 @@ crate-type = [
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+tauri-utils = "2"
+serde_json = "1"
+json-patch = "3"
 
 [dependencies]
 tauri = { version = "2", features = [
   "tray-icon",
   "image-png",
   "devtools",
-  "macos-private-api"
+  "macos-private-api",
+  "protocol-asset"
 ] }
 # E2E：应用内嵌 WebDriver server（Tauri 官方推荐的 WebdriverIO 驱动方式）。
 # 仅当进程环境带 TAURI_WEBDRIVER_PORT 时监听，正常运行不开放端口。
@@ -39,11 +47,24 @@ tauri-plugin-opener = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-store = "2"
 tauri-plugin-notification = "2"
+# 壳层原生通知（带交互按钮 + 点击 / 动作事件）走 Choochmeque fork：官方插件在桌面端
+# `show()` 之后即丢弃 handle，拿不到点击与按钮动作，所以 fork 是必需依赖。
+# `default-features = false` 关掉它的 notify-rust 后端，改用它自带的 Windows toast /
+# macOS 通知中心实现——那才是带按钮与事件的那条通路。
+# macOS 上它会用 swift-bridge 编译自己的 Swift 后端，源码用了 Swift 6 的 typed throws
+# （`throws(FFIResult)`），因此 macOS 构建需要 Xcode 16+（CI 见 ci.yml 的 Select Xcode 16）。
+tauri-plugin-notifications = { version = "0.5.0-rc.14", default-features = false }
 tauri-plugin-autostart = "2"
 # 桌宠素材直连远端：插件版 HTTP 从 Rust 发起请求，绕开 githubusercontent 的 CORS。
 # 版本须与 package.json 的 @tauri-apps/plugin-http（catalog:tauri，^2.6.0）保持同一 minor：
 # tauri CLI 会在构建前校验 NPM 包与 Rust crate 的 major/minor 是否一致，不一致直接退出。
-tauri-plugin-http = "2.6"
+# 公开桌宠素材不需要 cookie；禁用持久化，避免缓存不可写时阻断整个应用启动。
+tauri-plugin-http = { version = "2.6", default-features = false, features = [
+  "rustls-tls",
+  "http2",
+  "charset",
+  "system-proxy"
+] }
 # 前端读取系统版本（`@tauri-apps/plugin-os` 的 `type()` / `version()`）用于缩放的平台判定。
 # 版本须与 package.json 的 @tauri-apps/plugin-os（catalog:tauri，^2.3.2）保持同一 minor：
 # tauri CLI 会在构建前校验 NPM 包与 Rust crate 的 major/minor 是否一致，不一致直接退出。
@@ -68,7 +89,8 @@ tracing-log = "0.2"
 time = { version = "0.3", features = [ "formatting" ] }
 reqwest = { version = "0.12", features = [
   "json",
-  "stream"
+  "stream",
+  "socks"
 ] }
 rdev = "0.5.3"
 zip = "0.6"
@@ -81,15 +103,37 @@ async-trait = "0.1"
 tokio = { version = "1", features = [ "full" ] }
 semver = "1"
 dunce = "1.0.5"
+sysinfo = { version = "0.39.6", default-features = false, features = [ "system" ] }
 
 [dev-dependencies]
 auto-launch = "0.5"
+tauri = { version = "2", features = [ "test" ] }
+tempfile = "3"
+
+# 选择数据存放目录（issue #871）：Windows 走原生 IFileDialog、macOS 走 NSOpenPanel、
+# Linux 走 xdg-desktop-portal（无 portal 时 rfd 自己回退到 zenity）。
+# 上游的默认特性是 Linux 专用的（xdg-portal + wayland + async-std），因此这里显式列
+# 出特性并关掉默认值：Windows / macOS 只需要 common-controls-v6；Linux 的 ashpd 传输
+# 后端用本仓库已有的 tokio，不为一次选目录再引入 async-std 这整套运行时。
+[target.'cfg(any(windows, target_os = "macos", target_os = "linux"))'.dependencies]
+rfd = { version = "0.16", default-features = false, features = [
+  "common-controls-v6",
+  "xdg-portal",
+  "wayland",
+  "tokio",
+] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = [
+  "NSWindow",
+  "NSView",
+  "NSButton",
+] }
 objc2-foundation = { version = "=0.3.2", default-features = false, features = [
   "std",
   "NSObject",
   "NSProcessInfo",
+  "NSGeometry",
 ] }
 # CGEventTap 直监听：绕开 rdev 0.5.3 在 macOS 上对 KeyPress 事件无条件调
 # TSMGetInputSourceProperty（必须 main queue）导致的 dispatch_assert_queue SIGTRAP。
@@ -104,17 +148,11 @@ core-foundation = "0.10"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
-# Linux 托盘直接使用上游 tray-icon 0.25 的 KSNI 后端（实现见 src/desktop/linux_tray.rs，
-# 背景见 issue #386 / #438）：
-# - tauri 2.11.5 仍固定 `tray-icon = "^0.24"`，而 0.24 在 Linux 上只有 libappindicator/GTK
-#   后端，该后端不上报任何托盘事件，单击/双击都无法唤起主窗口；
-# - tray-icon 0.25.0 新增的 KSNI 后端会把 SNI 的 Activate 转成
-#   `TrayIconEvent::Click { button: Left }`；
-# - 但 tauri 2.x 的菜单类型来自 muda 0.19，与 tray-icon 0.25 的 muda 0.20 不是同一套类型
-#   （`TrayIconBuilder::menu` 的 `ContextMenu` trait 不同），既无法 `cargo update` 也无法
-#   `[patch.crates-io]` 把 tauri 的 tray-icon 顶到 0.25，tauri 3 目前只有 alpha。
-# 因此 Linux 上绕过 `tauri::tray` 自建托盘；tauri 2.x 跟进 bump 后可删除本依赖与
-# src/desktop/linux_tray.rs。`ksni` 特性同时避免再引入 GTK/libappindicator 后端。
+# Linux 托盘需要 tray-icon 的 KSNI 后端（背景见 issue #386 / #438）：tauri 只开
+# `libappindicator`，而该后端在 Linux 上不上报任何托盘事件，单击无法唤起主窗口；这里
+# 借同一份 tray-icon 的 `ksni` 特性把后端换成 KSNI（两个特性同时开启时 tray-icon 优先
+# KSNI，见其 src/platform_impl/mod.rs 的 cfg）。tauri 2.12 起与本地共用同一版
+# tray-icon 0.25 / muda 0.20，托盘本身走 `tauri::tray`。
 [target.'cfg(target_os = "linux")'.dependencies]
 tray-icon = { version = "0.25", default-features = false, features = [ "ksni" ] }
 
@@ -127,15 +165,20 @@ tray-icon = { version = "0.25", default-features = false, features = [ "ksni" ] 
 # （上游 issue: https://github.com/webdriverio/desktop-mobile/issues/665）。
 [patch.crates-io]
 tauri-plugin-wdio-webdriver = { path = "vendor/tauri-plugin-wdio-webdriver" }
+# 上游 0.5.0-rc.14 的 Windows 后端有三处缺口：不发 `<input>`、动作 `arguments` 只写裸
+# action id（冷启动 COM 回调看不到 launch=，会话身份丢失）、且只有 MSIX 打包应用才注册
+# COM 激活器。本地副本补齐输入框、把 arguments 改写成携带 extra 的 JSON、并为未打包的
+# DSH 写入 AUMID + CLSID 注册表项并在独立 STA 线程上跑消息泵。详见 vendor 目录内
+# PATCH.md（上游 issue: https://github.com/Choochmeque/tauri-plugin-notifications/issues）。
+tauri-plugin-notifications = { path = "vendor/tauri-plugin-notifications" }
 
 # 行号表而非完整调试信息：panic 与回溯仍能定位到行，target 体积与链接耗时都随之下降
 [profile.dev]
 debug = 1
 
 [target.'cfg(windows)'.dependencies]
-rfd = "0.16"
-webview2-com = "0.38"
-windows-core = "0.61"
+webview2-com = "0.39"
+windows-core = "0.62"
 winreg = "0.55"
 windows-sys = { version = "0.61", features = [
   "Win32_Foundation",
@@ -151,5 +194,9 @@ windows-sys = { version = "0.61", features = [
   "Win32_System_SystemInformation",
   "Win32_System_Threading",
   "Win32_System_Time",
+  # GetAsyncKeyState / VK_LBUTTON：原生拖拽期间上报左键松开（desktop/pet_mouse.rs）
+  "Win32_UI_Input_KeyboardAndMouse",
+  # ExtractIconExW：任务栏大图标从 exe 内嵌图标资源提取（desktop/builder.rs，issue #744）
+  "Win32_UI_Shell",
   "Win32_UI_WindowsAndMessaging",
 ] }

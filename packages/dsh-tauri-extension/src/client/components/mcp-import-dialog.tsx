@@ -1,7 +1,7 @@
 import type { ReactElement } from 'react'
 import type { Translate } from '../locales/index.types'
 import type { McpImportItem } from './mcp-tab.types'
-import { Button, Checkbox, Modal, Tag } from 'dsh-tauri-ui/client'
+import { Button, Card, Checkbox, Modal, Tag, Text } from 'dsh-tauri-ui/client'
 import { importGroups } from './mcp-tab.utils'
 
 export interface McpImportDialogProps {
@@ -24,14 +24,14 @@ export function McpImportDialog(props: McpImportDialogProps): ReactElement {
       onClose={onClose}
       closeLabel={t('close')}
       title={t('importServers')}
-      className="dshp-extension dshp-extension__modal-wide"
+      className="w-[min(680px,100%)]!"
     >
-      <div className="dshp-extension__form">
-        <p className="dshp-extension__intro">{t('importIntro')}</p>
-        {items === null && <p className="dshp-extension__empty">{t('loading')}</p>}
-        {items !== null && items.length === 0 && <p className="dshp-extension__empty">{t('importEmpty')}</p>}
+      <div className="flex flex-col gap-[10px]">
+        <Text tone="tertiary">{t('importIntro')}</Text>
+        {items === null && <Text size="sm" tone="tertiary">{t('loading')}</Text>}
+        {items !== null && items.length === 0 && <Text size="sm" tone="tertiary">{t('importEmpty')}</Text>}
         {items !== null && items.length > 0 && (
-          <div className="dshp-extension__import-scroll">
+          <div className="flex flex-col gap-[14px] max-h-[min(400px,52vh)] overflow-y-auto py-[2px] pr-[4px] pl-[2px]">
             {importGroups(items).map((group) => {
               const selectable = group.items
                 .filter(({ item }) => !item.existing)
@@ -39,38 +39,38 @@ export function McpImportDialog(props: McpImportDialogProps): ReactElement {
               const allChecked = selectable.length > 0
                 && selectable.every(index => items[index].checked)
               return (
-                <section className="dshp-extension__import-group" key={group.agent}>
-                  <div className="dshp-extension__import-head">
+                <section className="flex flex-col gap-[8px]" key={group.agent}>
+                  <div className="flex items-center gap-[8px] px-[2px]">
                     <Tag tone="info">{group.label}</Tag>
-                    <span className="dshp-extension__import-count">{group.items.length}</span>
+                    <span className="text-[12px] leading-[18px] text-tertiary">{group.items.length}</span>
                     {selectable.length > 0 && (
-                      <div className="dshp-extension__import-all">
+                      <div className="ml-auto">
                         <Checkbox checked={allChecked} onChange={next => onToggleGroup(selectable, next)}>
                           {t('importSelectAll')}
                         </Checkbox>
                       </div>
                     )}
                   </div>
-                  <ul className="dshp-extension__cards dshp-extension__cards--single">
+                  <ul className="grid grid-cols-[minmax(0,1fr)] items-stretch gap-[10px] m-0 p-0 list-none">
                     {group.items.map(({ item, index }) => {
                       const command = item.server.transport === 'stdio'
                         ? `${item.server.command ?? ''} ${(item.server.args ?? []).join(' ')}`.trim()
                         : item.server.url ?? ''
                       return (
-                        <li className={`dshp-extension__card${item.existing ? ' dshp-extension__card--muted' : ''}`} key={`${item.server.agent}/${item.server.name}`}>
-                          <div className="dshp-extension__card-top">
+                        <li className={`flex flex-col gap-[8px] min-w-0 border border-border-l2 rounded-[10px] bg-layer-3 px-[14px] py-[12px] hover:bg-hover${item.existing ? ' opacity-55' : ''}`} key={`${item.server.agent}/${item.server.name}`}>
+                          <div className="flex items-center gap-[6px] flex-wrap">
                             <Checkbox
                               checked={item.checked}
                               disabled={item.existing}
                               onChange={next => onToggle(index, next)}
                               title={item.server.name}
                             >
-                              <strong className="dshp-extension__card-title" title={item.server.name}>{item.server.name}</strong>
+                              <Card.Title className="flex-1 min-w-0 font-semibold [font-family:var(--ds-font-family-code)]" title={item.server.name}>{item.server.name}</Card.Title>
                             </Checkbox>
                             <Tag tone="neutral">{item.server.transport}</Tag>
                             {item.existing && <Tag tone="quiet">{t('importExisting')}</Tag>}
                           </div>
-                          <p className="dshp-extension__card-desc" title={command}>{command}</p>
+                          <Card.Description className="text-secondary line-clamp-2" title={command}>{command}</Card.Description>
                         </li>
                       )
                     })}
@@ -80,9 +80,9 @@ export function McpImportDialog(props: McpImportDialogProps): ReactElement {
             })}
           </div>
         )}
-        {formError !== null && <p className="dshp-extension__form-error">{formError}</p>}
-        <div className="dshp-extension__card-row">
-          <span className="dshp-extension__spacer" />
+        {formError !== null && <Text tone="error">{formError}</Text>}
+        <div className="flex items-center gap-[6px] flex-wrap">
+          <span className="flex-1" />
           <Button variant="ghost" onClick={onClose}>{t('cancel')}</Button>
           <Button
             variant="primary"

@@ -70,10 +70,42 @@ export function decideRunOutcome(input: {
   return { status: 'failed', error: describeFailure(input.reason) }
 }
 
-interface SessionEventLike {
-  readonly seq: number
+export interface SessionEventLike {
+  readonly seq?: number
   readonly type: string
   readonly data: Record<string, any>
+}
+
+export interface SessionEventWatch {
+  readonly events: SessionEventLike[]
+  stop: () => void
+}
+
+/** 摘要只关心 turn 边界，`request/header`、工具结果等不缓存。 */
+const SUMMARY_EVENT_TYPES = new Set(['turn/start', 'assistant/message', 'turn/end'])
+
+/**
+ * 订阅本轮会话增量。0.1.6-alpha.1 起内核弃用同步历史读取
+ * （`snapshotEvents()` 标注 new calls are prohibited），增量够用就不再整段扫历史。
+ */
+export function watchSessionEvents(
+  ctx: { on?: (name: string, listener: (...args: any[]) => void) => () => void },
+  session: unknown,
+  fromSeq: number,
+): SessionEventWatch {
+  const events: SessionEventLike[] = []
+  const stop = typeof ctx.on === 'function'
+    ? ctx.on('session/event', (target: unknown, event: SessionEventLike) => {
+        if (target !== session || typeof event?.type !== 'string')
+          return
+        if (!SUMMARY_EVENT_TYPES.has(event.type))
+          return
+        if (typeof event.seq === 'number' && event.seq < fromSeq)
+          return
+        events.push(event)
+      })
+    : () => {}
+  return { events, stop }
 }
 
 /**
@@ -86,10 +118,40 @@ export function summarizeRun(session: unknown, firstSeq: number): {
   readonly text: string
   readonly reason?: Record<string, any>
 } {
-  const scoped = filter(sessionEvents(session), event => event.seq >= firstSeq)
+  return summarizeEvents(sessionEvents(session), firstSeq)
+}
+
+/**
+ * 优先用增量，但只有拿到收尾原因才信任它。
+ *
+ * 比上游更保守：增量丢了 `turn/end` 时正文可能仍在，若直接采信就会把失败吞成成功，
+ * 因此缺少收尾原因一律回退同步快照。
+ */
+export function summarizeCollectedRun(
+  live: readonly SessionEventLike[],
+  session: unknown,
+  firstSeq: number,
+): ReturnType<typeof summarizeRun> {
+  const fromLive = summarizeEvents(live, firstSeq)
+  if (fromLive.reason !== undefined)
+    return fromLive
+  return summarizeRun(session, firstSeq)
+}
+
+function summarizeEvents(events: readonly SessionEventLike[], firstSeq: number): {
+  readonly text: string
+  readonly reason?: Record<string, any>
+} {
+  const scoped = filter(events, event => typeof event.seq !== 'number' || event.seq >= firstSeq)
   const texts = compact(map(filter(scoped, { type: 'assistant/message' }), textOf))
   const reason = findLast(scoped, { type: 'turn/end' })?.data.reason as Record<string, any> | undefined
   return { text: last(texts) ?? '', ...(reason ? { reason } : {}) }
+}
+
+/** 插件 fiber 卸载会让挂起的宿主调用抛 `INACTIVE_EFFECT`：这是取消，不是执行失败。 */
+export function isPluginUnloadError(error: unknown): boolean {
+  return typeof error === 'object' && error !== null
+    && (error as { readonly code?: unknown }).code === 'INACTIVE_EFFECT'
 }
 
 /** 内核 `Session` 的日志面逐版本漂移：0.1.2-rc.1 起移除 `events` 访问器，以 `snapshotEvents()` 为准，`log` / `events` 仅作兜底。 */

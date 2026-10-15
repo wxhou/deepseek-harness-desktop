@@ -40,15 +40,6 @@ export const SESSION_ARCHIVE_ITEM = '[data-dsh-tauri-session-archive-item]'
 export const SESSION_ARCHIVE_MENU_PATCHED = '[data-dsh-tauri-session-archive-menu-patched="1"]'
 export const RUNNING_CHANGES = '[data-running-changes]'
 
-/**
- * `dsh-tauri-pet` 的就绪锚点：插件的样式元素。
- *
- * `stylesFeature` 把 `PET_STYLES_ID`（`packages/dsh-tauri-pet/src/client/constants/index.ts`）
- * 交给 `dsh-tauri-ui` 的 `mountStyle`，由 css-render 落成 `<style cssr-id="...">`——`cssr-id`
- * 是属性而非 id，`#dsh-tauri-pet-styles` 不存在。插件客户端一跑起来就挂上它。
- */
-export const PET_STYLES = 'style[cssr-id="dsh-tauri-pet-styles"]'
-
 /** 设置菜单里的桌宠条目与「该菜单已被补丁」标记（同上常量文件）。 */
 export const PET_MENU_ITEM = '[data-dsh-tauri-pet-menu-item="1"]'
 export const PET_MENU_PATCHED = '[data-dsh-tauri-pet-menu-patched="1"]'
@@ -56,14 +47,14 @@ export const PET_MENU_PATCHED = '[data-dsh-tauri-pet-menu-patched="1"]'
 /** dsh 内部结构（上游产物）：可用稳定结构性锚点。 */
 export const SIDEBAR = '[data-slot="sidebar"]'
 export const SIDEBAR_PANELLIST = '[data-slot="sidebar.panellist"]'
-export const SETTINGS_TRIGGER = '.dshp-settings-trigger'
+export const SETTINGS_TRIGGER = '[data-settings-trigger]'
 export const SETTINGS_SIDEBAR = '[data-slot-sidebar="dsh-tauri-ui"]'
 export const SETTINGS_SECTION_SLOT = '[data-slot="settings.section"]'
 export const SETTINGS_NAV_ITEM = 'nav[aria-label] button'
 /** 壳层自有设置菜单（浏览器态）的条目：官方 primitives 的 portal Menu 条目。 */
 export const SETTINGS_MENU_ITEM = '[role="menuitem"]'
 export const SETTINGS_MENU_LABEL = /^(设置|Settings)$/
-export const SETTINGS_CONTENT = '[class*="content-inner"]'
+export const SETTINGS_CONTENT = '[data-slot="settings.content"]'
 export const SETTINGS_ONBOARDING = '[data-slot="settings.onboarding"]'
 export const COMPOSER_CARD = '[data-composer-card]'
 export const COMPOSER_INPUT_DOCK = '[data-slot="conversation.input.dock"]'
@@ -71,7 +62,7 @@ export const CONVERSATION_SESSION = '[data-slot="conversation.session"]'
 export const SIDEBAR_ROW = 'button[class*="panelRow"]'
 
 /** 阻塞式引导弹层选择器 */
-export const APP_MODAL = '[role="dialog"][aria-modal="true"]'
+export const APP_MODAL = '[role="dialog"][aria-modal="true"]:not([data-shortcut-modal="settings"])'
 export const APP_MODAL_CANCEL = 'div[class*="_editorActions"] > button'
 
 // ==========================================
@@ -101,6 +92,9 @@ export interface NewDshPageOptions {
   ready?: string
   path?: string
   dismissModals?: boolean
+  viewport?: { width: number, height: number }
+  hasTouch?: boolean
+  isMobile?: boolean
 }
 
 /** 断言本轮没有任何合成事件兜底：真实指针点击必须自己点得通。 */
@@ -124,8 +118,8 @@ export function launchDshBrowser(): Promise<Browser> {
   return chromium.launch()
 }
 
-export function newDshContext(browser: Browser): Promise<BrowserContext> {
-  return browser.newContext({ viewport: APP_FRAME_VIEWPORT, locale: APP_LOCALE })
+export function newDshContext(browser: Browser, options: Pick<NewDshPageOptions, 'viewport' | 'hasTouch' | 'isMobile'> = {}): Promise<BrowserContext> {
+  return browser.newContext({ viewport: options.viewport ?? APP_FRAME_VIEWPORT, hasTouch: options.hasTouch, isMobile: options.isMobile, locale: APP_LOCALE })
 }
 
 export async function addSessionCookie(context: BrowserContext): Promise<void> {
@@ -133,10 +127,10 @@ export async function addSessionCookie(context: BrowserContext): Promise<void> {
   await context.addCookies([{ name, value: rest.join('='), url: inject('dshBaseUrl') }])
 }
 
-async function installEmbedRoute(page: Page): Promise<void> {
+async function installEmbedRoute(page: Page, viewport: { width: number, height: number }): Promise<void> {
   const embedUrl = `${inject('dshBaseUrl')}${EMBEDDED_DOCUMENT_PATH}`
-  const htmlContent = `<!doctype html><html><body style="margin:0;overflow:hidden">`
-    + `<iframe id="dsh" src="/" style="width:${APP_FRAME_VIEWPORT.width}px;height:${APP_FRAME_VIEWPORT.height}px;border:0"></iframe>`
+  const htmlContent = `<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"></head><body style="margin:0;overflow:hidden">`
+    + `<iframe id="dsh" src="/" style="display:block;width:${viewport.width}px;height:${viewport.height}px;border:0"></iframe>`
     + '</body></html>'
 
   await page.route(embedUrl, route =>
@@ -233,13 +227,14 @@ interface FrameSnapshot {
   loaderKeys: string[]
   loaderMode: string
   loaderPending: number
-  petStyles: boolean
   settingsTrigger: boolean
   settingsSidebar: boolean
 }
 
 const SNAPSHOT_TIMEOUT_MS = 5_000
 const SNAPSHOT_ELEMENT_BUDGET = 4_000
+/** 模型引导会在宿主 ready 锚点之后异步挂载；每个隔离浏览器 context 都要留一次发现窗口。 */
+const INITIAL_MODAL_DISCOVERY_MS = 3_000
 
 /** 采集 frame 内快照；自身绝不抛错、绝不拖死用例（超时降级成一行文本）。 */
 async function captureFrameSnapshot(frame: Frame): Promise<FrameSnapshot | string> {
@@ -286,8 +281,7 @@ async function captureFrameSnapshot(frame: Frame): Promise<FrameSnapshot | strin
       loaderKeys: loader === undefined ? [] : Object.keys(loader),
       loaderMode: String(loader?.mode ?? 'n/a'),
       loaderPending: Array.isArray(loader?.pendingQueue) ? loader.pendingQueue.length : -1,
-      petStyles: doc.querySelector('style[cssr-id="dsh-tauri-pet-styles"]') !== null,
-      settingsTrigger: doc.querySelector('.dshp-settings-trigger') !== null,
+      settingsTrigger: doc.querySelector('[data-settings-trigger]') !== null,
       settingsSidebar: doc.querySelector('[data-slot-sidebar="dsh-tauri-ui"]') !== null,
     }
   }, SNAPSHOT_ELEMENT_BUDGET)
@@ -330,7 +324,7 @@ export async function describePageState(page: Page, frame: Frame): Promise<strin
     lines.push(`[data-slot] count=${snapshot.slotCount} values=${snapshot.slots.join(',') || '(none)'}`)
     lines.push(`__DSH_BOOT__.modules=${snapshot.bootModules} ids=${snapshot.bootIds.join(',') || '(none)'}`)
     lines.push(`__ModuleLoader__ keys=${snapshot.loaderKeys.join(',') || '(none)'} mode=${snapshot.loaderMode} pendingQueue=${snapshot.loaderPending}`)
-    lines.push(`pluginAnchors petStyles=${snapshot.petStyles} settingsTrigger=${snapshot.settingsTrigger} settingsSidebar=${snapshot.settingsSidebar}`)
+    lines.push(`pluginAnchors settingsTrigger=${snapshot.settingsTrigger} settingsSidebar=${snapshot.settingsSidebar}`)
     pushList('pluginComboScripts', snapshot.pluginScripts, '(none: 启动 HTML 里没有任何 /plugins/ 脚本)')
     pushList('injectedDataDshAttrs', snapshot.dshAttrs, '(none: 没有任何插件注入的元素)')
   }
@@ -359,16 +353,15 @@ async function failWithDiagnostics(page: Page, frame: Frame, reason: string, cau
  * 在当前 browser 上新建一个内嵌 dsh 页面并等待界面可用。
  *
  * 默认就绪锚点取核心 dsh 的结构性槽位 `SIDEBAR`（`[data-slot="sidebar"]`），不取任何插件
- * 注入的元素：`SETTINGS_TRIGGER` 由 `dsh-tauri-ui` 渲染、`PET_STYLES` 由 `dsh-tauri-pet`
- * 挂载，在 Ubuntu CI 上都可能迟迟不出现，而它们缺席并不表示 dsh 未就绪——`SIDEBAR` 是
- * 上游产物，也是各插件自己判定「侧栏就绪」时读取的同一个锚点。需要断言插件产物的用例
- * 必须显式传 `{ ready: PET_STYLES }` / `{ ready: SETTINGS_TRIGGER }` 等，不依赖默认值。
+ * 注入的元素：`SETTINGS_TRIGGER` 由 `dsh-tauri-ui` 渲染，在 Ubuntu CI 上可能迟迟不出现，
+ * 而它缺席并不表示 dsh 未就绪——`SIDEBAR` 是上游产物，也是各插件自己判定「侧栏就绪」时
+ * 读取的同一个锚点。需要断言插件产物的用例必须显式传 `{ ready: SETTINGS_TRIGGER }` 等，不依赖默认值。
  */
 export async function newDshPage(
   browser: Browser,
   options: NewDshPageOptions = {},
 ): Promise<DshPage> {
-  const context = await newDshContext(browser)
+  const context = await newDshContext(browser, options)
   await addSessionCookie(context)
 
   const page = await context.newPage()
@@ -377,7 +370,7 @@ export async function newDshPage(
   const isEmbedded = options.path === undefined
 
   if (isEmbedded) {
-    await installEmbedRoute(page)
+    await installEmbedRoute(page, options.viewport ?? APP_FRAME_VIEWPORT)
   }
 
   await page.goto(appUrl(options.path ?? EMBEDDED_DOCUMENT_PATH))
@@ -400,7 +393,7 @@ export async function newDshPage(
   }
 
   if (options.dismissModals ?? true) {
-    await dismissAppModals(page, frame, syntheticFallbacks)
+    await dismissAppModals(page, frame, syntheticFallbacks, 20_000, INITIAL_MODAL_DISCOVERY_MS)
   }
 
   return {
@@ -537,21 +530,31 @@ async function dismissOneModal(
   return true
 }
 
-/** 确保帧内无阻塞弹层（可重入的闸）。 */
+/**
+ * 确保帧内无阻塞弹层（可重入的闸）。
+ * `discoveryMs` 只延长「尚未发现弹层」的启动观察期；发现并关闭后仍沿用 300ms 复核。
+ */
 export async function dismissAppModals(
   page: Page,
   frame: Frame,
   fallbacks?: SyntheticFallback[],
   timeoutMs = 20_000,
+  discoveryMs = 0,
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs
+  let discoveryDeadline = Math.min(deadline, Date.now() + discoveryMs)
   while (Date.now() < deadline) {
-    if (await dismissOneModal(page, frame, fallbacks))
+    if (await dismissOneModal(page, frame, fallbacks)) {
+      discoveryDeadline = Date.now()
       continue
+    }
     await delay(300)
-    if (await dismissOneModal(page, frame, fallbacks))
+    if (await dismissOneModal(page, frame, fallbacks)) {
+      discoveryDeadline = Date.now()
       continue
-    return
+    }
+    if (Date.now() >= discoveryDeadline)
+      return
   }
 
   const remaining = await frame.locator(APP_MODAL).count()

@@ -6,7 +6,7 @@ import type {
   WorkspacesRuntimeLike,
   WorkspaceViewLike,
 } from '../types'
-import { difference, filter, get } from 'dsh-tauri/client'
+import { get } from 'dsh-tauri/client'
 import { postOpenPath, postOpenUrl } from '../apis'
 import { locale } from '../locales'
 import { externalUrl } from '../utils/url'
@@ -131,10 +131,8 @@ export async function loadUngroupedSessions(input: {
   const snapshot = input.workspaces.list.getSnapshot()
   const assigned = snapshot.items.flatMap(workspace => workspace.sessionIds)
   const sessionSnapshot = input.sessions.list.getSnapshot()
-  return filter(
-    difference(sessionSnapshot.ids, assigned, snapshot.archivedSessionIds),
-    id => sessionSnapshot.byId[id]?.blank !== true,
-  )
+  const excluded = new Set([...assigned, ...snapshot.archivedSessionIds])
+  return sessionSnapshot.ids.filter(id => !excluded.has(id) && sessionSnapshot.byId[id]?.blank !== true)
 }
 
 /** Query：工作区中尚未归档的会话 id。 */
@@ -142,7 +140,8 @@ export async function loadWorkspaceSessions(input: {
   workspaces: WorkspacesRuntimeLike
   workspace: WorkspaceViewLike
 }): Promise<SessionId[]> {
-  return difference(input.workspace.sessionIds, input.workspaces.list.getSnapshot().archivedSessionIds)
+  const archived = new Set(input.workspaces.list.getSnapshot().archivedSessionIds)
+  return input.workspace.sessionIds.filter(id => !archived.has(id))
 }
 
 /** Action：逐个归档会话。 */
@@ -167,6 +166,28 @@ export async function deleteWorkspace(input: {
 }): Promise<ActionOutcome> {
   try {
     await input.workspaces.delete(input.workspaceId)
+    return { ok: true }
+  }
+  catch (error) {
+    return fail(error)
+  }
+}
+
+/**
+ * Action：在指定工作区新建会话。
+ *
+ * legacy 投影在两个候选服务都没有 `startSession` 时把该属性读为 undefined（不是抛错），
+ * 可选链调用就会静默什么都不做（issue #780），因此这里显式回报不可用。
+ */
+export async function startWorkspaceSession(input: {
+  workspaces: WorkspacesRuntimeLike
+  workspaceId: WorkspaceId
+}): Promise<ActionOutcome> {
+  const start = input.workspaces.startSession
+  if (typeof start !== 'function')
+    return { ok: false, error: locale.text('newSessionUnavailable') }
+  try {
+    await start.call(input.workspaces, input.workspaceId)
     return { ok: true }
   }
   catch (error) {

@@ -39,6 +39,10 @@ fn get(app_handle: &AppHandle) -> Option<PendingInstaller> {
     Some(pending)
 }
 
+pub(super) fn installer_path(app_handle: &AppHandle) -> Option<std::path::PathBuf> {
+    get(app_handle).map(|pending| pending.path.into())
+}
+
 /// 记录 / 清除「待安装」标记（`None` = 已安装，或无需退出时自动打开）。
 ///
 /// 失败只告警不阻断：标记只是「退出时自动更新」的辅助，丢掉它的降级态是用户
@@ -71,6 +75,10 @@ pub(super) fn set(app_handle: &AppHandle, pending: Option<(&Path, &str)>) {
 /// 同步、不触网：退出路径不能引入等待或网络请求，把安装包交给系统默认处理器
 /// 启动即可（Windows 会触发 UAC，macOS/Linux 交给各自的系统安装流程）。
 pub fn launch_pending_installer(app_handle: &AppHandle) {
+    if !super::version::supports_stable_updates(&app_handle.config().identifier) {
+        set(app_handle, None);
+        return;
+    }
     let Some(pending) = get(app_handle) else {
         return;
     };
@@ -99,7 +107,10 @@ pub fn launch_pending_installer(app_handle: &AppHandle) {
     // 退出路径虽已调过 stop_on_exit，但那份保障依赖调用方顺序与 `setting.installed`
     // 门槛；自动更新是「用安装器替换本应用」的场景，停服必须由交付点自己保证（幂等，
     // 重复调用只是 no-op）。
-    workflow::stop_for_installer(app_handle);
+    if let Err(error) = workflow::stop_for_installer(app_handle) {
+        log::error!("UPDATE_STOP_FAILED: refusing installer handoff: {error}");
+        return;
+    }
     if let Err(error) = super::install::open_installer_now(app_handle, &pending.path) {
         log::warn!("UPDATE_OPEN: failed to launch pending installer on exit: {error}");
     }

@@ -23,7 +23,7 @@ pub fn set_status(status: Status) {
     *get_status_lock().lock().unwrap_or_else(|e| e.into_inner()) = status;
 }
 
-pub fn emit_status(app_handle: &AppHandle) {
+pub fn emit_status<R: tauri::Runtime>(app_handle: &AppHandle<R>) {
     let status = get_status();
     let _ = app_handle.emit("dsh-status-updated", &status);
 }

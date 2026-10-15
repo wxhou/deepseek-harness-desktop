@@ -1,5 +1,5 @@
 import type { ClientContext } from 'dsh-tauri/client'
-import { Icon, PanelPage, Puzzle } from 'dsh-tauri-ui/client'
+import { Icon, Panel, Puzzle } from 'dsh-tauri-ui/client'
 import { definePanel, defineRegister, invoke } from 'dsh-tauri/client'
 import { UI_COMPONENTS_PANEL_ID, UI_COMPONENTS_PANEL_ORDER } from '../constants'
 import { locale } from '../locales'
@@ -20,7 +20,7 @@ export const registerUiComponentsPanel = defineRegister<ClientContext>((controll
         order: UI_COMPONENTS_PANEL_ORDER,
         label: () => locale.text('uiComponents'),
         icon: props => <Icon as={Puzzle} size={props.size} />,
-        render: () => <PanelPage><UiComponentsPanel /></PanelPage>,
+        render: () => <Panel><UiComponentsPanel /></Panel>,
       })
       controller.add(panel.dispose)
     })

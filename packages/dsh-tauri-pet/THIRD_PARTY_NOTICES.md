@@ -3,8 +3,8 @@
 ## deepseek-ai/deepseek-harness
 
 - Repository: <https://github.com/deepseek-ai/deepseek-harness>
-- Version: `dsh-v0.1.7-rc.2`
-- Revision: `477b4f420553e8a52c2fbccc464d7561b239c443`
+- Version: `dsh-v0.2.1-alpha.1`
+- Revision: `5badb15009ae1756c3afe0ae0cef1faafc290ccc`
 - Source: `source/deepseek-harness`
 - License: MIT — Copyright (c) 2026 DeepSeek
 - Not copied: the plugin mounts an official provider and consumes official client contracts.
@@ -21,6 +21,7 @@ Integration points:
 - Asset pin: `e1ff8c1e4001878cbb80441262d530e16541f138`
 - License: MIT — Copyright (c) 2026 PC2005-cloud
 - Streaming only: the pet media assets (WebM animations, preview GIFs, `config.jsonc`) are not bundled or downloaded; `pets.built-in` in `src-tauri/resources/manifest.jsonc` registers the remote URLs and the pet window streams them at play time.
+- Asset terms (upstream `README.md` §许可): the animations, prompt recipes and source videos may be reused openly but **commercial use is forbidden**, and derivative works must credit <https://github.com/PC2005-cloud/dsh-pet> wherever they are introduced, shown or distributed. Those assets are still not bundled here; `skills/hatch-dsh-pet` only documents the upstream generation pipeline so users can produce their own material.
 
 ## dsh-tauri-desk/dsh-pet-mov
 
@@ -33,6 +34,11 @@ Integration points:
 
 - `source/dsh-pet`: reference copy at `4c097297ca773abb173198b1384b3a11dcf89409`, not the source of the play-time assets above.
 - `QCYTSN/dsh-dafeiyu`: referenced for text and status-priority behaviour only; no sprite or `legacy/` assets are bundled, downloaded or redistributed (see [`docs/sync-log.md`](./docs/sync-log.md)). Its own art was replaced upstream in `v0.1.10` by assets imported from `PC2005-cloud/dsh-pet`.
+
+## Compatibility `0.2.0-rc.2` → `0.2.1-alpha.1`
+
+- The skill provider, account-menu geometry, workspace list, and official primitives entry points remain compatible. The StateDot animation restart fix arrives through the official re-export.
+- Asset pins and third-party pet implementations are independent of this Harness compatibility baseline and are not advanced.
 
 ## License
 

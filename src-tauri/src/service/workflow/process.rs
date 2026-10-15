@@ -1,6 +1,7 @@
 //! Harness 进程生命周期：本应用持有的根进程登记（PID + Windows 句柄成对存储）、
 //! 启动守卫、进程树终止与退出状态回落，以及按 dsh 安装路径清扫历史残留的
-//! 孤儿服务实例（Windows 仅清扫父进程已退出且入口路径匹配的服务）。
+//! 孤儿服务实例（各平台都按入口路径清扫：Windows 需穿过垫片的 `cmd.exe /C node`
+//! 转发层判断持有者，Unix 的匹配与父进程状态无关，转发层自身也会被命中）。
 
 use crate::config;
 use std::fs;
@@ -15,6 +16,7 @@ use tauri::{AppHandle, Emitter};
 
 use super::status;
 use super::sweep::harness_pid_path;
+use super::utils::wait_for_port_release;
 
 /// 当前持有的 Harness 根进程意外退出时通知前端的专用事件。
 pub(super) const HARNESS_PROCESS_EXITED_EVENT: &str = "harness-process-exited";
@@ -26,6 +28,9 @@ pub(super) struct HarnessProcessExitedPayload {
     pub(super) pid: u32,
     pub(super) exit_code: Option<i64>,
 }
+
+/// 结束进程后等待端口回落的上限（正常情况毫秒级返回，只有真占用才等到上限）。
+const PORT_RELEASE_WAIT: std::time::Duration = std::time::Duration::from_millis(1500);
 
 /// 启动守卫：并发调用 `launch` 时只允许一个真正拉起 dsh 进程
 pub(crate) static LAUNCH_GUARD: AtomicBool = AtomicBool::new(false);
@@ -50,6 +55,24 @@ fn owned_process_lock() -> &'static Mutex<Option<OwnedProcess>> {
     OWNED_PROCESS.get_or_init(|| Mutex::new(None))
 }
 
+/// 本次启动是否已按 dsh 入口路径清扫过历史残留。
+///
+/// 启动期的两处清扫（setup 的 sweep_orphan_harness 与 launch 前的那次）读的是同一份
+/// 进程快照：两次之间没有任何进程由本应用拉起，结论不会变化，而 Windows 上一次全量
+/// 枚举约 0.3–0.6s，重复执行纯属浪费启动时间。
+static STARTUP_SWEEP_DONE: AtomicBool = AtomicBool::new(false);
+
+/// 取用一次清扫机会：本次启动已清扫过时返回 false，调用方跳过重复清扫。
+///
+/// 先取后清，并发调用里只有一个真正执行。
+pub(super) fn take_startup_sweep() -> bool {
+    !STARTUP_SWEEP_DONE.swap(true, Ordering::SeqCst)
+}
+
+pub(super) fn retry_startup_sweep() {
+    STARTUP_SWEEP_DONE.store(false, Ordering::SeqCst);
+}
+
 /// 记录新持有的 Harness 根进程（Unix，启动成功后调用）。
 #[cfg(not(windows))]
 pub(super) fn set_owned_process(pid: u32) {
@@ -57,6 +80,7 @@ pub(super) fn set_owned_process(pid: u32) {
         .lock()
         .unwrap_or_else(|e| e.into_inner());
     *guard = Some(OwnedProcess { pid });
+    STARTUP_SWEEP_DONE.store(false, Ordering::SeqCst);
 }
 
 /// 若调用方 owns 该进程（Windows 额外存句柄），记录之。
@@ -66,6 +90,8 @@ pub(super) fn set_owned_process_with_handle(pid: u32, handle: usize) {
         .lock()
         .unwrap_or_else(|e| e.into_inner());
     *guard = Some(OwnedProcess { pid, handle });
+    // 本应用此后持有自己的 Harness：再次启动前必须重新确认没有残留
+    STARTUP_SWEEP_DONE.store(false, Ordering::SeqCst);
 }
 
 /// 原子取出持有的进程（PID+句柄一起）。取走者负责关闭 Windows 句柄；
@@ -75,18 +101,6 @@ fn take_owned_process() -> Option<OwnedProcess> {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .take()
-}
-
-/// 仅当当前持有进程的 PID 与 `pid` 匹配时才取出（成对 PID+句柄）。
-///
-/// 保留 base 代码 `compare_exchange(pid, 0)` 的防护语义：退出监视线程只能清掉
-/// 属于自己那一条登记，绝不误取/误清「刚启动的新进程」的登记——否则会把它
-/// 当作已退出而错误回落 Status，并把新进程的句柄误关（WARN-6 合并引入的回退）。
-fn take_owned_process_if(pid: u32) -> Option<OwnedProcess> {
-    let mut guard = owned_process_lock()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    take_owned_process_if_matching(&mut guard, pid)
 }
 
 /// 纯函数部分：便于单测，不触碰全局状态。
@@ -149,10 +163,18 @@ pub fn has_owned_process() -> bool {
         .is_some()
 }
 
+pub fn owned_process_pid() -> Option<u32> {
+    owned_process_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .as_ref()
+        .map(|process| process.pid)
+}
+
 /// 处理「持有的 dsh 进程退出」这一事实（由退出监视线程与健康检查 tick 共用）：
 ///
-/// - 仅当退出的 PID 仍是当前登记的那个进程时才清空持有（`take_owned_process_if`
-///   按 pid 匹配），PID/句柄作为整体成对取出——杜绝「读 PID」与「清句柄」
+/// - 仅当退出的 PID 仍是当前登记的那个进程时才清空持有（按 pid 匹配），
+///   PID/句柄作为整体成对取出——杜绝「读 PID」与「清句柄」
 ///   之间的跨原子竞态（WARN-6），也杜绝旧监视线程误清新启动进程的登记；
 /// - 匹配成功后无条件回落到 Stopped——进程可能在 Starting 或 Running 阶段
 ///   退出，任何情况下都不能继续广播一个已经失效的运行状态（WARN-5）。
@@ -160,15 +182,20 @@ pub fn has_owned_process() -> bool {
 /// 返回被取出的进程记录（含 Windows 句柄），取到者负责 `CloseHandle`——保证
 /// 「取走进程」与「关闭句柄」同属一个调用者，杜绝重复 close。幂等：多次调用
 /// （tick 与监视线程并发）只会生效一次，后续调用返回 None。
-pub(super) fn on_owned_process_exit(
-    app_handle: &AppHandle,
+pub(super) fn on_owned_process_exit<R: tauri::Runtime>(
+    app_handle: &AppHandle<R>,
     pid: u32,
     exit_code: impl FnOnce(&OwnedProcess) -> Option<i64>,
 ) -> Option<OwnedProcess> {
-    let owned = take_owned_process_if(pid)?;
-    // 必须在成功取走当前 PID 后才读取 Windows 句柄：正常停止会先取走并关闭
-    // 句柄，旧监视线程不得再查询该句柄，更不得发送“意外退出”事件。
-    let exit_code = exit_code(&owned);
+    let (owned, exit_code) = {
+        let mut guard = owned_process_lock()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let owned = take_owned_process_if_matching(&mut guard, pid)?;
+        // issue #1075：报告路径落盘前不让健康探测观察到 ownership 丢失。
+        let exit_code = exit_code(&owned);
+        (owned, exit_code)
+    };
 
     if let Some(code) = exit_code {
         log::warn!(
@@ -214,20 +241,13 @@ fn terminate_owned_process() -> Result<bool, ()> {
 
     #[cfg(windows)]
     {
-        use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
-        use windows_sys::Win32::System::Threading::WaitForSingleObject;
-        const WAIT_TIMEOUT_CODE: u32 = 0x0000_0102;
+        use windows_sys::Win32::Foundation::CloseHandle;
         let handle = owned.handle as windows_sys::Win32::Foundation::HANDLE;
         if handle.is_null() {
-            return Ok(true);
+            return Err(());
         }
-        // 真实句柄已结束说明 PID 可能已复用，此时绝不调用 taskkill。
-        if unsafe { WaitForSingleObject(handle, 0) } != WAIT_TIMEOUT_CODE {
-            unsafe { CloseHandle(handle) };
-            return Ok(true);
-        }
-        kill_pid_tree(owned.pid);
-        if unsafe { WaitForSingleObject(handle, 5_000) } != WAIT_OBJECT_0 {
+        if let Err(error) = terminate_windows_process(owned.pid, handle, kill_pid_tree) {
+            log::error!("{error}");
             let mut guard = owned_process_lock()
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
@@ -359,28 +379,51 @@ fn command_line_has_argument_after(cmdline: &str, preceding: &str, argument: &st
 fn is_windows_harness_command_line(cmdline: &str, dsh_bin: &str) -> bool {
     let normalized = cmdline.replace('/', "\\");
     let path = dsh_bin.replace('/', "\\");
+    // node 选项（`--max-old-space-size` 等）合法地夹在 node 与入口之间（issue #751）。
+    let entry = if path.chars().any(char::is_whitespace) {
+        format!(r#""{}""#, regex::escape(&path))
+    } else {
+        format!(r#"(?:"{}"|{})"#, regex::escape(&path), regex::escape(&path))
+    };
     let boundary = format!(
-        r#"(?i)^\s*(?:"[^"]*\\node(?:\.exe)?"|[^\s"]*node(?:\.exe)?)\s+"?{}(?:"|\s|$)"#,
-        regex::escape(&path)
+        r#"(?i)^\s*(?:"(?:[^"\r\n]*\\)?node(?:\.exe)?"|(?:[^\s"]*\\)?node(?:\.exe)?)(?:\s+(?:"-[^"\r\n]*"|-[^\s"]*(?:"[^"\r\n]*")?))*\s+{entry}\s+--profile\s+(?:"[^"\r\n]+"|[^\s"]+)(?:\s+--patch\s+(?:"[^"\r\n]+"|[^\s"]+))?\s+--port\s+\d+\s+--no-open\s*$"#
     );
     regex::Regex::new(&boundary).is_ok_and(|pattern| pattern.is_match(&normalized))
-        && is_harness_command_line(
-            &normalized.replace('"', "").to_lowercase(),
-            &path.to_lowercase(),
-        )
-        && command_line_has_argument(&normalized, "--no-open")
 }
 
 #[cfg(windows)]
-fn terminate_stale_harness_processes_at(dsh_bin: &Path) {
+fn windows_process_snapshot(target_pid: Option<u32>) -> Result<Vec<u8>, String> {
     use std::os::windows::process::CommandExt;
-
-    let Some(dsh_bin) = dsh_bin.to_str() else {
-        return;
+    // 候选进程连同其上方仍活着的祖先一起上报：垫片转发链是否孤儿，只有整条链能判断。
+    // 祖先链被层数上限截断时单独标记，调用方据此放弃清扫（上方仍可能有持有者）。
+    let script = r#"$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+try {
+  $all = Get-CimInstance Win32_Process
+  $byPid = @{}
+  foreach ($process in $all) { $byPid[$process.ProcessId] = $process }
+  foreach ($child in $all) {
+    if (-not $child.CommandLine -or -not $child.CommandLine.Contains('--no-open')) { continue }
+    $ancestors = @()
+    $parent = $byPid[$child.ParentProcessId]
+    for ($depth = 0; $depth -lt 8; $depth++) {
+      if (-not $parent) { break }
+      $ancestorCreated = 0
+      if ($parent.CreationDate) { $ancestorCreated = $parent.CreationDate.ToFileTimeUtc() }
+      $ancestors += [pscustomobject]@{ pid = $parent.ProcessId; name = $parent.Name; created = $ancestorCreated; commandLine = $parent.CommandLine }
+      $parent = $byPid[$parent.ParentProcessId]
+    }
+    $childCreated = 0
+    if ($child.CreationDate) { $childCreated = $child.CreationDate.ToFileTimeUtc() }
+    [pscustomobject]@{ pid = $child.ProcessId; created = $childCreated; commandLine = $child.CommandLine; ancestors = $ancestors; ancestorsTruncated = ($null -ne $parent) } | ConvertTo-Json -Compress -Depth 4
+  }
+} catch { Write-Error $_; exit 1 }"#;
+    let script = match target_pid {
+        Some(pid) => script.replace("if (-not $child.CommandLine -or -not $child.CommandLine.Contains('--no-open')) { continue }", &format!("if ($child.ProcessId -ne {pid}) {{ continue }}")),
+        None => script.to_string(),
     };
-    let script = "$ErrorActionPreference = 'Stop'; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; try { $all = Get-CimInstance Win32_Process; $byPid = @{}; foreach ($process in $all) { $byPid[$process.ProcessId] = $process }; foreach ($child in $all) { if ($child.Name -ne 'node.exe') { continue }; $parent = $byPid[$child.ParentProcessId]; if ($child.CreationDate -and (!$parent -or ($parent.CreationDate -and $parent.CreationDate.ToUniversalTime() -gt $child.CreationDate.ToUniversalTime()))) { [pscustomobject]@{ pid = $child.ProcessId; commandLine = $child.CommandLine; created = $child.CreationDate.ToFileTimeUtc() } | ConvertTo-Json -Compress } } } catch { Write-Error $_; exit 1 }";
     let output = match Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
         .creation_flags(0x08000000)
         .output()
     {
@@ -390,49 +433,71 @@ fn terminate_stale_harness_processes_at(dsh_bin: &Path) {
                 "Failed to enumerate orphan Harness processes: {}",
                 String::from_utf8_lossy(&output.stderr)
             );
-            return;
+            return Err("HARNESS_SWEEP_FAILED: process enumeration failed".to_string());
         }
         Err(error) => {
-            log::warn!("Failed to enumerate orphan Harness processes: {error}");
-            return;
+            return Err(format!(
+                "HARNESS_SWEEP_FAILED: process enumeration failed: {error}"
+            ));
         }
     };
+    Ok(output.stdout)
+}
+
+#[cfg(windows)]
+fn terminate_stale_harness_processes_at(dsh_bin: &Path) -> Result<(), String> {
+    let output = windows_process_snapshot(None)?;
+    let dsh_bin = dsh_bin
+        .to_str()
+        .ok_or("HARNESS_SWEEP_FAILED: invalid entry path")?;
     let owned_pid = owned_process_lock()
         .lock()
         .unwrap_or_else(|error| error.into_inner())
         .as_ref()
         .map(|process| process.pid);
-    let mut found = 0;
-    for (pid, created) in orphan_harness_pids(&output.stdout, dsh_bin, owned_pid) {
-        if matches_process_creation(pid, created, || {
-            log::warn!("Terminating orphan Harness service process {pid} (from dsh install dir)");
-            kill_pid_tree(pid);
-        }) {
-            found += 1;
+    // 结束进程后不再固定补睡：端口释放实测是毫秒级（taskkill 返回后约 1ms），
+    // 而紧随其后的启动会以 `wait_for_port_release` 等到端口真正回落，固定睡眠
+    // 只是把这段滞后放大成白等。
+    let targets = orphan_harness_pids(&output, dsh_bin, owned_pid);
+    for &(pid, created) in &targets {
+        terminate_confirmed_process(pid, created)?;
+    }
+    for line in String::from_utf8_lossy(&output).lines() {
+        if orphan_harness_pids(line.as_bytes(), dsh_bin, owned_pid).is_empty() {
+            continue;
+        }
+        if let Ok(entry) = serde_json::from_str::<WindowsProcessEntry>(line) {
+            if !targets.iter().any(|&(pid, _)| pid == entry.pid) {
+                terminate_confirmed_process(entry.pid, entry.created)?;
+            }
         }
     }
-    if found > 0 {
-        std::thread::sleep(std::time::Duration::from_millis(800));
-    }
+    Ok(())
 }
 
 #[cfg(windows)]
-fn matches_process_creation(pid: u32, created: u64, terminate: impl FnOnce()) -> bool {
+fn terminate_confirmed_process(pid: u32, created: u64) -> Result<bool, String> {
     use windows_sys::Win32::Foundation::{CloseHandle, FILETIME, WAIT_TIMEOUT};
     use windows_sys::Win32::System::Threading::{
         GetProcessTimes, OpenProcess, WaitForSingleObject, PROCESS_QUERY_LIMITED_INFORMATION,
-        PROCESS_SYNCHRONIZE,
+        PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
     };
 
     let handle = unsafe {
         OpenProcess(
-            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE | PROCESS_TERMINATE,
             0,
             pid,
         )
     };
     if handle.is_null() {
-        return false;
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() == Some(87) {
+            return Ok(false);
+        }
+        return Err(format!(
+            "HARNESS_CLEANUP_FAILED: cannot open confirmed orphan {pid}: {error}"
+        ));
     }
     let mut creation = FILETIME {
         dwLowDateTime: 0,
@@ -441,35 +506,213 @@ fn matches_process_creation(pid: u32, created: u64, terminate: impl FnOnce()) ->
     let mut exit = creation;
     let mut kernel = creation;
     let mut user = creation;
-    let matches = unsafe {
-        GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user) != 0
-            && WaitForSingleObject(handle, 0) == WAIT_TIMEOUT
-            && (u64::from(creation.dwHighDateTime) << 32 | u64::from(creation.dwLowDateTime)) / 10
-                == created / 10
-    };
-    if matches {
-        terminate();
+    let queried =
+        unsafe { GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user) };
+    let state = unsafe { WaitForSingleObject(handle, 0) };
+    if queried == 0
+        || (state != WAIT_TIMEOUT && state != windows_sys::Win32::Foundation::WAIT_OBJECT_0)
+    {
+        unsafe { CloseHandle(handle) };
+        return Err(format!(
+            "HARNESS_CLEANUP_FAILED: cannot verify process {pid}"
+        ));
     }
-    if !matches {
+    let matches = state == WAIT_TIMEOUT
+        && created != 0
+        && (u64::from(creation.dwHighDateTime) << 32 | u64::from(creation.dwLowDateTime)) / 10
+            == created / 10;
+    let result = if matches {
+        log::warn!("Terminating confirmed orphan Harness process {pid}");
+        terminate_windows_process(pid, handle, kill_pid_tree).map(|()| true)
+    } else {
         log::warn!("Skipping orphan Harness process {pid}: creation time or process state changed (expected {created}, observed {})", u64::from(creation.dwHighDateTime) << 32 | u64::from(creation.dwLowDateTime));
-    }
+        Ok(false)
+    };
     unsafe { CloseHandle(handle) };
-    matches
+    result
 }
 
 #[cfg(windows)]
-fn orphan_harness_pids(output: &[u8], dsh_bin: &str, owned_pid: Option<u32>) -> Vec<(u32, u64)> {
-    String::from_utf8_lossy(output)
+fn terminate_windows_process(
+    pid: u32,
+    handle: windows_sys::Win32::Foundation::HANDLE,
+    kill_tree: impl FnOnce(u32),
+) -> Result<(), String> {
+    use windows_sys::Win32::Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT};
+    use windows_sys::Win32::System::Threading::{TerminateProcess, WaitForSingleObject};
+    match unsafe { WaitForSingleObject(handle, 0) } {
+        WAIT_OBJECT_0 => return Ok(()),
+        WAIT_TIMEOUT => {}
+        _ => {
+            return Err(format!(
+                "HARNESS_CLEANUP_FAILED: cannot query process {pid}"
+            ))
+        }
+    }
+    kill_tree(pid);
+    if unsafe { WaitForSingleObject(handle, 1000) } == WAIT_OBJECT_0 {
+        return Ok(());
+    }
+    // issue #1074：taskkill 失败后只升级已确认的句柄，不重新按裸 PID 打开进程。
+    log::warn!("Harness process {pid} survived taskkill; terminating the retained handle");
+    if unsafe { TerminateProcess(handle, 1) } == 0
+        && unsafe { WaitForSingleObject(handle, 0) } != WAIT_OBJECT_0
+    {
+        return Err(format!(
+            "HARNESS_CLEANUP_FAILED: cannot terminate process {pid}: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    if unsafe { WaitForSingleObject(handle, 5000) } != WAIT_OBJECT_0 {
+        return Err(format!(
+            "HARNESS_CLEANUP_FAILED: process {pid} did not exit"
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+pub(super) fn reclaim_orphan_port(dsh_bin: &Path, port: u16) -> Result<bool, String> {
+    use super::sweep::port_owner_pid;
+    use super::utils::is_port_in_use;
+    if !is_port_in_use(port) {
+        return Ok(true);
+    }
+    let Some(pid) = port_owner_pid(port) else {
+        log::warn!("PORT_OWNER: port={port} pid=unknown ownership=unknown");
+        return Ok(false);
+    };
+    let output = match windows_process_snapshot(Some(pid)) {
+        Ok(output) => output,
+        Err(error) => {
+            log::warn!("PORT_OWNER: port={port} pid={pid} ownership=unknown: {error}");
+            return Ok(false);
+        }
+    };
+    let entry = dsh_bin
+        .to_str()
+        .ok_or("HARNESS_SWEEP_FAILED: invalid entry path")?;
+    let targets = orphan_harness_pids(&output, entry, owned_process_pid());
+    log::warn!(
+        "PORT_OWNER: port={port} pid={pid} ownership={} process={}",
+        if targets.is_empty() {
+            "protected-or-unknown"
+        } else {
+            "confirmed-orphan"
+        },
+        String::from_utf8_lossy(&output).trim()
+    );
+    if targets.is_empty() {
+        return Ok(!is_port_in_use(port));
+    }
+    let listener = String::from_utf8_lossy(&output)
         .lines()
-        .filter_map(|line| {
-            let process = serde_json::from_str::<serde_json::Value>(line).ok()?;
-            let pid = u32::try_from(process.get("pid")?.as_u64()?).ok()?;
-            let command = process.get("commandLine")?.as_str()?;
-            let created = process.get("created")?.as_u64()?;
-            (Some(pid) != owned_pid && is_windows_harness_command_line(command, dsh_bin))
-                .then_some((pid, created))
+        .find_map(|line| serde_json::from_str::<WindowsProcessEntry>(line).ok())
+        .ok_or("HARNESS_CLEANUP_FAILED: confirmed listener snapshot missing")?;
+    let terminated = terminate_confirmed_process(listener.pid, listener.created)?;
+    if wait_for_port_release(port, PORT_RELEASE_WAIT) {
+        return Ok(true);
+    }
+    if !terminated || port_owner_pid(port) != Some(pid) {
+        log::warn!(
+            "PORT_OWNER: port={port} ownership changed after orphan check; preserving new listener"
+        );
+        return Ok(false);
+    }
+    Err(format!(
+        "HARNESS_CLEANUP_FAILED: confirmed orphan listener {pid} did not release port {port}"
+    ))
+}
+
+#[cfg(windows)]
+#[derive(serde::Deserialize)]
+struct WindowsProcessEntry {
+    pid: u32,
+    created: u64,
+    #[serde(rename = "commandLine")]
+    command_line: String,
+    #[serde(default)]
+    ancestors: Vec<WindowsProcessAncestor>,
+    #[serde(default, rename = "ancestorsTruncated")]
+    ancestors_truncated: bool,
+}
+
+#[cfg(windows)]
+#[derive(serde::Deserialize)]
+struct WindowsProcessAncestor {
+    pid: u32,
+    created: u64,
+    name: String,
+    #[serde(rename = "commandLine")]
+    command_line: Option<String>,
+}
+
+/// 转发层：`cmd.exe /C node <入口>` 只是把命令转交给真身，它自己活着只代表还在等
+/// 子进程结束，不代表服务仍被某个桌面实例持有。nvmd 等 Node 版本管理器的垫片就是
+/// 这么转交的：垫片退出后真身的父进程是活着的 `cmd.exe`，旧谓词「父进程已退出」
+/// 漏杀 → 端口一直被占，下次启动 EADDRINUSE 起不来。
+///
+/// 只认 `/C node` 这种一次性转交：用户自己开着 `cmd.exe /K` 交互 shell 跑同一个
+/// 入口时，shell 的命令行里同样有 `--no-open`，但它是那个服务的宿主而不是转发层，
+/// 误判会让清扫顺手关掉用户的窗口。
+#[cfg(windows)]
+fn is_relay_ancestor(ancestor: &WindowsProcessAncestor, dsh_bin: &str) -> bool {
+    ancestor.name.eq_ignore_ascii_case("cmd.exe")
+        && ancestor.command_line.as_deref().is_some_and(|command| {
+            if command.contains(['&', '|', '<', '>', '^', '%', '\n', '\r']) {
+                return false;
+            }
+            let prefix = regex::Regex::new(r#"(?i)^\s*(?:"(?:[^"\r\n]*\\)?cmd(?:\.exe)?"|(?:[^\s"]*\\)?cmd(?:\.exe)?)\s+/c\s+"#).unwrap();
+            prefix.find(command).is_some_and(|matched| {
+                is_windows_harness_command_line(&command[matched.end()..], dsh_bin)
+            })
         })
-        .collect()
+}
+
+/// 选出需要清扫的孤儿服务链，每条链返回转发层最顶层的进程：`taskkill /T` 会连同
+/// 下方的转发层与服务本体一起结束。判定只看「向上穿过所有转发层后还有没有活着的
+/// 宿主」：入口路径不匹配、已由本应用持有（`owned_pid`）、上方存在活着的非转发层
+/// 进程（另一个桌面实例的垫片、用户自己的 shell）、祖先创建时间晚于后代（PID
+/// 已被复用，父子关系失效），或祖先链被层数上限截断（上方仍可能有持有者）都不清扫。
+#[cfg(windows)]
+fn orphan_harness_pids(output: &[u8], dsh_bin: &str, owned_pid: Option<u32>) -> Vec<(u32, u64)> {
+    let mut targets: Vec<(u32, u64)> = Vec::new();
+    for entry in String::from_utf8_lossy(output)
+        .lines()
+        .filter_map(|line| serde_json::from_str::<WindowsProcessEntry>(line).ok())
+    {
+        if entry.created == 0
+            || entry.ancestors_truncated
+            || Some(entry.pid) == owned_pid
+            || !is_windows_harness_command_line(&entry.command_line, dsh_bin)
+        {
+            continue;
+        }
+        let mut root = (entry.pid, entry.created);
+        let mut descendant = entry.created;
+        let mut owned = false;
+        for ancestor in &entry.ancestors {
+            if ancestor.created > descendant {
+                break;
+            }
+            if ancestor.created == 0
+                || Some(ancestor.pid) == owned_pid
+                || !is_relay_ancestor(ancestor, dsh_bin)
+            {
+                owned = true;
+                break;
+            }
+            root = (ancestor.pid, ancestor.created);
+            descendant = ancestor.created;
+        }
+        if owned || Some(root.0) == owned_pid {
+            continue;
+        }
+        if !targets.contains(&root) {
+            targets.push(root);
+        }
+    }
+    targets
 }
 
 /// 判断命令行是否为「从本应用 dsh 安装目录启动的 Harness 服务」。
@@ -492,15 +735,22 @@ fn is_harness_command_line(cmdline: &str, dsh_bin: &str) -> bool {
 /// 会持续占用 `dependencies/dsh` 目录的文件句柄（node 以该目录为 cwd 且模块
 /// DLL 加载在内存），更新切换目录时触发 os error 32（INSTALL_BACKUP_FAILED）。
 ///
-/// Windows 只结束入口路径精确匹配且父进程已退出的 node 服务；仍由另一个桌面实例
-/// 持有的服务不做清扫。Unix 保持原有 release 路径匹配行为。
-pub fn terminate_stale_harness_processes(app_handle: &tauri::AppHandle) {
+/// Windows 只结束入口路径精确匹配且已失去持有者的 node 服务：父进程已退出，或
+/// 父进程只是垫片的 `cmd.exe /C node` 转发层且上方没有活着的垫片。仍由另一个
+/// 桌面实例持有的服务（真身直接挂在实例下，或转发层上方还压着活着的垫片）不做清扫。
+/// Unix 保持原有 release 路径匹配行为：枚举 `ps` 按入口路径与启动参数匹配命令行，
+/// 与父进程是否存活无关——垫片/shell 包装层的命令行同样带着入口路径与服务参数，
+/// 因此转发层与其下方的真身会被分别命中，不存在 Windows 的转发层漏杀问题
+/// （debug 构建跳过该分支，只按 `.harness.pid` 标记回收）。
+pub fn terminate_stale_harness_processes(app_handle: &tauri::AppHandle) -> Result<(), String> {
     #[cfg(windows)]
-    terminate_stale_harness_processes_at(&config::get_dsh_binary_path(app_handle));
+    {
+        terminate_stale_harness_processes_at(&config::get_dsh_binary_path(app_handle))?;
+    }
     #[cfg(not(windows))]
     {
         if cfg!(debug_assertions) {
-            return;
+            return Ok(());
         }
         // Unix 同样需要按路径清扫：打开中的文件允许重命名确实不阻塞更新切换，
         // 但崩溃/强杀残留的孤儿 dsh 实例会持续监听端口，下一次启动只能一路
@@ -510,16 +760,14 @@ pub fn terminate_stale_harness_processes(app_handle: &tauri::AppHandle) {
         // 服务参数，不会误杀用户其它 node/dsh 命令，因此可安全地全部结束。
         let dsh_bin = config::get_dsh_binary_path(app_handle);
         let Some(dsh_bin_str) = dsh_bin.to_str() else {
-            return;
+            return Err("HARNESS_SWEEP_FAILED: invalid entry path".to_string());
         };
         let Ok(output) = Command::new("ps")
             .args(["-ww", "-axo", "pid=,command="])
             .output()
         else {
-            log::error!("Failed to enumerate stale Harness service processes");
-            return;
+            return Err("HARNESS_SWEEP_FAILED: cannot enumerate service processes".to_string());
         };
-        let mut found = 0;
         for line in String::from_utf8_lossy(&output.stdout).lines() {
             let Some((pid, cmdline)) = parse_ps_line(line) else {
                 continue;
@@ -527,16 +775,11 @@ pub fn terminate_stale_harness_processes(app_handle: &tauri::AppHandle) {
             if !is_harness_command_line(cmdline, dsh_bin_str) {
                 continue;
             }
-            found += 1;
             log::warn!("Terminating stale Harness service process {pid} (from dsh install dir)");
             kill_pid_tree(pid);
         }
-        if found > 0 {
-            // 与 stop() 同理：信号发完后 PID 回收与端口释放还有短暂滞后，
-            // 让出一点时间避免紧随其后的启动探测撞上尚未释放的端口。
-            std::thread::sleep(std::time::Duration::from_millis(800));
-        }
     }
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -568,8 +811,24 @@ pub async fn stop(app_handle: tauri::AppHandle) -> Result<(), String> {
     // 清理孤儿清扫标记：正常停止的实例不应被下次启动当作残留
     let _ = fs::remove_file(harness_pid_path(&app_handle));
 
-    // 给系统一点时间释放端口 (重要！)
-    tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+    // 端口释放滞后是毫秒级，固定睡眠只会把这段时间放大成白等；以端口真正
+    // 回落为准，最坏情况仍退化为原先的等待上限。
+    {
+        let port = config::get_store_dat_setting(&app_handle).port;
+        #[cfg(windows)]
+        let entry = crate::service::core::active_dsh_binary(&app_handle);
+        tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+            if !wait_for_port_release(port, PORT_RELEASE_WAIT) {
+                #[cfg(windows)]
+                {
+                    reclaim_orphan_port(&entry, port)?;
+                }
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|error| format!("STOP_FAILED: {error}"))??;
+    }
 
     status::set_status(status::Status::Stopped);
     status::emit_status(&app_handle);
@@ -587,14 +846,26 @@ pub async fn stop(app_handle: tauri::AppHandle) -> Result<(), String> {
 /// 同步、可在退出路径调用（无 async 运行时依赖）：进程从 SIGKILL 返回那一刻已死，
 /// 但内核回收监听套接字仍有短暂滞后，故结束过进程后补一次有界等待，让紧随其后的
 /// 安装器/新实例看到端口已释放。没持有进程时不等待，避免在用户可见路径上白耗。
-pub fn stop_for_installer(app_handle: &tauri::AppHandle) {
-    if !matches!(terminate_owned_process(), Ok(true)) {
-        return;
+pub fn stop_for_installer(app_handle: &tauri::AppHandle) -> Result<(), String> {
+    let terminated = terminate_owned_process()
+        .map_err(|()| "STOP_FAILED: Harness process did not stop".to_string())?;
+    #[cfg(not(windows))]
+    if !terminated {
+        return Ok(());
     }
+    #[cfg(windows)]
+    let _ = terminated;
     // 正常停止路径同样清理清扫标记（崩溃路径才需要下次启动清扫）
     let _ = fs::remove_file(harness_pid_path(app_handle));
-    log::info!("Harness stopped and port released for installer handoff");
-    std::thread::sleep(std::time::Duration::from_millis(800));
+    let port = config::get_store_dat_setting(app_handle).port;
+    if !wait_for_port_release(port, PORT_RELEASE_WAIT) {
+        #[cfg(windows)]
+        {
+            reclaim_orphan_port(&crate::service::core::active_dsh_binary(app_handle), port)?;
+        }
+    }
+    log::info!("Harness stopped for installer handoff");
+    Ok(())
 }
 
 /// 应用退出时同步回收 Harness 进程。
@@ -602,7 +873,9 @@ pub fn stop_for_installer(app_handle: &tauri::AppHandle) {
 /// 退出路径上不更新状态，只结束当前应用持有的 Harness 进程树（与安装器交接共用
 /// [`stop_for_installer`]，保证两条路径行为一致）。
 pub fn stop_on_exit(app_handle: &tauri::AppHandle) {
-    stop_for_installer(app_handle);
+    if let Err(error) = stop_for_installer(app_handle) {
+        log::error!("Harness exit cleanup failed: {error}");
+    }
 }
 
 #[cfg(test)]
@@ -638,6 +911,46 @@ mod tests {
         // 幂等：已清空后再次取出返回 None
         let mut slot: Option<OwnedProcess> = None;
         assert!(take_owned_process_if_matching(&mut slot, 42).is_none());
+    }
+
+    #[test]
+    fn exit_diagnostics_finish_before_ownership_loss_is_observable() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let app = tauri::test::mock_app();
+        let root = tempfile::tempdir().unwrap();
+        let marker = root.path().join("fatal-report.log");
+        *owned_process_lock().lock().unwrap() = Some(test_owned(42));
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (resume_tx, resume_rx) = mpsc::channel();
+        let timeout = Duration::from_secs(5);
+
+        std::thread::scope(|scope| {
+            let callback_marker = marker.clone();
+            let handle = app.handle().clone();
+            let exit = scope.spawn(move || {
+                on_owned_process_exit(&handle, 42, |_| {
+                    entered_tx.send(()).unwrap();
+                    resume_rx.recv_timeout(timeout).unwrap();
+                    fs::write(callback_marker, "ERROR HARNESS_FATAL_REPORT: fatal.json\n").unwrap();
+                    Some(1)
+                })
+            });
+            entered_rx.recv_timeout(timeout).unwrap();
+            let callback_holds_ownership = matches!(
+                owned_process_lock().try_lock(),
+                Err(std::sync::TryLockError::WouldBlock)
+            );
+            let observer = scope.spawn(|| {
+                let owned = has_owned_process();
+                (owned, marker.is_file())
+            });
+            resume_tx.send(()).unwrap();
+            assert_eq!(exit.join().unwrap().map(|owned| owned.pid), Some(42));
+            assert!(callback_holds_ownership);
+            assert_eq!(observer.join().unwrap(), (false, true));
+        });
     }
 
     /// 退出载荷保留退出码（含 0），无法取得时显式序列化为 null。
@@ -772,6 +1085,24 @@ mod tests {
         ));
     }
 
+    /// Unix 侧清扫只按入口路径与启动参数匹配命令行，与父进程是否存活无关：垫片/
+    /// shell 包装层的命令行里同样带着入口路径与服务参数，转发层与其下方的真身会
+    /// 被分别命中，因此 Windows 上「转发层活着导致真身漏杀」不会在 Unix 出现。
+    #[test]
+    fn harness_cmdline_matches_relay_wrapper_arguments() {
+        let bin = "/home/u/.dsh/dependencies/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js";
+        // 版本管理器垫片（asdf 等）：包装层自身的命令行同样带入口路径与服务参数
+        assert!(is_harness_command_line(
+            &format!("/home/u/.asdf/shims/node {bin} --profile web --port 3080 --no-open"),
+            bin
+        ));
+        // 真身独立命中：包装层与真身各自被枚举到，任一层被回收都会释放端口
+        assert!(is_harness_command_line(
+            &format!("/home/u/.asdf/installs/nodejs/22.22.0/bin/node {bin} --profile web --port 3080 --no-open"),
+            bin
+        ));
+    }
+
     #[cfg(windows)]
     #[test]
     fn live_peer_service_is_not_reaped_from_temporary_core_directory() {
@@ -794,7 +1125,7 @@ mod tests {
             .join("bin.js");
         std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
         let ready = root.join("ready");
-        std::fs::write(&bin, format!("require('fs').writeFileSync({:?}, 'ready'); setTimeout(() => process.exit(0), 60000)", ready.to_string_lossy())).unwrap();
+        std::fs::write(&bin, format!("require('net').createServer().listen(0, '127.0.0.1', function() {{ require('fs').writeFileSync({:?}, String(this.address().port)) }}); setTimeout(() => process.exit(0), 60000)", ready.to_string_lossy())).unwrap();
         let mut child = Command::new("node.exe")
             .arg(&bin)
             .args(["--profile", "web", "--port", "3081", "--no-open"])
@@ -815,7 +1146,12 @@ mod tests {
                 std::fs::rename(&core, root.join("renamed")).is_err(),
                 "a live service working directory must block Windows rename"
             );
-            terminate_stale_harness_processes_at(&bin);
+            let port = std::fs::read_to_string(&ready)
+                .unwrap()
+                .parse::<u16>()
+                .unwrap();
+            assert!(!reclaim_orphan_port(&bin, port).expect("live peer port must be preserved"));
+            terminate_stale_harness_processes_at(&bin).expect("temporary core sweep");
             assert!(
                 child.try_wait().unwrap().is_none(),
                 "live peer desktop child must not be killed"
@@ -859,7 +1195,7 @@ mod tests {
             .join("bin.js");
         std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
         let ready = root.join("ready");
-        std::fs::write(&bin, format!("require('fs').writeFileSync({:?}, 'ready'); setTimeout(() => process.exit(0), 60000)", ready.to_string_lossy())).unwrap();
+        std::fs::write(&bin, format!("require('net').createServer().listen(0, '127.0.0.1', function() {{ require('fs').writeFileSync({:?}, String(this.address().port)) }}); setTimeout(() => process.exit(0), 60000)", ready.to_string_lossy())).unwrap();
         let pid_file = root.join("orphan.pid");
         let parent = "const {spawn}=require('child_process'); const c=spawn(process.execPath,[process.argv[1],'--profile','web','--port','3081','--no-open'],{cwd:process.argv[2],detached:true,stdio:'ignore'}); try { require('fs').writeFileSync(process.argv[3],String(c.pid)) } catch (error) { c.kill(); throw error } c.unref()";
         let result = std::panic::catch_unwind(|| {
@@ -894,7 +1230,13 @@ mod tests {
                     std::fs::rename(&core, root.join("renamed")).is_err(),
                     "orphan working directory must block Windows rename"
                 );
-                terminate_stale_harness_processes_at(&bin);
+                let port = std::fs::read_to_string(&ready)
+                    .unwrap()
+                    .parse::<u16>()
+                    .unwrap();
+                assert!(super::super::utils::is_port_in_use(port));
+                assert!(reclaim_orphan_port(&bin, port).expect("reclaim temporary orphan listener"));
+                assert!(!super::super::utils::is_port_in_use(port));
                 assert_eq!(
                     unsafe { WaitForSingleObject(handle, 5000) },
                     WAIT_OBJECT_0,
@@ -941,13 +1283,83 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    fn failed_taskkill_escalates_only_the_retained_process_handle() {
+        use std::os::windows::io::AsRawHandle;
+        use std::os::windows::process::CommandExt;
+        let mut child = Command::new("node.exe")
+            .args(["-e", "setTimeout(() => {}, 60000)"])
+            .creation_flags(0x08000000)
+            .spawn()
+            .unwrap();
+        let result = terminate_windows_process(child.id(), child.as_raw_handle(), |_| {});
+        let stopped = child.try_wait().unwrap().is_some();
+        let _ = child.kill();
+        let exit = child.wait().unwrap();
+        result.expect("failed taskkill must fall back to retained handle");
+        assert!(stopped, "fallback must confirm exit before returning");
+        assert!(!exit.success());
+        assert!(
+            terminate_windows_process(0, std::ptr::null_mut(), |_| panic!(
+                "invalid handle must not invoke taskkill"
+            ))
+            .unwrap_err()
+            .starts_with("HARNESS_CLEANUP_FAILED:")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn denied_handle_termination_reports_failure_and_preserves_process() {
+        use std::os::windows::process::CommandExt;
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE};
+        let mut child = Command::new("node.exe")
+            .args(["-e", "setTimeout(() => {}, 60000)"])
+            .creation_flags(0x08000000)
+            .spawn()
+            .unwrap();
+        let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, child.id()) };
+        assert!(!handle.is_null());
+        let result = terminate_windows_process(child.id(), handle, |_| {});
+        let alive = child.try_wait().unwrap().is_none();
+        unsafe { CloseHandle(handle) };
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(result
+            .unwrap_err()
+            .starts_with("HARNESS_CLEANUP_FAILED: cannot terminate process"));
+        assert!(alive);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn creation_mismatch_preserves_the_live_process() {
+        use std::os::windows::process::CommandExt;
+        let mut child = Command::new("node.exe")
+            .args(["-e", "setTimeout(() => {}, 60000)"])
+            .creation_flags(0x08000000)
+            .spawn()
+            .unwrap();
+        let result = terminate_confirmed_process(child.id(), 1);
+        let alive = child.try_wait().unwrap().is_none();
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_eq!(result.unwrap(), false);
+        assert!(
+            alive,
+            "PID creation time mismatch must preserve the process"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn orphan_selection_excludes_owned_foreign_and_plugin_processes() {
         let bin = r"C:\sandbox\dev\dependencies\dsh\node_modules\@deepseek-ai\dsh\lib\bin.js";
         let lines = [
-            serde_json::json!({ "pid": 101, "created": 1001, "commandLine": format!("node.exe {bin} --profile web --port 3081 --no-open") }),
-            serde_json::json!({ "pid": 102, "created": 1002, "commandLine": format!("node.exe {bin} --profile web --port 3082 --no-open") }),
-            serde_json::json!({ "pid": 103, "created": 1003, "commandLine": format!("node.exe {bin} plugin --profile web --port 3083") }),
-            serde_json::json!({ "pid": 104, "created": 1004, "commandLine": format!("node.exe {bin}.backup --profile web --port 3084") }),
+            serde_json::json!({ "pid": 101, "created": 1001, "commandLine": format!("node.exe {bin} --profile web --port 3081 --no-open"), "ancestors": [] }),
+            serde_json::json!({ "pid": 102, "created": 1002, "commandLine": format!("node.exe {bin} --profile web --port 3082 --no-open"), "ancestors": [] }),
+            serde_json::json!({ "pid": 103, "created": 1003, "commandLine": format!("node.exe {bin} plugin --profile web --port 3083"), "ancestors": [] }),
+            serde_json::json!({ "pid": 104, "created": 1004, "commandLine": format!("node.exe {bin}.backup --profile web --port 3084"), "ancestors": [] }),
         ];
         let output = lines
             .iter()
@@ -964,12 +1376,137 @@ mod tests {
         );
     }
 
+    /// 回归：nvmd 等 Node 版本管理器的垫片以 `cmd.exe /C node <入口>` 转交真身。
+    /// 垫片退出后真身的父进程是仍活着的 `cmd.exe`，旧谓词「父进程已退出」判定
+    /// 它「有人管」而跳过清扫 → 真身继续占着 3080，下次启动直接 EADDRINUSE。
+    /// 新谓词须穿过转发层清扫，同时不得误伤仍被活着的垫片持有的服务。
+    #[cfg(windows)]
+    #[test]
+    fn orphan_selection_sweeps_through_relay_ancestors() {
+        let bin = r"C:\Users\Example User\AppData\Roaming\dsh-tauri\dependencies\dsh\node_modules\@deepseek-ai\dsh\lib\bin.js";
+        let service = format!(r#"node.exe "{bin}" --profile web --port 3080 --no-open"#);
+        let relay = format!(r#""cmd.exe" /C node "{bin}" --profile web --port 3080 --no-open"#);
+        let shim = format!(r"C:\nvmd\bin\node.exe {bin} --profile web --port 3080 --no-open");
+        let entry = |pid: u32, ancestors: Vec<serde_json::Value>| serde_json::json!({ "pid": pid, "created": 1000 + u64::from(pid), "commandLine": service, "ancestors": ancestors });
+        let ancestor = |created: u64, pid: u32, name: &str, command_line: &str| serde_json::json!({ "pid": pid, "created": created, "name": name, "commandLine": command_line });
+        let output = [
+            // 垫片退出，只剩 `cmd.exe` 压着真身 → 须连转发层一起结束
+            entry(201, vec![ancestor(1100, 301, "cmd.exe", &relay)]),
+            // 转发层上方还压着活着的垫片 → 另一个桌面实例仍持有，不能碰
+            entry(
+                202,
+                vec![
+                    ancestor(1102, 302, "cmd.exe", &relay),
+                    ancestor(1101, 402, "node.exe", &shim),
+                ],
+            ),
+            // 真身直接挂在桌面实例下（没有垫片）→ 实例仍持有，不能碰
+            entry(
+                203,
+                vec![ancestor(1103, 403, "deepseek-harness-desktop.exe", "")],
+            ),
+            // 命令行里出现 `--no-open` 但不是转发层（用户自己的 shell）→ 不能碰
+            entry(
+                204,
+                vec![ancestor(
+                    1104,
+                    304,
+                    "powershell.exe",
+                    &format!("pwsh -Command \"{service}\""),
+                )],
+            ),
+            // 祖先创建时间晚于后代：父子关系已失效（PID 复用），退回按子进程本身清扫
+            entry(205, vec![ancestor(9999, 305, "cmd.exe", &relay)]),
+            // 用户自己开着 `cmd.exe /K` 交互 shell 跑同一个入口 → 那是服务的宿主，不能碰
+            entry(
+                206,
+                vec![ancestor(
+                    1106,
+                    306,
+                    "cmd.exe",
+                    &relay.replace("/C node", "/K node"),
+                )],
+            ),
+            entry(208, vec![ancestor(1108, 308, "cmd.exe", &format!("{relay} & echo retained"))]),
+            entry(209, vec![ancestor(1109, 309, "cmd.exe", &relay.replace(bin, r"C:\foreign\bin.js"))]),
+            entry(210, vec![ancestor(0, 310, "cmd.exe", &relay)]),
+            // 祖先链被层数上限截断：上方仍可能有持有者，不能清扫
+            serde_json::json!({ "pid": 207, "created": 1207, "commandLine": service, "ancestors": [ancestor(1107, 307, "cmd.exe", &relay)], "ancestorsTruncated": true }),
+        ]
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+        assert_eq!(
+            orphan_harness_pids(output.as_bytes(), bin, None),
+            vec![(301, 1100), (205, 1205)]
+        );
+        assert_eq!(
+            orphan_harness_pids(output.as_bytes(), bin, Some(301)),
+            vec![(205, 1205)]
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_harness_command_line_rejects_impostor_executable_and_embedded_flags() {
+        let bin = r"C:\sandbox\dependencies\dsh\lib\bin.js";
+        for command in [
+            format!(r#"notnode.exe "{bin}" --profile web --port 3081 --no-open"#),
+            format!(r#"node.exe "{bin}" --profile web --port 3081 "payload --no-open""#),
+            format!(r#"node.exe "{bin}" --profile web --port 3081 --no-open extra.js"#),
+        ] {
+            assert!(!is_windows_harness_command_line(&command, bin), "{command}");
+        }
+    }
+
     #[cfg(windows)]
     #[test]
     fn windows_harness_command_line_matches_only_the_active_core_service() {
         let bin = r"C:\Users\Example User\AppData\Roaming\dsh-tauri\dev\dependencies\dsh\node_modules\@deepseek-ai\dsh\lib\bin.js";
         let command = format!(r#""C:\node.exe" "{bin}" --profile web --port 3081 --no-open"#);
         assert!(is_windows_harness_command_line(&command, bin));
+        assert!(!is_windows_harness_command_line(
+            &command.replace(&format!(r#""{bin}""#), bin),
+            bin
+        ));
+        // 回归 issue #751：node 与入口之间夹着堆选项时仍须命中孤儿。
+        assert!(is_windows_harness_command_line(
+            &command.replace(
+                r#""C:\node.exe" "#,
+                r#""C:\node.exe" --max-old-space-size=8192 "#
+            ),
+            bin
+        ));
+        assert!(is_windows_harness_command_line(
+            &format!(
+                r#"node.exe --max-old-space-size=8192 "{bin}" --profile web --port 3081 --no-open"#
+            ),
+            bin
+        ));
+        for flags in [
+            r#"--report-on-fatalerror "--report-directory=C:\用户 data\logs" --report-filename=fatal.json"#,
+            r#"--report-on-fatalerror --report-directory="C:\用户 data\logs" --report-filename=fatal.json"#,
+            r#"--max-old-space-size=8192 --report-on-fatalerror "--report-directory=C:\用户 data\logs" --report-filename=fatal.json"#,
+        ] {
+            assert!(is_windows_harness_command_line(
+                &format!(r#"node.exe {flags} "{bin}" --profile web --port 3081 --no-open"#),
+                bin
+            ));
+            assert!(!is_windows_harness_command_line(
+                &format!(
+                    r#"node.exe unrelated.js {flags} "{bin}" --profile web --port 3081 --no-open"#
+                ),
+                bin
+            ));
+        }
+        // 入口前还夹着别的脚本参数时不得命中，避免误伤外来的 node 进程。
+        assert!(!is_windows_harness_command_line(
+            &format!(
+                r#"node.exe unrelated.js --max-old-space-size=8192 "{bin}" --profile web --port 3081 --no-open"#
+            ),
+            bin
+        ));
         assert!(!is_windows_harness_command_line(
             &command.replace(bin, &format!("{bin}.backup")),
             bin
@@ -1039,6 +1576,111 @@ mod tests {
         ));
         // 空命令行
         assert!(!is_harness_command_line("", bin));
+    }
+
+    /// 回归：nvmd 等 Node 版本管理器的垫片以 `cmd.exe /C node <entry>` 转交真身，
+    /// 垫片先退出后真身仍占着端口。旧谓词要求「父进程已退出」才清扫，此时真身的父
+    /// 进程 `cmd.exe` 还活着 → 漏杀，端口一直占着，下次启动 EADDRINUSE。
+    /// 新谓词按入口路径清扫，并连带结束上方的转发层。
+    #[cfg(windows)]
+    #[test]
+    fn orphan_service_is_swept_through_live_relay_ancestors() {
+        use std::os::windows::process::CommandExt;
+        use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
+        };
+
+        fn read_pid(path: &std::path::Path) -> u32 {
+            std::fs::read_to_string(path)
+                .expect("pid file")
+                .trim()
+                .parse::<u32>()
+                .expect("pid")
+        }
+
+        let root = std::env::temp_dir().join(format!(
+            "dsh-转发链-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let core = root.join("dependencies").join("dsh");
+        let bin = core
+            .join("node_modules")
+            .join("@deepseek-ai")
+            .join("dsh")
+            .join("lib")
+            .join("bin.js");
+        std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+        let ready = root.join("ready");
+        let service_pid_file = root.join("service.pid");
+        std::fs::write(
+            &bin,
+            format!(
+                "require('fs').writeFileSync({:?}, String(process.pid)); require('fs').writeFileSync({:?}, 'ready'); setTimeout(() => process.exit(0), 60000)",
+                service_pid_file.to_string_lossy(),
+                ready.to_string_lossy()
+            ),
+        )
+        .unwrap();
+        let relay_pid_file = root.join("relay.pid");
+        let relay = "const {spawn}=require('child_process'); const c=spawn('cmd.exe',['/C','node',process.argv[1],'--profile','web','--port','3081','--no-open'],{cwd:process.argv[2],detached:true,stdio:'ignore'}); require('fs').writeFileSync(process.argv[3],String(c.pid)); c.unref()";
+        let result = std::panic::catch_unwind(|| {
+            let output = Command::new("node.exe")
+                .args(["-e", relay])
+                .arg(&bin)
+                .arg(&core)
+                .arg(&relay_pid_file)
+                .creation_flags(0x08000000)
+                .output()
+                .expect("spawn temporary relay");
+            assert!(
+                output.status.success(),
+                "temporary relay should spawn the service through cmd.exe"
+            );
+            let relay_pid = read_pid(&relay_pid_file);
+            let started = std::time::Instant::now();
+            while !ready.exists() && started.elapsed() < std::time::Duration::from_secs(5) {
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            assert!(ready.exists(), "temporary service must become ready");
+            let service = read_pid(&service_pid_file);
+            let service_handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, service) };
+            assert!(!service_handle.is_null(), "retain the service handle");
+            let relay_handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, relay_pid) };
+            assert!(!relay_handle.is_null(), "retain the relay handle");
+            let check = std::panic::catch_unwind(|| {
+                terminate_stale_harness_processes_at(&bin).expect("temporary core sweep");
+                assert_eq!(
+                    unsafe { WaitForSingleObject(service_handle, 5000) },
+                    WAIT_OBJECT_0,
+                    "the relayed orphan service should be terminated"
+                );
+                assert_eq!(
+                    unsafe { WaitForSingleObject(relay_handle, 5000) },
+                    WAIT_OBJECT_0,
+                    "the live relay ancestors should be terminated with it"
+                );
+            });
+            if unsafe { WaitForSingleObject(service_handle, 0) } != WAIT_OBJECT_0 {
+                kill_pid_tree(service);
+            }
+            if unsafe { WaitForSingleObject(relay_handle, 0) } != WAIT_OBJECT_0 {
+                kill_pid_tree(relay_pid);
+            }
+            unsafe { CloseHandle(service_handle) };
+            unsafe { CloseHandle(relay_handle) };
+            if let Err(error) = check {
+                std::panic::resume_unwind(error);
+            }
+        });
+        let _ = std::fs::remove_dir_all(&root);
+        if let Err(error) = result {
+            std::panic::resume_unwind(error);
+        }
     }
 
     /// 回归（issue #91）：Unix 上 `kill_pid_tree` 对「无独立进程组」的进程

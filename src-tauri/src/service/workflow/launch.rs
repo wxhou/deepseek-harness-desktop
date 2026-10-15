@@ -5,9 +5,9 @@ use crate::config;
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs;
-use std::path::Path;
 #[cfg(not(windows))]
 use std::io::Read;
+use std::path::{Path, PathBuf};
 #[cfg(not(windows))]
 use std::process::{Command, Stdio};
 use std::sync::atomic::Ordering;
@@ -19,14 +19,14 @@ use super::process::set_owned_process_with_handle;
 #[cfg(unix)]
 use super::process::warn_if_inotify_watch_limit_low;
 use super::process::{
-    has_owned_process, on_owned_process_exit, stop, terminate_stale_harness_processes, LaunchGuard,
-    LAUNCH_GUARD,
+    has_owned_process, on_owned_process_exit, stop, take_startup_sweep,
+    terminate_stale_harness_processes, LaunchGuard, LAUNCH_GUARD,
 };
 use super::status;
 use super::sweep::persist_harness_pid;
 #[cfg(windows)]
 use super::sweep::{dsh_bin_open_error, relaunch_marker_path, relaunch_via_shell_escape};
-use super::utils::{is_port_in_use, rotate_service_log, spawn_output_readers};
+use super::utils::{append_log, rotate_service_log, spawn_output_readers, wait_for_port_release};
 use super::win_inspector;
 
 #[cfg(windows)]
@@ -46,13 +46,79 @@ type SpawnResult = Result<
 /// 复用配置端口；到期仍未释放才按“真占用”逐级递增。
 const PORT_RELEASE_WAIT: std::time::Duration = std::time::Duration::from_millis(1500);
 
-fn build_harness_args(dsh_binary: &Path, profile: &str, port: u16, heap_mb: Option<u32>) -> Vec<OsString> {
-    let mut args = Vec::with_capacity(7);
+#[cfg(target_os = "linux")]
+fn harness_library_path(
+    appdir: Option<&std::ffi::OsStr>,
+    library_path: Option<&std::ffi::OsStr>,
+) -> Option<OsString> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let library_path = library_path?;
+    let Some(appdir) = appdir.filter(|path| !path.is_empty()) else {
+        return Some(library_path.to_os_string());
+    };
+    Some(
+        std::env::join_paths(
+            library_path
+                .as_bytes()
+                .split(|byte| matches!(*byte, b':' | b';'))
+                .map(|path| Path::new(std::ffi::OsStr::from_bytes(path)))
+                .filter(|path| !path.starts_with(Path::new(appdir))),
+        )
+        .expect("split Linux library paths contain no path separator"),
+    )
+}
+
+fn fatal_report_path(log_path: &Path) -> PathBuf {
+    static NEXT_REPORT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let sequence = NEXT_REPORT.fetch_add(1, Ordering::Relaxed);
+    log_path.with_file_name(format!(
+        "harness-fatal-{}-{timestamp}-{sequence}.json",
+        std::process::id()
+    ))
+}
+
+fn log_fatal_report(log_path: &PathBuf, report_path: &Path) {
+    if report_path.is_file() {
+        let line = format!("ERROR HARNESS_FATAL_REPORT: {}", report_path.display());
+        append_log(log_path, &line);
+        log::error!("{line}");
+    }
+}
+
+fn build_harness_args(
+    dsh_binary: &Path,
+    profile: &str,
+    patch: Option<&Path>,
+    port: u16,
+    heap_mb: Option<u32>,
+    report_path: &Path,
+) -> Vec<OsString> {
+    let mut args = Vec::with_capacity(12);
     args.extend(super::heap::heap_option_arg(heap_mb));
+    let mut directory = OsString::from("--report-directory=");
+    directory.push(report_path.parent().unwrap_or(Path::new(".")));
+    let mut filename = OsString::from("--report-filename=");
+    filename.push(report_path.file_name().unwrap_or_default());
+    args.extend([
+        OsString::from("--report-on-fatalerror"),
+        directory,
+        filename,
+    ]);
     args.extend([
         dsh_binary.as_os_str().to_os_string(),
         OsString::from("--profile"),
         OsString::from(profile),
+    ]);
+    if let Some(patch) = patch {
+        args.push(OsString::from("--patch"));
+        args.push(patch.as_os_str().to_os_string());
+    }
+    args.extend([
         OsString::from("--port"),
         OsString::from(port.to_string()),
         OsString::from("--no-open"),
@@ -60,24 +126,30 @@ fn build_harness_args(dsh_binary: &Path, profile: &str, port: u16, heap_mb: Opti
     args
 }
 
-/// 轮询等待配置端口释放为空闲（端口本来就空闲则立即返回）。
-///
-/// async（tokio）实现，避免长时间阻塞启动线程。与 `stop()` 里“给系统一点时间
-/// 释放端口”的目的一致，但以“端口确实空闲”为准而不是固定睡 800ms——因此
-/// 端口很快释放时几乎不额外耗时，只有真占用才等到超时。
-async fn wait_for_port_release(port: u16) {
-    let deadline = tokio::time::Instant::now() + PORT_RELEASE_WAIT;
-    while tokio::time::Instant::now() < deadline {
-        if !is_port_in_use(port) {
-            return;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
-    }
+/// 从起始端口向上查找第一个空闲端口，绝不结束未知的端口占用进程。
+fn find_available_port(start: u16, dsh_binary: &Path) -> Result<u16, String> {
+    find_available_port_by(start, |port| {
+        prepare_port(dsh_binary, port).map(|free| !free)
+    })
 }
 
-/// 从起始端口向上查找第一个空闲端口，绝不结束未知的端口占用进程。
-fn find_available_port(start: u16) -> Result<u16, String> {
-    find_available_port_by(start, is_port_in_use)
+fn prepare_port(dsh_binary: &Path, port: u16) -> Result<bool, String> {
+    if !super::utils::is_port_in_use(port) {
+        return Ok(true);
+    }
+    #[cfg(windows)]
+    {
+        super::process::reclaim_orphan_port(dsh_binary, port)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = dsh_binary;
+        log::warn!(
+            "PORT_OWNER: port={port} pid={:?} ownership=unknown",
+            super::sweep::port_owner_pid(port)
+        );
+        Ok(false)
+    }
 }
 
 /// 按调用方提供的占用判定查找第一个空闲端口。
@@ -87,11 +159,11 @@ fn find_available_port(start: u16) -> Result<u16, String> {
 /// 其他进程在两次探测之间占用。
 fn find_available_port_by(
     start: u16,
-    mut is_in_use: impl FnMut(u16) -> bool,
+    mut is_in_use: impl FnMut(u16) -> Result<bool, String>,
 ) -> Result<u16, String> {
     let mut port = start;
     loop {
-        if !is_in_use(port) {
+        if !is_in_use(port)? {
             return Ok(port);
         }
         log::warn!("Port {port} is occupied, trying the next port");
@@ -219,6 +291,23 @@ fn is_duplicate_loader_exit(exit_code: u32, stderr: &str) -> bool {
 
 /// 启动 Harness 服务进程
 pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
+    // 启动分段计时（issue #766）：只写日志，不改控制流。每段一行 `STARTUP_PHASE`，
+    // `ms` 是本段耗时、`total` 是本次 launch 的累计耗时。启动慢的归因过去只能靠
+    // 时间戳猜测（同一进程内 auto_start 与前端 invoke 并发交错），埋点后可直接
+    // 从 desktop.log 读出「哪一段慢、慢多少」。
+    let startup_started = std::time::Instant::now();
+    let mut phase_started = startup_started;
+    // 段末打点：`ms` 为上一段耗时，`total` 为 launch 累计。closure 只服务本函数，
+    // 因此就地定义而不抽成独立模块/工具。
+    let mark_phase = |name: &str, phase_started: &mut std::time::Instant| {
+        let now = std::time::Instant::now();
+        log::info!(
+            "STARTUP_PHASE: name={name} ms={} total={}",
+            now.duration_since(*phase_started).as_millis(),
+            now.duration_since(startup_started).as_millis()
+        );
+        *phase_started = now;
+    };
     let mut setting = config::get_store_dat_setting(&app_handle);
     let node_binary_path = config::get_node_binary_path(&app_handle);
     let _transition_guard = super::process::acquire_core_transition().await?;
@@ -234,6 +323,7 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
         log::error!("Harness not installed");
         return Err("HARNESS_NOT_FOUND: Harness not installed".to_string());
     }
+    mark_phase("resolve", &mut phase_started);
 
     // 从这里开始持有与核心切换共用的互斥锁：最终状态检查、启动守卫、残留清扫
     // 及新进程登记必须处于同一临界区，避免切换在检查后插入。
@@ -256,19 +346,29 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     // .harness.pid 标记中）持续占用配置端口与 dependencies/dsh 的文件句柄，
     // 不清扫会导致端口一路漂移（3080→…→3085，issue #91）并让后续目录互换
     // 失败（os error 32）。按命令行路径精确匹配本应用 dsh 服务，不会误杀
-    // 用户其它 node 程序（debug 构建为 no-op，见 terminate_stale_harness_processes）。
+    // 用户其它 node 程序。
+    //
+    // setup 阶段（workflow::sweep_orphan_harness）已在本次启动里清扫过一次，
+    // 期间本应用没有拉起任何进程，重复枚举同一份快照没有新结论（Windows 上
+    // 一次全量枚举约 0.3–0.6s），因此只在尚未清扫时才执行。
     {
         let handle = app_handle.clone();
-        if let Err(e) = tauri::async_runtime::spawn_blocking(move || {
-            terminate_stale_harness_processes(&handle);
+        tauri::async_runtime::spawn_blocking(move || {
+            if take_startup_sweep() {
+                let result = terminate_stale_harness_processes(&handle);
+                if result.is_err() {
+                    super::process::retry_startup_sweep();
+                }
+                result
+            } else {
+                log::debug!(
+                    "Skipping pre-launch stale Harness sweep: already swept during this launch"
+                );
+                Ok(())
+            }
         })
         .await
-        {
-            log::warn!(
-                "failed to sweep stale Harness processes before launch at {}: {e}",
-                dsh_binary_path.display()
-            );
-        }
+        .map_err(|error| format!("HARNESS_SWEEP_FAILED: {error}"))??;
     }
 
     // 端口自愈：自动避让递增（配置端口被占 → 逐级顶高）遗留的非默认端口，
@@ -276,7 +376,14 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     // 端口只增不减、一路从 3080 漂到 3084+（issue #91）。先于
     // wait_for_port_release 探测：既然放弃旧端口，就无需等它释放。
     let heal_target = setting.manual_port.unwrap_or(config::default_port());
-    let healed_port = resolve_heal_port(setting.port, heal_target, !is_port_in_use(heal_target));
+    let entry = dsh_binary_path.clone();
+    let heal_target_free = tauri::async_runtime::spawn_blocking(move || {
+        wait_for_port_release(heal_target, PORT_RELEASE_WAIT);
+        prepare_port(&entry, heal_target)
+    })
+    .await
+    .map_err(|error| format!("HARNESS_CLEANUP_FAILED: {error}"))??;
+    let healed_port = resolve_heal_port(setting.port, heal_target, heal_target_free);
     if healed_port != setting.port {
         log::info!(
             "Harness port healed from {} back to {} (no longer occupied)",
@@ -293,8 +400,17 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     // 端口”误判为仍占用，从而把配置端口永久顶高（dev 热更新下 3081→3082→…
     // 一路漂移，表现为“端口持续累加 + 首次启动超时、刷新后恢复”）。先留出
     // 窗口等配置端口回落为空闲，再决定是否真的逐级递增。
-    wait_for_port_release(setting.port).await;
-    let available_port = find_available_port(setting.port)?;
+    // 有界轮询是阻塞等待，交给阻塞线程池，避免占用启动所在的 Tokio 执行线程。
+    let port = setting.port;
+    let entry = dsh_binary_path.clone();
+    let available_port = tauri::async_runtime::spawn_blocking(move || {
+        if port != heal_target {
+            wait_for_port_release(port, PORT_RELEASE_WAIT);
+        }
+        find_available_port(port, &entry)
+    })
+    .await
+    .map_err(|error| format!("HARNESS_CLEANUP_FAILED: {error}"))??;
     if available_port != setting.port {
         log::info!(
             "Harness port changed from {} to {} because the configured port is occupied",
@@ -304,6 +420,7 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
         setting.port = available_port;
         config::set_store_dat_setting(&app_handle, setting.clone());
     }
+    mark_phase("stale_sweep_and_port", &mut phase_started);
 
     // 构造环境变量：隔离的 $DSH_HOME + 隐私默认（关闭遥测）
     //
@@ -353,6 +470,7 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     if let Err(e) = crate::service::plugin::purge_user_plugins_in_safe_profile(&app_handle) {
         log::warn!("safe mode user plugin purge failed: {e}");
     }
+    mark_phase("profile_prepare", &mut phase_started);
 
     // Linux 起步前探测 inotify 监视上限：harness 服务（dsh web）用 chokidar 递归
     // 监视 profile 目录，上限过低会在启动一瞬间抛 ENOSPC 直接退出（issue #116）。
@@ -380,6 +498,15 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     // 退级策略禁用「未分组」入口并告警。最佳努力且幂等：锚点缺失安全跳过。
     if let Err(e) = crate::service::patch::composer::apply(&app_handle) {
         log::warn!("composer workspace-less patch failed: {e}");
+    }
+    if let Err(e) = crate::service::patch::conversation_draft::apply(&app_handle) {
+        log::warn!("conversation draft compatibility patch failed: {e}");
+    }
+    if let Err(e) = crate::service::patch::mobile_composer::apply(&app_handle) {
+        log::warn!("mobile composer patch failed: {e}");
+    }
+    if let Err(e) = crate::service::patch::mobile_sidebar::apply(&app_handle) {
+        log::warn!("mobile sidebar patch failed: {e}");
     }
     // Expose an id-based SessionStore.remove facade so plugins can perform a
     // real in-memory teardown instead of leaving deleted sessions ungrouped.
@@ -416,10 +543,19 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     // `sessionUpdatedAtByAccount`（persist key 仍是 dsh.workspace.view.v5）：先跑过新核心
     // 再切回 0.1.5-rc.1 / rc.2 时，旧核心的 retainAccountKeys 会
     // Object.entries(undefined) 抛错，sidebar.workspaces 整条槽崩掉且不会自愈。
-    // 补丁把该 action 的三处取值放宽为 `?? {}`；锚点缺失（新核心已删字段）安全跳过。
+    // 补丁把该 action 的取值放宽为 `?? {}`，逐条独立判定：0.1.7 起上游第三条改成了
+    // `delete`，前两条的放宽仍然生效；只有该 action 被整体改写才安全跳过。
     if let Err(e) = crate::service::patch::workspace_view::apply(&app_handle) {
         log::warn!("workspace view state patch failed: {e}");
     }
+    // 内置插件（dsh-tauri-*）只在壳的插件弹窗里可见：官方侧边栏 Plugins 页与插件市场
+    // 都按各自的硬编码内置/inbox 名单判断 bundle 归属，上游没有可配置开关，因此对这两个
+    // 前端做幂等补丁。最佳努力且幂等：锚点缺失（上游改写布局）时安全跳过。
+    if let Err(e) = crate::service::patch::plugin_visibility::apply(&app_handle) {
+        log::warn!("plugin visibility patch failed: {e}");
+    }
+    crate::service::patch::mcp_startup::apply(&app_handle)?;
+    mark_phase("core_patches", &mut phase_started);
     // 预防性处理：pnpm 在无 TTY 环境（dsh-market 等子进程）下重装/更新插件时，
     // 清理/重建 node_modules 会触发交互确认并因无 TTY 直接中止
     // （ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY），表现为插件更新失败。
@@ -434,20 +570,35 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     if let Err(e) = crate::service::plugin::uninstall_deprecated_plugins(&app_handle).await {
         log::warn!("uninstall deprecated plugins failed: {e}");
     }
+    mark_phase("deprecated_plugins", &mut phase_started);
     // 内置插件自愈：随包分发的内置插件（dsh-tauri 等）必须在服务进程加载插件
     // 前就绪——核对「已安装 + 安装路径指向当前捆绑目录」，未安装、路径不正确
-    // 或用户卸载后重启，一律强制重装（见 service::plugin::internal）。最佳
-    // 努力：失败只告警，不阻断启动（核心功能缺失是发布缺陷，由 build:plugins 报错）。
+    // 或用户卸载后重启，一律强制重装（见 service::plugin::internal）。普通
+    // 失败只告警，不阻断启动（核心功能缺失是发布缺陷，由 build:plugins 报错）；
+    // 但进程清理/协调器失败意味着前一次 pnpm 去向未确认，必须终止本次启动。
     if let Err(e) = crate::service::plugin::ensure_internal_plugins(&app_handle).await {
+        if crate::service::plugin::is_process_cleanup_failure(&e) {
+            log::error!("ensure internal plugins blocked by unconfirmed process cleanup: {e}");
+            return Err(e);
+        }
         log::warn!("ensure internal plugins failed: {e}");
     }
+    mark_phase("ensure_internal_plugins", &mut phase_started);
     // 预装插件完整性自检：清单引用的预装插件若在 node_modules 缺失产物，服务
     // 启动时 loader 会对每个缺失插件抛 ERR_MODULE_NOT_FOUND 而整体失败（issue
     // #90，日志特征 `Cannot find package`）。用 `pnpm install` 以现有 manifest +
-    // lockfile 为准重建依赖图修复；修复失败只告警并给缺失插件记录错误标记
-    // （启动失败场景由前端 recovery 对话框兜底，见 service::plugin::recovery）。
+    // lockfile 为准重建依赖图修复；普通修复失败只告警并给缺失插件记录错误标记
+    // （启动失败场景由前端 recovery 对话框兜底，见 service::plugin::recovery），
+    // 只有进程清理/协调器失败会作为 Err 传上来并终止启动。
     if let Err(e) = crate::service::plugin::ensure_preset_plugins(&app_handle).await {
-        log::warn!("ensure preset plugins failed: {e}");
+        log::error!("ensure preset plugins blocked by unconfirmed process cleanup: {e}");
+        return Err(e);
+    }
+    mark_phase("ensure_preset_plugins", &mut phase_started);
+    // 插件自愈（内置插件重装 / 预装插件完整性自检）可能刚把插件市场装进档案，而上一轮补丁
+    // 执行时它还不存在、已被安全跳过；自愈完成后按需重打一次（逐名字判定，已登记则跳过）。
+    if let Err(e) = crate::service::patch::plugin_visibility::apply(&app_handle) {
+        log::warn!("plugin visibility patch after plugin self-healing failed: {e}");
     }
     // 预打包核心运行时自愈：把 app 内置插件与 profile 插件入口链接进活动核心的
     // node_modules（dsh 的 loader 以核心根为裸包解析根），并核验/修复 sharp/koffi
@@ -458,6 +609,7 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
         log::error!("prepare active core runtime failed: {e}");
         return Err(e);
     }
+    mark_phase("prepare_active_runtime", &mut phase_started);
     // prepare 可能因核心原生模块的 ABI 与本地 node 不匹配而改用捆绑运行时
     // （issue #441），此时必须重新解析：下面的 DSH_NODE 注入与 PATH 前置都以
     // 这里的结果为准，否则子进程仍会用那个加载不了原生模块的本地 node。
@@ -541,17 +693,39 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
 
     // 让市场子进程的 pnpm 与桌面端同一套受控策略（store 主版本感知、避免落到系统
     // homebrew pnpm）。与插件安装路径的 ensure_pnpm 版本感知一致，但启动阶段绝不
-    // 触发下载；捆绑版未安装或与 store 不匹配时不注入（交由用户 pnpm）。
-    // 最佳努力：失败只告警，不阻断启动。
-    if crate::service::plugin::harness_prefer_bundled_pnpm(&app_handle) {
-        envs.insert("DSH_PREFER_BUNDLED_PNPM".to_string(), "1".to_string());
+    // 触发下载；捆绑版未安装或与 store 不匹配时不注入（交由用户 pnpm）。探测被正常
+    // 安装占住或探针自身失败只告警，只有进程清理未确认才终止启动。
+    match crate::service::plugin::harness_prefer_bundled_pnpm(&app_handle).await {
+        Ok(true) => {
+            envs.insert("DSH_PREFER_BUNDLED_PNPM".to_string(), "1".to_string());
+        }
+        Ok(false) => {}
+        Err(e) if crate::service::plugin::is_process_cleanup_failure(&e) => {
+            log::error!("prefer bundled pnpm blocked by unconfirmed process cleanup: {e}");
+            return Err(e);
+        }
+        Err(e) => log::warn!("prefer bundled pnpm probe failed, keeping user pnpm: {e}"),
     }
+
+    // 桌面端代理设置（issue #110）：核心（dsh-http-proxy）在启动时读
+    // `http_proxy` / `https_proxy` / `no_proxy` 发布代理策略，再给**它自己** spawn
+    // 的子进程补 `NODE_USE_ENV_PROXY`；桌面端 spawn 的这个服务进程不在那条链路上，
+    // 必须显式下发，否则配置页的代理只作用于桌面端自身的下载与更新请求。
+    // 最佳努力：空值返回空 map，不覆盖用户已有的同名环境变量。
+    envs.extend(config::proxy::proxy_child_env(&setting.proxy_url));
 
     // 内嵌 WebView 是 `tauri.localhost` 下的跨源沙箱 iframe，`SameSite=Strict` 的
     // browser-session Cookie 不会被携带。载体标记交给 dsh-tauri 插件（载体鉴权适配）：
     // 只有该标记在场时它才覆写 connection 的鉴权闸门，因此同一 profile 下独立运行
     // 的 `dsh web` 不受影响（取代原先对核心 JS 打的 `--skip-auth` 磁盘补丁）。
     envs.insert("DSH_TAURI_EMBEDDED".to_string(), "1".to_string());
+
+    // issue #1064：AppImage 的旧库不能泄漏给 Harness 启动的宿主目录选择器。
+    #[cfg(target_os = "linux")]
+    let library_path = harness_library_path(
+        std::env::var_os("APPDIR").as_deref(),
+        std::env::var_os("LD_LIBRARY_PATH").as_deref(),
+    );
 
     // 日志文件（前端日志面板读取）。
     // 每次真实启动前轮转：只保留最近 3 次启动的日志，旧文件后退为
@@ -576,16 +750,49 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
         log::error!("patch layer entry preflight failed: {e}");
         return Err(e);
     }
+    mark_phase("patch_entry_preflight", &mut phase_started);
 
-    let node_options = std::env::var("NODE_OPTIONS").ok();
+    let inherited_heap_mb = super::heap::node_options_heap_limit_mb();
+    let inherited_heap_flags = super::heap::node_options_has_heap_flags_env();
     let heap_mb = super::heap::resolve_heap_limit_mb(
         setting.harness_max_heap_mb,
-        node_options.as_deref(),
+        inherited_heap_flags,
         super::heap::physical_memory_mb(),
     );
-    match heap_mb {
-        Some(mb) => log::info!("Starting Harness process with --max-old-space-size={mb}"),
-        None => log::info!("Starting Harness process with Node default or inherited heap options"),
+    // 命令行 `--max-old-space-size` 压得住 NODE_OPTIONS 里的同名 flag，却压不住
+    // `--max-old-space-size-percentage`（V8 实测：只写 percentage 时命令行上限被
+    // 完全无视）。既然这次要显式下发用户设置，就把继承来的堆 flag 从子进程环境里
+    // 摘掉——只删堆相关项，`--require` 等其余选项原样保留；否则「已设置 16384」
+    // 仍可能是一句谎话。
+    if super::heap::heap_option_arg(heap_mb).is_some() {
+        if let Ok(node_options) = std::env::var("NODE_OPTIONS") {
+            if super::heap::node_options_has_heap_flags(&node_options) {
+                let stripped = super::heap::node_options_without_heap_flags(&node_options);
+                log::info!(
+                    "Dropped inherited heap flags from NODE_OPTIONS for the Harness process (kept={:?})",
+                    stripped
+                );
+                envs.insert("NODE_OPTIONS".to_string(), stripped.unwrap_or_default());
+            }
+        }
+    }
+    // 提示里说的上限必须与进程真正拿到的上限一致，否则用户会看到「已设置 8192
+    // 还提示 8192」这种自相矛盾的诊断（详见 heap.rs 的优先级说明）。
+    match super::heap::effective_limit_mb(heap_mb, inherited_heap_mb) {
+        Some(mb) => log::info!(
+            "Starting Harness process with effective heap limit {mb} MB (configured={:?}, inherited_from_node_options={:?})",
+            setting.harness_max_heap_mb,
+            inherited_heap_mb
+        ),
+        None if inherited_heap_flags => log::info!(
+            "Starting Harness process with the heap limit inherited from NODE_OPTIONS (configured={:?})",
+            setting.harness_max_heap_mb
+        ),
+        None => log::info!(
+            "Starting Harness process with the Node default heap limit (configured={:?}, inherited_from_node_options={:?})",
+            setting.harness_max_heap_mb,
+            inherited_heap_mb
+        ),
     }
 
     // dsh 的 Loader 在插件 dispose 时会把组合后的整棵 entry 树回写进
@@ -598,20 +805,22 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     // Windows 分支的「早期退出重试」兜底。
     reset_active_profile_root(&app_handle);
 
+    // 本地插件热重载：把已挂载的本地路径插件源码目录折算成桌面端独占的补丁层，
+    // 随启动以 `--patch` 注入核心 HMR（本地插件没有版本号可升级，改源码即时生效）。
+    // 该层只在本次进程有效，每次启动都要按当前安装状态重算；没有本地插件时不传
+    // `--patch`（指向不存在的文件会让核心在读取补丁层时直接失败）。
+    let hmr_patch = crate::service::plugin::local_plugin_hmr_sync(&app_handle);
+    if let Some(path) = hmr_patch.as_deref() {
+        log::info!("Injecting local plugin HMR layer: {}", path.display());
+    }
+
     // Windows 打包版是 GUI 进程（没有控制台）。直接以 CREATE_NO_WINDOW 启动
     // node 会让 dsh 派生的子进程各自新建可见控制台窗口（频繁闪烁 cmd 黑窗），
     // 因此 Windows 上改用“隐藏控制台”方式启动，见 win_spawn 模块。
     let active_profile = crate::service::profile::active_profile(&app_handle);
-    let app_core_dir = config::get_dsh_install_path(&app_handle);
-    let core_dir = if dsh_binary_path == config::get_dsh_binary_path(&app_handle) {
-        app_core_dir
-    } else {
-        dsh_binary_path
-            .parent()
-            .and_then(std::path::Path::parent)
-            .map(std::path::Path::to_path_buf)
-            .unwrap_or(app_core_dir)
-    };
+    let core_dir = crate::service::core::active_core_dir(&app_handle);
+    mark_phase("pre_spawn_setup", &mut phase_started);
+    super::startup::note_spawn();
     let spawn_result: SpawnResult = {
         #[cfg(windows)]
         {
@@ -621,20 +830,22 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
                 GetExitCodeProcess, WaitForSingleObject, INFINITE,
             };
 
-            let args = build_harness_args(&dsh_binary_path, active_profile.as_str(), setting.port, heap_mb);
-
-            // 只负责 spawn 并返回管道/PID/句柄：探测与重试期间不登记、不挂
-            // 监视线程——只有最终采用的那个进程才登记，否则旧监视线程会通过
-            // `on_owned_process_exit` 把刚启动的新进程误当作已退出而回落状态。
-            let spawn_harness =
-                || -> std::io::Result<(std::fs::File, std::fs::File, u32, HANDLE)> {
-                    super::win_spawn::spawn_with_hidden_console_owned(
-                        &node_binary_path,
-                        &args,
-                        Some(&core_dir),
-                        &envs,
-                    )
-                };
+            let spawn_harness = |report_path: &Path| {
+                let args = build_harness_args(
+                    &dsh_binary_path,
+                    active_profile.as_str(),
+                    hmr_patch.as_deref(),
+                    setting.port,
+                    heap_mb,
+                    report_path,
+                );
+                super::win_spawn::spawn_with_hidden_console_owned(
+                    &node_binary_path,
+                    &args,
+                    Some(&core_dir),
+                    &envs,
+                )
+            };
 
             // 早期退出重试：崩溃的上一轮 dsh 回写 `cordis.yml` 落在「新进程
             // prepareProfile 重置之后、Include 读取之前」时，新 boot 会把已含
@@ -644,7 +855,8 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
             //（最多 3 次，第二次 boot 基于干净状态必然成功）；仍在运行则视为
             // 健康立即放行登记。探测期间最长阻塞 2.5s，之后才返回给调用方。
             let mut attempt = 0u32;
-            let mut outcome = spawn_harness();
+            let mut report_path = fatal_report_path(&log_path);
+            let mut outcome = spawn_harness(&report_path);
             loop {
                 attempt += 1;
                 let (stdout, stderr, pid, handle) = match outcome {
@@ -679,8 +891,10 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
                          (pid={pid}, code={exit_code}); resetting profile root and relaunching \
                          (attempt {attempt}/3)"
                     );
+                    log_fatal_report(&log_path, &report_path);
                     reset_active_profile_root(&app_handle);
-                    outcome = spawn_harness();
+                    report_path = fatal_report_path(&log_path);
+                    outcome = spawn_harness(&report_path);
                     continue;
                 }
                 // 非签名提前退出或重试耗尽：走正常路径——已捕获的 stderr 补写
@@ -697,6 +911,7 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
                 let handle_value = handle as usize;
                 set_owned_process_with_handle(pid, handle_value);
                 let exit_app_handle = app_handle.clone();
+                let exit_log_path = log_path.clone();
                 std::thread::spawn(move || unsafe {
                     let process_handle = handle_value as HANDLE;
                     WaitForSingleObject(process_handle, INFINITE);
@@ -707,6 +922,7 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
                     // terminate_owned_process 重复 close——进程已 exit，
                     // 通常是本线程取走）。
                     let owned = on_owned_process_exit(&exit_app_handle, pid, |owned| {
+                        log_fatal_report(&exit_log_path, &report_path);
                         let handle = owned.handle as HANDLE;
                         let mut exit_code: u32 = 0;
                         (GetExitCodeProcess(handle, &mut exit_code) != 0)
@@ -723,8 +939,20 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
         #[cfg(not(windows))]
         {
             use std::os::unix::process::CommandExt;
+            let mut report_path = fatal_report_path(&log_path);
             let mut cmd = Command::new(&node_binary_path);
-            cmd.args(build_harness_args(&dsh_binary_path, active_profile.as_str(), setting.port, heap_mb));
+            cmd.args(build_harness_args(
+                &dsh_binary_path,
+                active_profile.as_str(),
+                hmr_patch.as_deref(),
+                setting.port,
+                heap_mb,
+                &report_path,
+            ));
+            #[cfg(target_os = "linux")]
+            if let Some(path) = &library_path {
+                cmd.env("LD_LIBRARY_PATH", path);
+            }
             cmd.envs(&envs)
                 .current_dir(&core_dir)
                 // 核心修正：提供一个空的 stdin 防止 setRawMode 报错
@@ -748,6 +976,7 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
                                     if let Some(mut stderr) = child.stderr.take() {
                                         let _ = stderr.read_to_string(&mut stderr_text);
                                     }
+                                    log_fatal_report(&log_path, &report_path);
                                     if exit.code() == Some(1)
                                         && stderr_text.contains("duplicate loader entry")
                                         && attempt < 3
@@ -759,8 +988,20 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
                                             child.id()
                                         );
                                         reset_active_profile_root(&app_handle);
+                                        report_path = fatal_report_path(&log_path);
                                         cmd = Command::new(&node_binary_path);
-                                        cmd.args(build_harness_args(&dsh_binary_path, active_profile.as_str(), setting.port, heap_mb));
+                                        cmd.args(build_harness_args(
+                                            &dsh_binary_path,
+                                            active_profile.as_str(),
+                                            hmr_patch.as_deref(),
+                                            setting.port,
+                                            heap_mb,
+                                            &report_path,
+                                        ));
+                                        #[cfg(target_os = "linux")]
+                                        if let Some(path) = &library_path {
+                                            cmd.env("LD_LIBRARY_PATH", path);
+                                        }
                                         cmd.envs(&envs)
                                             .current_dir(&core_dir)
                                             .stdin(Stdio::null())
@@ -791,13 +1032,21 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
             let stderr = child.stderr.take();
             set_owned_process(pid);
             let exit_app_handle = app_handle.clone();
+            let exit_log_path = log_path.clone();
             std::thread::spawn(move || {
                 let code = child.wait().ok().and_then(|status| status.code());
-                let _ = on_owned_process_exit(&exit_app_handle, pid, |_| code.map(i64::from));
+                let _ = on_owned_process_exit(&exit_app_handle, pid, |_| {
+                    log_fatal_report(&exit_log_path, &report_path);
+                    code.map(i64::from)
+                });
             });
             Ok((stdout, stderr, pid))
         }
     };
+
+    // 这一段包含 spawn、2.5s 存活探测与 `set_owned_process` 登记——登记写在 spawn 块
+    // 内部，无法单独切分，所以不再为「登记」另打一个只量到一行 log 的点。
+    mark_phase("spawn_probe_and_register", &mut phase_started);
 
     match spawn_result {
         Ok((stdout, stderr, pid)) => {
@@ -820,14 +1069,125 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::TcpListener;
+
+    #[cfg(target_os = "linux")]
+    mod appimage_library_path {
+        use super::*;
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+
+        #[test]
+        fn removes_only_appimage_library_directories() {
+            assert_eq!(
+                harness_library_path(
+                    Some(OsStr::new("/tmp/.mount_DSH")),
+                    Some(OsStr::new("/opt/custom/lib:/tmp/.mount_DSH/usr/lib:/tmp/.mount_DSH:/tmp/.mount_DSH-other/lib:")),
+                ),
+                Some(OsString::from("/opt/custom/lib:/tmp/.mount_DSH-other/lib:")),
+            );
+        }
+
+        #[test]
+        fn filters_semicolon_and_mixed_library_path_separators() {
+            for path in [
+                "/opt/custom/lib;/tmp/.mount_DSH/usr/lib",
+                "/tmp/.mount_DSH/usr/lib;/opt/custom/lib",
+                "/tmp/.mount_DSH/usr/lib:/opt/custom/lib;/tmp/.mount_DSH/usr/lib64",
+            ] {
+                assert_eq!(
+                    harness_library_path(
+                        Some(OsStr::new("/tmp/.mount_DSH")),
+                        Some(OsStr::new(path))
+                    ),
+                    Some(OsString::from("/opt/custom/lib")),
+                    "{path}",
+                );
+            }
+        }
+
+        #[test]
+        fn retains_empty_components_and_loader_tokens() {
+            assert_eq!(
+                harness_library_path(
+                    Some(OsStr::new("/tmp/.mount_DSH")),
+                    Some(OsStr::new(";/tmp/.mount_DSH/usr/lib;;$ORIGIN/$LIB:;")),
+                ),
+                Some(OsString::from("::$ORIGIN/$LIB::")),
+            );
+        }
+
+        #[test]
+        fn filters_non_utf8_appimage_paths_without_removing_siblings() {
+            assert_eq!(
+                harness_library_path(
+                    Some(OsStr::from_bytes(b"/tmp/.mount_\xff")),
+                    Some(OsStr::from_bytes(
+                        b"/tmp/.mount_\xff/usr/lib;/opt/\xfe/lib:/tmp/.mount_\xff-other/lib"
+                    )),
+                ),
+                Some(OsString::from_vec(
+                    b"/opt/\xfe/lib:/tmp/.mount_\xff-other/lib".to_vec()
+                )),
+            );
+        }
+
+        #[test]
+        fn preserves_library_path_without_an_appimage_directory() {
+            let path = Some(OsStr::new("/opt/custom/lib"));
+            assert_eq!(
+                harness_library_path(None, path),
+                Some(OsString::from("/opt/custom/lib"))
+            );
+            assert_eq!(
+                harness_library_path(Some(OsStr::new("")), path),
+                Some(OsString::from("/opt/custom/lib"))
+            );
+        }
+
+        #[test]
+        fn preserves_an_unset_library_path() {
+            assert_eq!(
+                harness_library_path(Some(OsStr::new("/tmp/.mount_DSH")), None),
+                None
+            );
+        }
+
+        #[test]
+        fn clears_a_library_path_containing_only_appimage_directories() {
+            for path in [
+                "/tmp/.mount_DSH/usr/lib",
+                "/tmp/.mount_DSH/usr/lib;/tmp/.mount_DSH/usr/lib64",
+                "",
+            ] {
+                assert_eq!(
+                    harness_library_path(
+                        Some(OsStr::new("/tmp/.mount_DSH")),
+                        Some(OsStr::new(path))
+                    ),
+                    Some(OsString::new()),
+                    "{path}",
+                );
+            }
+        }
+
+        #[test]
+        fn preserves_non_utf8_user_library_paths() {
+            assert_eq!(
+                harness_library_path(
+                    Some(OsStr::new("/tmp/.mount_DSH")),
+                    Some(OsStr::from_bytes(b"/opt/\xff/lib:/tmp/.mount_DSH/usr/lib"))
+                ),
+                Some(OsString::from_vec(b"/opt/\xff/lib".to_vec())),
+            );
+        }
+    }
 
     #[test]
     fn occupied_port_advances_to_a_free_port() {
         let mut checked = Vec::new();
         let selected = find_available_port_by(3080, |port| {
             checked.push(port);
-            port < 3082
+            Ok(port < 3082)
         })
         .expect("find next free port");
 
@@ -837,34 +1197,127 @@ mod tests {
 
     #[test]
     fn occupied_port_reports_exhaustion_at_max_port() {
-        let error = find_available_port_by(u16::MAX, |_| true).expect_err("port exhaustion");
+        let error = find_available_port_by(u16::MAX, |_| Ok(true)).expect_err("port exhaustion");
         assert!(error.starts_with("PORT_EXHAUSTED:"));
     }
 
-    /// 模拟“上个会话残留进程刚被杀、端口仍在释放”的场景：先占用端口，随后在
-    /// 另一线程释放。验证 `wait_for_port_release` 在端口回落后立即返回，而不是
-    /// 等到完整等待窗口——这正是避免端口永久顶高（dev 热更新下 3081→3082→…）
-    /// 的关键行为。
-    #[tokio::test]
-    async fn wait_for_port_release_returns_shortly_after_port_is_released() {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind held test port");
-        let held = listener.local_addr().expect("read held port").port();
+    #[test]
+    fn confirmed_orphan_cleanup_failure_does_not_advance_port() {
+        let mut checked = Vec::new();
+        let error = find_available_port_by(3080, |port| {
+            checked.push(port);
+            Err("HARNESS_CLEANUP_FAILED: retained listener".to_string())
+        })
+        .unwrap_err();
+        assert_eq!(error, "HARNESS_CLEANUP_FAILED: retained listener");
+        assert_eq!(checked, vec![3080]);
+    }
 
-        // 端口此刻确实被占用（模拟残留进程仍在监听）
-        assert!(is_port_in_use(held));
-        let releaser = std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(150));
-            drop(listener);
-        });
+    fn text_args(args: &[OsString]) -> Vec<String> {
+        args.iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    }
 
-        let started = std::time::Instant::now();
-        wait_for_port_release(held).await;
-        // 端口 150ms 后释放 + 80ms 轮询间隔，应远小于 1.5s 等待上限
-        assert!(
-            started.elapsed() < std::time::Duration::from_millis(800),
-            "wait_for_port_release should return shortly after the port is released, not wait the full window"
+    /// `--patch` 必须排在子命令参数之前：`dsh` 的选项收集器在遇到第一个非选项
+    /// 参数（内层应用名）之后会把剩余参数整段透传，排在其后的 `--patch` 会被内层
+    /// 应用判为未知选项并立刻退出（实测）。
+    #[test]
+    fn patch_layer_argument_precedes_the_port_flags() {
+        let patch = Path::new("D:/app-data/cordis.hmr.patch.yml");
+        let args = build_harness_args(
+            Path::new("D:/core/lib/bin.js"),
+            "tauri",
+            Some(patch),
+            3080,
+            None,
+            Path::new("D:/app-data/logs/fatal.json"),
         );
-        releaser.join().expect("port releaser thread");
+        assert_eq!(
+            text_args(&args),
+            vec![
+                "--report-on-fatalerror".to_string(),
+                "--report-directory=D:/app-data/logs".to_string(),
+                "--report-filename=fatal.json".to_string(),
+                "D:/core/lib/bin.js".to_string(),
+                "--profile".to_string(),
+                "tauri".to_string(),
+                "--patch".to_string(),
+                "D:/app-data/cordis.hmr.patch.yml".to_string(),
+                "--port".to_string(),
+                "3080".to_string(),
+                "--no-open".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn fatal_report_flags_precede_the_script_path() {
+        let args = build_harness_args(
+            Path::new("D:/core/lib/bin.js"),
+            "tauri",
+            None,
+            3081,
+            None,
+            Path::new("D:/用户 data/logs/fatal.json"),
+        );
+        let text = text_args(&args);
+        assert_eq!(text[0], "--report-on-fatalerror");
+        assert_eq!(text[1], "--report-directory=D:/用户 data/logs");
+        assert_eq!(text[2], "--report-filename=fatal.json");
+        assert_eq!(text[3], "D:/core/lib/bin.js");
+    }
+
+    #[test]
+    fn fatal_report_paths_are_distinct_for_each_spawn_attempt() {
+        let log = Path::new("D:/用户 data/logs/dsh-web.log");
+        let first = fatal_report_path(log);
+        let second = fatal_report_path(log);
+        assert_eq!(first.parent(), Some(Path::new("D:/用户 data/logs")));
+        assert_eq!(first.extension(), Some(std::ffi::OsStr::new("json")));
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn fatal_report_log_only_names_this_attempts_existing_file_without_reading_it() {
+        let root = tempfile::tempdir().unwrap();
+        let log = root.path().join("dsh-web.log");
+        fs::write(&log, "existing error\n").unwrap();
+        let stale = fatal_report_path(&log);
+        fs::write(&stale, b"secret environment").unwrap();
+        let report = fatal_report_path(&log);
+        log_fatal_report(&log, &report);
+        assert_eq!(fs::read_to_string(&log).unwrap(), "existing error\n");
+        fs::create_dir(&report).unwrap();
+        log_fatal_report(&log, &report);
+        assert_eq!(fs::read_to_string(&log).unwrap(), "existing error\n");
+        fs::remove_dir(&report).unwrap();
+        fs::write(&report, b"\xffsecret environment").unwrap();
+        log_fatal_report(&log, &report);
+        assert_eq!(
+            fs::read_to_string(&log).unwrap(),
+            format!(
+                "existing error\nERROR HARNESS_FATAL_REPORT: {}\n",
+                report.display()
+            )
+        );
+    }
+
+    #[test]
+    fn heap_option_stays_ahead_of_the_script_path() {
+        let args = build_harness_args(
+            Path::new("D:/core/lib/bin.js"),
+            "tauri",
+            None,
+            3081,
+            Some(4096),
+            Path::new("D:/logs/fatal.json"),
+        );
+        let text = text_args(&args);
+        assert_eq!(text[0], "--max-old-space-size=4096");
+        assert_eq!(text[1], "--report-on-fatalerror");
+        assert_eq!(text[4], "D:/core/lib/bin.js");
+        assert!(!text.contains(&"--patch".to_string()));
     }
 
     /// 「duplicate loader entry」竞态签名的判定：只认 exit code 1 + stderr 含

@@ -2,11 +2,9 @@ import type { MenuEntry } from 'dsh-tauri-ui/client'
 import type { ReactElement } from 'react'
 import type { ArchiveSort } from '../store/modules/archive.types'
 import type { ArchivePanelProps, DeleteConfirm } from './archive-panel.types'
-import { Button, ChevronDown, Chip, Ellipsis, FolderOpen, Icon, IconButton, Input, Magnifier, Menu, Modal, Toast, TrashBin, useMountStyle } from 'dsh-tauri-ui/client'
+import { Action, Button, Ellipsis, FolderOpen, Icon, Input, Magnifier, Menu, Modal, Select, Text, Toast, TrashBin } from 'dsh-tauri-ui/client'
 import { isEmpty, useWatchImmediate } from 'dsh-tauri/client'
 import { useCallback, useState } from 'react'
-import { PLUGIN_ID } from '../../shared/constants'
-import { SESSION_STYLE_ID } from '../constants'
 import { useArchiveView } from '../hooks/use-archive-view'
 import { locale } from '../locales'
 import {
@@ -18,19 +16,15 @@ import {
   unarchiveSession,
 } from '../service/archive'
 import { store } from '../store'
-import archivePanelStyle from './archive-panel.layout'
 import { formatTime, projectOptions } from './archive-panel.utils'
 
 /** 设置页「归档」分区：已归档的聊天列表（搜索 / 排序 / 项目筛选 / 取消归档 / 彻底删除）。 */
 export function ArchivePanel(props: ArchivePanelProps): ReactElement | null {
-  useMountStyle(archivePanelStyle, SESSION_STYLE_ID, PLUGIN_ID)
   const { ui, rows, visible, groups, busy } = useArchiveView(props)
   locale.useLocale()
   const [confirm, setConfirm] = useState<DeleteConfirm>(null)
   const [openGroupMenu, setOpenGroupMenu] = useState<string | null>(null)
   const [openPathError, setOpenPathError] = useState<string | null>(null)
-  const [openSort, setOpenSort] = useState(false)
-  const [openProjectFilter, setOpenProjectFilter] = useState(false)
 
   // 进入分区或宿主归档集合规模变化时刷新归档载荷（meta：createdAt/cwd）。
   useWatchImmediate((props.workspacesRuntime.list.getSnapshot().archivedSessionIds ?? []).length, () => {
@@ -60,14 +54,14 @@ export function ArchivePanel(props: ArchivePanelProps): ReactElement | null {
   }
 
   const sortOptions = [
-    { id: 'updatedAt', label: locale.text('sortUpdatedAt') },
-    { id: 'createdAt', label: locale.text('sortCreatedAt') },
-    { id: 'title', label: locale.text('sortTitle') },
+    { value: 'updatedAt', label: locale.text('sortUpdatedAt') },
+    { value: 'createdAt', label: locale.text('sortCreatedAt') },
+    { value: 'title', label: locale.text('sortTitle') },
   ]
   const projectFilterOptions = [
-    { id: 'all', label: locale.text('allProjects') },
+    { value: 'all', label: locale.text('allProjects') },
     ...projectOptions(rows),
-    ...(rows.some(row => !row.workspaceId) ? [{ id: 'ungrouped', label: locale.text('ungrouped') }] : []),
+    ...(rows.some(row => !row.workspaceId) ? [{ value: 'ungrouped', label: locale.text('ungrouped') }] : []),
   ]
 
   const footer = (
@@ -84,9 +78,9 @@ export function ArchivePanel(props: ArchivePanelProps): ReactElement | null {
   )
 
   return (
-    <div className="dshp-session__page">
-      <div className="dshp-session__header">
-        <h1 className="dshp-session__title">{locale.text('archiveTitle')}</h1>
+    <div className="flex flex-col gap-[16px] min-h-full text-primary">
+      <div className="flex items-center justify-between gap-[12px]">
+        <h1 className="m-0 text-[24px] leading-[32px] font-semibold">{locale.text('archiveTitle')}</h1>
         <Button
           type="button"
           variant="danger"
@@ -98,90 +92,48 @@ export function ArchivePanel(props: ArchivePanelProps): ReactElement | null {
         </Button>
       </div>
 
-      <div className="dshp-session__toolbar">
+      <div className="sticky top-0 z-[2] flex items-center gap-[8px] flex-wrap py-[8px] bg-[var(--dsw-alias-bg-base,var(--dsw-alias-bg-module-platform))]">
         <Input
-          className="dshp-session__search"
+          className="flex-[1_1_220px] min-w-0"
           value={ui.query}
           placeholder={locale.text('searchPlaceholder')}
           aria-label={locale.text('searchPlaceholder')}
           icon={<Icon as={Magnifier} />}
           onChange={event => store.archive.setQuery(event.target.value)}
         />
-        <Menu
-          open={openSort}
-          onClose={() => setOpenSort(false)}
-          onSelect={(id) => {
-            setOpenSort(false)
-            store.archive.setSort(id as ArchiveSort)
-          }}
-          items={sortOptions}
-          selectedId={ui.sort}
-          portal
-          align="end"
-          anchor={(
-            <Chip
-              variant="selector"
-              className="dshp-session__menu-select"
-              aria-label={locale.text('sortLabel')}
-              aria-haspopup="menu"
-              open={openSort}
-              aria-expanded={openSort}
-              onClick={() => setOpenSort(openState => !openState)}
-              chevron={<Icon as={ChevronDown} />}
-            >
-              <span className="dshp-session__menu-select-label">
-                {sortOptions.find(option => option.id === ui.sort)?.label ?? ui.sort}
-              </span>
-            </Chip>
-          )}
+        <Select
+          className="max-w-[220px] min-w-0 truncate"
+          label={locale.text('sortLabel')}
+          options={sortOptions}
+          value={ui.sort}
+          onChange={id => store.archive.setSort(id as ArchiveSort)}
         />
-        <Menu
-          open={openProjectFilter}
-          onClose={() => setOpenProjectFilter(false)}
-          onSelect={(id) => {
-            setOpenProjectFilter(false)
-            store.archive.setWorkspaceFilter(id)
-          }}
-          items={projectFilterOptions}
-          selectedId={ui.workspaceId}
-          portal
-          align="end"
-          anchor={(
-            <Chip
-              variant="selector"
-              className="dshp-session__menu-select"
-              aria-label={locale.text('allProjects')}
-              aria-haspopup="menu"
-              open={openProjectFilter}
-              aria-expanded={openProjectFilter}
-              onClick={() => setOpenProjectFilter(openState => !openState)}
-              chevron={<Icon as={ChevronDown} />}
-            >
-              <span className="dshp-session__menu-select-label">
-                {projectFilterOptions.find(option => option.id === ui.workspaceId)?.label ?? ui.workspaceId}
-              </span>
-            </Chip>
-          )}
+        <Select
+          className="max-w-[220px] min-w-0 truncate"
+          label={locale.text('allProjects')}
+          options={projectFilterOptions}
+          value={ui.workspaceId}
+          onChange={id => store.archive.setWorkspaceFilter(id)}
         />
       </div>
 
-      {ui.error && <div className="dshp-session__error">{ui.error}</div>}
+      {ui.error && <Text size="sm" tone="error" className="px-[16px] py-[12px] rounded-[10px] bg-hover">{ui.error}</Text>}
 
       {!ui.loading && isEmpty(visible) && (
-        <div className="dshp-session__empty">{ui.query ? locale.text('noResults') : locale.text('empty')}</div>
+        <Text className="py-[32px] text-center text-[14px] leading-[22px]">{ui.query ? locale.text('noResults') : locale.text('empty')}</Text>
       )}
 
-      <div className="dshp-session__groups">
+      <div className="flex flex-col gap-[20px]">
         {groups.map(group => (
-          <section key={group.id} className="dshp-session__group">
-            <div className="dshp-session__group-header">
+          <section key={group.id} className="flex flex-col gap-[8px]">
+            <div className="flex items-center gap-[8px] px-[2px] text-secondary">
               <Icon as={FolderOpen} />
-              <span className="dshp-session__group-title">{group.title || locale.text('ungrouped')}</span>
-              <span className="dshp-session__group-count">
+              <span className="text-[14px] leading-[22px] font-medium text-primary truncate">{group.title || locale.text('ungrouped')}</span>
+              <Text size="sm" tone="secondary" className="ml-auto">
                 {group.rows.length}
                 {' '}
                 {locale.text('chats')}
-              </span>
+              </Text>
               <Menu
                 open={openGroupMenu === group.id}
                 onClose={() => setOpenGroupMenu(null)}
@@ -204,7 +156,7 @@ export function ArchivePanel(props: ArchivePanelProps): ReactElement | null {
                 portal
                 align="end"
                 anchor={(
-                  <IconButton
+                  <Action
                     variant="action"
                     icon={<Icon size={12} as={Ellipsis} />}
                     aria-label={locale.text('groupMenuAria')}
@@ -215,25 +167,25 @@ export function ArchivePanel(props: ArchivePanelProps): ReactElement | null {
                 )}
               />
             </div>
-            <ul className="dshp-session__list">
+            <ul className="flex flex-col m-0 p-0 list-none border border-border-weak rounded-[12px] overflow-hidden">
               {group.rows.map(row => (
-                <li key={row.sessionId} className="dshp-session__row">
-                  <div className="dshp-session__row-main">
+                <li key={row.sessionId} className="flex items-center gap-[12px] box-border px-[16px] py-[14px] bg-[var(--dsw-alias-bg-base)] min-h-[64px] [&+&]:border-t [&+&]:border-border-weak">
+                  <div className="flex-[1_1_auto] min-w-0 flex flex-col gap-[4px]">
                     <div>
-                      <button
-                        type="button"
-                        className="dshp-session__row-title"
+                      <Button
+                        variant="link"
+                        className="truncate"
                         title={locale.text('openDirectory')}
                         aria-label={`${locale.text('openDirectory')}: ${row.title}`}
                         onClick={() => void handleOpenSessionDirectory(row.sessionId)}
                       >
                         {row.title}
-                      </button>
+                      </Button>
                     </div>
-                    <span className="dshp-session__row-time">{formatTime(row)}</span>
+                    <Text size="sm" tone="secondary" className="truncate">{formatTime(row)}</Text>
                   </div>
-                  <div className="dshp-session__row-actions">
-                    <IconButton
+                  <div className="flex-none flex items-center gap-[8px]">
+                    <Action
                       variant="action"
                       icon={<Icon as={TrashBin} />}
                       aria-label={locale.text('deleteRowAria')}
@@ -258,26 +210,12 @@ export function ArchivePanel(props: ArchivePanelProps): ReactElement | null {
       </div>
 
       <Modal
-        open={confirm?.kind === 'single'}
+        open={confirm !== null}
         onClose={() => setConfirm(null)}
-        title={locale.text('deleteSingleTitle')}
-        description={locale.text('deleteSingleBody')}
-        footer={footer}
-        closeLabel={locale.text('close')}
-      />
-      <Modal
-        open={confirm?.kind === 'all'}
-        onClose={() => setConfirm(null)}
-        title={locale.text('deleteAllTitle')}
-        description={locale.text('deleteAllBody')}
-        footer={footer}
-        closeLabel={locale.text('close')}
-      />
-      <Modal
-        open={confirm?.kind === 'workspace'}
-        onClose={() => setConfirm(null)}
-        title={locale.text('deleteProjectTitle')}
-        description={confirm?.kind === 'workspace' ? locale.text('deleteProjectBody', { count: confirm.sessionIds.length, workspace: confirm.workspaceTitle }) : ''}
+        title={locale.text(confirm?.kind === 'single' ? 'deleteSingleTitle' : confirm?.kind === 'all' ? 'deleteAllTitle' : 'deleteProjectTitle')}
+        description={confirm?.kind === 'workspace'
+          ? locale.text('deleteProjectBody', { count: confirm.sessionIds.length, workspace: confirm.workspaceTitle })
+          : locale.text(confirm?.kind === 'single' ? 'deleteSingleBody' : 'deleteAllBody')}
         footer={footer}
         closeLabel={locale.text('close')}
       />

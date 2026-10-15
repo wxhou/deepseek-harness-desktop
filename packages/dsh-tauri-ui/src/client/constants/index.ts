@@ -19,10 +19,8 @@ export const SETTINGS_ONBOARDING_SLOT = 'settings.onboarding'
 export const SETTINGS_LAUNCHER_SLOT = 'settings.launcher'
 
 export const SETTINGS_SIDEBAR_ID = 'dsh-tauri-ui-settings'
-export const SETTINGS_SIDEBAR_CLASS = 'dshp-settings-sidebar'
 
 /** 接管后的英雄区工作区选择控件（官方 chip 由样式隐藏，见 `ui/hero-workspace.cssr.ts`）。 */
-export const HERO_WORKSPACE_CHIP_CLASS = 'dshp-hero-workspace'
 
 /**
  * `conversation.hero.workspace` 是 single 槽：官方 `WorkspacePicker` 用默认 0 占位，同一 priority

@@ -1,4 +1,4 @@
-import { Description, ListBox, Select } from '@heroui/react'
+import { ListBox, Select } from '@heroui/react'
 import { useMutation } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { useStore } from 'valtio-define'
@@ -44,15 +44,15 @@ export function ConfigCloseAction() {
           className="w-[140px]"
           aria-label={t('ui.close_action')}
         >
-          <Select.Trigger className="rounded-md min-h-8! h-8 py-0 items-center">
+          <Select.Trigger className="min-h-8! h-8 py-0 items-center">
             <Select.Value />
             <Select.Indicator />
           </Select.Trigger>
-          <Select.Popover className="rounded-md">
+          <Select.Popover>
             <ListBox>
               {CLOSE_ACTION_OPTIONS.map(action => (
                 <ListBox.Item
-                  className="rounded-md min-h-8!"
+                  className="min-h-8!"
                   id={action}
                   key={action}
                   textValue={t(CLOSE_ACTION_LABEL_KEYS[action])}
@@ -64,9 +64,7 @@ export function ConfigCloseAction() {
           </Select.Popover>
         </Select>
       </div>
-      <Description className="text-[10px] text-muted/70">
-        {t('ui.close_action_hint')}
-      </Description>
+      <p className="text-[10px] text-muted/70">{t('ui.close_action_hint')}</p>
     </div>
   )
 }

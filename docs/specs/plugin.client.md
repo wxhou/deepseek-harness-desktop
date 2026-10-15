@@ -52,15 +52,15 @@ $$\text{client/index.ts} \longrightarrow \begin{bmatrix} \text{register/} \\ \te
 | **`constants/`** | 静态常量 | 声明 slot 名、注册 ID、storage key、排序权重；跨 half 常量放 `src/shared/`[cite: 2]。 |
 | **`types/`** | 类型定义 | 导出跨文件共享的 interface / type，纯类型无实现[cite: 2]。单一模块专属的类型不入此目录，而是与所属模块**同目录同名**，命名为 `<module>.types.ts`（如 `components/sidebar.types.ts`、`store/modules/settings.types.ts`）；此目录仅保留被多个模块共享的类型。 |
 | **`locales/`** | 本地化字典 | 纯词典定义与 `defineLocale` 导出，无业务代码。 |
-| **`apis/`** | HTTP 出口 | **唯一允许发请求的层**。路径匹配路由，导出 `get*`/`post*`/`delete*` 函数及 DTO。 |
+| **`apis/`** | HTTP 出口 | **唯一允许发请求的层**。由 `dsh-h3/genapi` 根据 `host/server/index.ts` 生成请求函数及 DTO，路径、body、query 与服务端注册一致。 |
 | **`store/`** | 状态管理 | 包含 `index.ts`（纯聚合）与 `modules/<domain>.ts`（一领域一文件，包含 `state` 与同步 `actions`）[cite: 1]。 |
 | **`register/`** | 副作用注册 | **唯一允许登记副作用的层**。使用 `defineRegister` 处理槽位、订阅、观察者与 DOM 补丁[cite: 1]。 |
 | **`service/`** | 领域服务 | 包含 Query（`fetch*`/`load*`）与 Action（领域动作）原型，无副作用生命周期。 |
 | **`hooks/`** | React 组合 | 跨组件复用的 Hook（含参数化 `useStore` 订阅封装）[cite: 1]。 |
-| **`components/`** | 纯 UI 组件 | 一组件一文件，配同名 `.cssr.ts`（若有样式）；仅读 store、发命令[cite: 1]。 |
-| **`styles/`** | 公共样式 | 无组件面的公共 cssr 树，仅导出 `CNode` 对象。 |
+| **`components/`** | 纯 UI 组件 | 一组件一文件；通用控件从 `dsh-tauri-ui` 取用（其样式用 `tv`），包内业务组件直接写 Tailwind `className`；仅读 store、发命令[cite: 1]。 |
+| **`styles/`** | 全局样式 | **唯一允许 `.cssr.ts` 的地方**：无组件面的全局样式树，仅导出 `CNode` 对象。 |
 | **`config/`** | 只读配置 | 存放静态默认值与初始化标志，**严禁存放可变状态**[cite: 2]。 |
-| **`utils/`** | 纯工具函数 | 无状态纯函数，不得认识业务概念，不得导入 `store/`/`service/`/`register/`[cite: 1, 2]。单一模块专属的工具与所属模块**同目录同名**，命名为 `<module>.utils.ts`；此目录仅保留被多个模块共享的纯工具（如 `cssr.ts`、`style.ts`）。 |
+| **`utils/`** | 纯工具函数 | 无状态纯函数，不得认识业务概念，不得导入 `store/`/`service/`/`register/`[cite: 1, 2]。单一模块专属的工具与所属模块**同目录同名**，命名为 `<module>.utils.ts`；此目录仅保留被多个模块共享的纯工具（如 `style.ts`）。 |
 
 **落点决策树**：
 
@@ -107,15 +107,24 @@ $$\text{client/index.ts} \longrightarrow \begin{bmatrix} \text{register/} \\ \te
 
 ### 5. API 层 (`apis/`)
 
-* **唯一允许发请求的层**。使用 `dsh-tauri/client` 导出的 `fetch`，严禁使用 `axios` 或 `window.fetch`。
-* 命名格式为 `HTTP动词 + 领域名词`（如 `getBindings`、`postCreate`）。DTO 存放在 `apis/index.type.ts`，领域模型存放在 `types/`[cite: 2]。
+* **唯一允许发请求的层**。JSON 请求使用 `dsh-tauri/client` 导出的 `ofetch`（与既有 `fetch` 为同一 JSON 实例，不是流式传输）；严禁使用 `axios` 或 `window.fetch`。
+* `apis/index.ts` 与 `apis/index.type.ts` 由根目录 `genapi.config.ts` 使用 `dsh-h3/genapi` 从 `host/server/index.ts` 生成，修改服务契约后运行 `pnpm genapi`，禁止手改生成结果或恢复 `genapi.pipeline.ts`。插件路径统一为 `/api/tauri/<插件短名>`（如 `/api/tauri/remote/machines`），生成类型与消费方按新路径同步，不建立旧 URL 或 DTO 名别名。
+* 请求函数名使用 `HTTP动词 + 路径领域名词`，通过根配置的 transform/patch 保持必要的既有操作名；body/query 必须传入生成函数对应参数，不能误当请求 options。业务类型可从生成响应的成功分支派生，保留真实错误联合，不复制另一套 DTO。
+* 保持现有 JSON 传输：插件生成文件使用 `dsh-tauri/client` 的 `ofetch` 与 type-only `FetchOptions`；桌面壳 SSH 的 `src/apis/remote.ts` 使用 `./http` 的 invoke 适配，不改用浏览器原生 fetch。
 
 ### 6. UI 与样式 (`components/`, `styles/`, `hooks/`)
 
 * 组件全小写 kebab-case，仅读 store 和调用 service，禁止直接修改 store 或发网络请求[cite: 1]。
 * **资源化优先 `dsh-tauri-ui`**：通用控件（按钮、图标按钮、chip、tag、开关、复选框、下拉菜单、输入、分段控件、面板容器）与图标一律从 `dsh-tauri-ui/client` 取用；严禁在包内自建同名通用组件，也严禁直接 import 官方 `@deepseek-ai/dsh-client-ui-primitives`（官方组件的跨内核版本差异由 `dsh-tauri-ui` 统一吸收）。缺什么就补进 `dsh-tauri-ui` 的组件层，不在消费包里各写一份。
 * 包内 `components/` 只保留业务组件与包专属布局样式；任何可能被第二个包复用的组件，上提到 `dsh-tauri-ui`。
-* `.cssr.ts` **只导出 `CNode**`，挂载统一通过 `useMountStyle` 或收敛至 `register/styles.ts`[cite: 1]。
+* **样式选型按「通用 / 业务」二分**：
+  * **通用控件一律用 `tv`（`tailwind-variants`）+ Tailwind 工具类**：变体即类型（`VariantProps` 推导，禁止手写变体/尺寸类型），多部件用 `slots`，条件态用布尔变体与 `compoundSlots`。
+  * **业务组件直接写 `className`**：一次性布局与配色不建 variant 层、不抽象 `tv`。
+  * 颜色优先用 `tailwind.plugins.config.js` 已登记的语义 token（`text-primary`、`bg-layer-1`、`border-border-l3`、`shadow-focus-ring`）；未登记的官方变量才回退任意值 `bg-[var(--dsw-*)]`。新增主题键必须同步该配置文件。
+  * 新写的工具类只有在插件 Tailwind 产物里存在才生效——产物是 `dsh-tauri-ui` 的 `src/client/styles/index.ts`（由 `scripts/taiwindcss.ts` 消费同目录 `index.css`、扫描 `packages/*/src` 生成、lightningcss 压缩后内嵌，并由 `dsh-tauri-ui` 自己 `mountStyle`）；dev 下 watcher 自动重生成，提交前跑 `pnpm build:taiwindcss`；漏生成不会报错，只是静默无样式。
+  * **叠加同类工具类必须消歧**：Tailwind 里同属性谁生效由**产物顺序**决定，不由 className 里的先后决定。`bg-transparent font-normal` 这类「基础态」不要与条件类同列叠加（`bg-transparent` 在产物里更靠后，会盖掉条件分支的 `bg-[…]`）；手写 `className` 用 `cn()`（`dsh-tauri/client` 转出的 tailwind-merge）合并，或三元整段互换；`tv` 内部已走 merge，无需额外处理。
+  * **禁止用 `font` 简写**：`[font:inherit]` 是 shorthand，会把同列 `text-[13px]` 的 `font-size` 一起重置（产物里 arbitrary property 排在字号工具类之后 → 字号变大）。要继承字体只写 `[font-family:inherit]`。
+* **`.cssr.ts` 仅用于全局样式**（`styles/` 下的公共样式树，如 `global.cssr.ts`）：组件级样式一律不进 cssr；只导出 `CNode`，挂载统一通过 `mountStyle` / `register/styles.ts`[cite: 1]。
 * Hook 命名为 `use-<thing>.ts`，优先复用 `@reause/core` 原语（如 `useIntervalFn`）[cite: 1]。
 
 ### 7. 依赖与本地化 (`locales/`, 依赖关系)
@@ -153,7 +162,7 @@ $$\text{client/index.ts} \longrightarrow \begin{bmatrix} \text{register/} \\ \te
 * [ ] **服务原型**：`service/` 函数严格划分为 Query 与 Action 原型，无副作用 API[cite: 1]。
 * [ ] **副作用收敛**：无裸写原生定时器、DOM 观察器或事件监听，全部由 controller 托管[cite: 1]。
 * [ ] **注册层薄度**：`register/*.ts` 仅做登记编排，>150 行的代码已将逻辑下沉至 `service/`。
-* [ ] **请求纯度**：所有网络请求集中于 `apis/`，统一使用 `dsh-tauri/client` 导出的 `fetch`。
+* [ ] **请求纯度**：所有网络请求集中于 `apis/`，JSON 请求统一使用 `dsh-tauri/client` 的 JSON 实例 `ofetch`/`fetch`，不把该实例作为流式传输。
 * [ ] **依赖与本地化**：无第三方库直接 import；本地化统一采用 `defineLocale`[cite: 1]。
 * [ ] **类型/工具归属**：单一模块专属的类型/工具是否与所属模块**同目录同名**（`<module>.types.ts` / `<module>.utils.ts`），`types/`、`utils/` 是否只留真正跨模块共享的文件？
 * [ ] **零无意义封装**：不存在 `function f(x) { return lodashFn(x) }` 这类纯转调包装；手写处理逻辑（裁剪、比较、排序、去重、取值、判空）一律改用 `dsh-tauri/client` 转出的 `lodash-es`。

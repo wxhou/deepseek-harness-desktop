@@ -6,7 +6,17 @@ export interface DshShortcutRow {
   label: string
   keys: readonly string[]
   aria?: string
+  available?: boolean
 }
+
+export const DSH_VIEW_COMMANDS = [
+  { action: 'desktop-toggle-sidebar', command: 'sidebar.left.toggle', label: 'menu.toggle_sidebar' },
+  { action: 'desktop-toggle-right-panel', command: 'sidebar.right.toggle', label: 'menu.toggle_right_panel' },
+  { action: 'desktop-open-terminal', command: 'terminal.new', label: 'menu.open_terminal' },
+  { action: 'desktop-search-chats', command: 'session.search', label: 'menu.search_chats' },
+] as const
+
+export type DshViewCommand = typeof DSH_VIEW_COMMANDS[number]['command']
 
 export const useDshShortcuts = createGlobalState<{ rows: readonly DshShortcutRow[] }>({ rows: [] })
 

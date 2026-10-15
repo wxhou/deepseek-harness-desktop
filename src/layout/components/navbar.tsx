@@ -1,3 +1,4 @@
+import type { DshViewCommand } from '@/hooks/use-dsh-shortcuts'
 import type { DshPlugin } from '@/types'
 import type { ConfigTab } from '@/ui/dialog/config'
 import {
@@ -9,33 +10,35 @@ import {
   Square,
   Xmark,
 } from '@gravity-ui/icons'
-import { Button, Chip, Description, Dropdown, Label } from '@heroui/react'
+import { Button, Chip, Description, Dropdown, Label, Separator } from '@heroui/react'
 import { useOverlay } from '@overlastic/react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { getIdentifier } from '@tauri-apps/api/app'
 import { invoke } from '@tauri-apps/api/core'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { useEffect, useState } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { If } from 'react-if-lite'
+import { Else, If, Then } from 'react-if-lite'
 import { cn } from 'tailwind-variants'
 import { useStore } from 'valtio-define'
 import { queryKeys } from '@/config/query-keys'
-import { shortcutHint, useDshShortcuts } from '@/hooks/use-dsh-shortcuts'
+import { DSH_VIEW_COMMANDS, shortcutHint, useDshShortcuts } from '@/hooks/use-dsh-shortcuts'
 import { useDshStyle } from '@/hooks/use-dsh-style'
 import { useListen } from '@/hooks/use-listen'
 import { store } from '@/store'
 import { DesktopAboutDialog } from '@/ui/dialog/about'
 import { ConfigDialog } from '@/ui/dialog/config'
+import { TaskManagerDialog } from '@/ui/dialog/task-manager'
 import { DesktopUpdateDialog } from '@/ui/dialog/update'
 import { writeClipboardText } from '@/utils/clipboard'
 import { toast } from '@/utils/toast'
-import { ConnectDialog } from './connect-dialog'
+import { RemoteShare } from './remote-share'
 import { RemoteSwitcher } from './remote-switcher'
 
 /**
  * 壳层窗口顶部导航栏（44px，常驻）：
  *
- *   [侧边栏(展开/收起)] [文件][运行][帮助] [ 空白拖拽区 ] [更新可用][本地/远端] [最小化][最大化][后台化(X)]
+ *   [侧边栏(展开/收起)] [文件][运行][帮助][更新可用] [ 空白拖拽区 ] [远程][本地/远端] [最小化][最大化][后台化(X)]
  *
  * - 侧边栏：经 postMessage 操控 iframe 内的 dsh 应用
  *   （`dsh://sidebar:toggle`，由 dsh-tauri 插件的 `client/register/sidebar.ts`
@@ -44,8 +47,10 @@ import { RemoteSwitcher } from './remote-switcher'
  *   导航桥（收回报 + 发命令）在 `iframe.tsx` / `webview.tsx`，本组件只接收状态与回调：
  *   左侧控件只在「dsh-tauri 插件已启用（已安装）」且传入 `onToggleSidebar` 时渲染，
  *   原生桥缺席时控件没有可靠接收方，避免出现点了没反应的死按钮。
- * - 本地 / 远端：`RemoteSwitcher` 固定在右侧「更新可用」旁边，SSH 功能未启用时
+ * - 本地 / 远端：`RemoteSwitcher` 固定在右侧，SSH 功能未启用时
  *   自身不渲染（见 `remote-switcher.tsx`）。
+ * - 远程：`RemoteShare` 紧邻切换器左侧，入站分享（局域网 / 公网隧道）与 SSH 开关无关，
+ *   与切换器共用服务可用门槛（见 `remote-share.tsx`）；齿轮入口经 `onOpenRemoteAccess` 定位到本机访问页。
  * - 文件：新建窗口（Tauri 再开一个 webview）/ 新聊天、打开文件夹（经协议调用 dsh 官方
  *   「新建会话」「添加工作区」，接收方是 dsh-tauri 的 `client/register/navigation.ts`）/
  *   关闭（隐藏到托盘）/ 退出（完整退出）。两条依赖 iframe 的项在回调缺席时禁用。
@@ -53,6 +58,8 @@ import { RemoteSwitcher } from './remote-switcher'
  *   （对话框与角标见 `ui/dialog/config.tsx`）；「应用」项右侧另挂一个快捷重启图标按钮，
  *   就地重启服务而不必先进面板。
  * - 帮助：运行日志 / 检查更新 / 关于 Desktop / 文档（系统浏览器打开官方文档站）。
+ * - 更新可用：检测到新版本即出现在「帮助」右侧（安装包此时已在静默下载），
+ *   点击打开更新对话框；macOS 的「帮助」在原生菜单栏，chip 落到右侧控件区。
  * - 空白拖拽区：Tauri 原生 `data-tauri-drag-region`（顶层文档直接生效），
  *   Windows/Linux 上双击切换最大化，macOS 上交由系统标题栏偏好。
  * - macOS：使用原生交通灯，红键后台化、黄键最小化、绿键进入原生全屏；
@@ -78,34 +85,33 @@ import { RemoteSwitcher } from './remote-switcher'
  */
 const TAURI_PLUGIN_ID = 'dsh-tauri'
 
-/** 官方文档站点（帮助 → 文档）。 */
-const DOCS_URL = 'https://dshtauri.mintlify.site'
+const APP_IDENTIFIER_QUERY = {
+  queryKey: queryKeys.appIdentifier,
+  queryFn: getIdentifier,
+  staleTime: Infinity,
+}
+
+const HELP_LINKS = {
+  'documentation': 'https://dshtauri.mintlify.site',
+  'desktop-feedback': 'https://github.com/dsh-tauri/deepseek-harness-desktop/issues',
+  'harness-feedback': 'https://trtgsjkv6r.feishu.cn/share/base/form/shrcnlCoGElW7MQznGy9r3YYXcg?hide_uid=1&hide_device_info=1&hide_harness_version=1',
+}
 
 /** 「文件」菜单的动作 id（宿主侧统一分发，避免菜单项内散落逻辑）。 */
 type FileAction = 'new-window' | 'new-chat' | 'open-folder' | 'close' | 'quit'
 
-/**
- * 「编辑」菜单项：`dsh://edit` 的 action 与平台加速键（macOS 用 ⌘，与官方桌面端一致）。
- */
-const EDIT_ITEMS = [
-  { id: 'undo', labelKey: 'menu.undo', key: 'Z', shift: false },
-  { id: 'redo', labelKey: 'menu.redo', key: 'Z', shift: true },
-  { id: 'cut', labelKey: 'menu.cut', key: 'X', shift: false },
-  { id: 'copy', labelKey: 'menu.copy', key: 'C', shift: false },
-  { id: 'paste', labelKey: 'menu.paste', key: 'V', shift: false },
-  { id: 'selectAll', labelKey: 'menu.select_all', key: 'A', shift: false },
-] as const
-
 /** 「帮助」菜单的动作 id。 */
-type HelpAction = 'keyboard-shortcuts' | 'copy-run-logs' | 'check-update' | 'about' | 'documentation'
+type HelpAction = 'toggle-devtools' | 'task-manager' | 'keyboard-shortcuts' | 'copy-run-logs' | 'check-update' | 'about' | keyof typeof HELP_LINKS
 
 /** 「运行」菜单项：直接打开配置对话框并定位到对应面板。 */
-const CONFIG_TABS: { id: ConfigTab, labelKey: string }[] = [
+const CONFIG_TABS = [
   { id: 'application', labelKey: 'config.application' },
+  { id: 'appearance', labelKey: 'config.appearance' },
   { id: 'profiles', labelKey: 'config.profiles' },
   { id: 'plugins', labelKey: 'config.plugins' },
   { id: 'harness', labelKey: 'config.harness' },
-]
+  { id: 'dataDir', labelKey: 'config.dataDir' },
+] as const
 
 /** WKWebView 的 macOS UA 稳定包含 Macintosh，用于切换平台原生窗口 chrome。 */
 function detectMacOS() {
@@ -222,14 +228,9 @@ function ShortcutLabel({ label, hint }: { label: string, hint?: string }) {
   )
 }
 
-/** 编辑菜单的加速键文本：macOS 用 ⌘，其余平台用 Ctrl（与官方桌面端同一组）。 */
-function editAccelerator(key: string, shift: boolean): string {
-  if (IS_MACOS)
-    return `⌘${shift ? '⇧' : ''}${key}`
-  return `Ctrl+${shift ? 'Shift+' : ''}${key}`
-}
-
-export interface NavbarProps { /** iframe 回报的 dsh 侧边栏折叠状态（导航桥逻辑在 `iframe.tsx`） */
+export interface NavbarProps {
+  onRemoteChange: (url: string, tint: string | null) => void
+  /** iframe 回报的 dsh 侧边栏折叠状态（导航桥逻辑在 `iframe.tsx`） */
   sidebarCollapsed?: boolean
   /** 切换 iframe 内 dsh 侧边栏（向 iframe 发 `dsh://sidebar:toggle`）；传入时启用左侧导航控制 */
   onToggleSidebar?: () => void
@@ -239,18 +240,21 @@ export interface NavbarProps { /** iframe 回报的 dsh 侧边栏折叠状态（
   onOpenMachineManager?: () => void
   /** 同步到远端：向 iframe 发 `dsh://settings:open` 定位同步分区（与机器管理同级） */
   onOpenSyncToRemote?: () => void
+  /** 本机访问：远程分享弹层的齿轮入口，向 iframe 发 `dsh://settings:open` 定位远程插件的「远程访问」分区 */
+  onOpenRemoteAccess?: () => void
   /** 打开文件夹：向 iframe 发 `dsh://workspace:add`（dsh 官方「添加工作区」）；传入时该项可用 */
   onOpenFolder?: () => void
-  /** 编辑菜单动作：向 iframe 发 `dsh://edit`（dsh-tauri 的 `client/register/shortcuts.ts` 执行） */
-  onEditAction?: (action: string) => void
-  /** 显示键盘快捷键：向 iframe 发 `dsh://shortcuts:open`，弹官方 `shortcuts.open` 弹层（官方蒙版） */
+  /** 显示键盘快捷键：向 iframe 发 `dsh://shortcuts:open`，弹官方 `shortcuts.open` 弹层（官方蒙版）；传入时该项可用 */
   onOpenShortcuts?: () => void
+  onViewCommand?: (command: DshViewCommand) => void
 }
 
-export function Navbar({ sidebarCollapsed = false, onToggleSidebar, onNewChat, onOpenFolder, onEditAction, onOpenShortcuts, onOpenMachineManager, onOpenSyncToRemote }: NavbarProps) {
+export function Navbar({ onRemoteChange, sidebarCollapsed = false, onToggleSidebar, onNewChat, onOpenFolder, onOpenShortcuts, onViewCommand, onOpenMachineManager, onOpenSyncToRemote, onOpenRemoteAccess }: NavbarProps) {
   const { t } = useTranslation()
+  const queryClient = useQueryClient()
   const isFullscreen = useMacOSFullscreen()
   const isMaximized = useMaximized()
+  const { data: appIdentifier } = useQuery(APP_IDENTIFIER_QUERY)
   // 只读取「dsh-tauri 插件是否已安装」；查询键与「插件」面板共用（同一份缓存），
   // 挂载时自动拉取，服务重启 / 插件操作后的失效由 store 与该缓存同步共同保证。
   const { data: plugins = [] } = useQuery({
@@ -265,11 +269,14 @@ export function Navbar({ sidebarCollapsed = false, onToggleSidebar, onNewChat, o
   const [runMenuOpen, setRunMenuOpen] = useState(false)
 
   const openConfigDialog = useOverlay(ConfigDialog)
+  const openTaskManager = useOverlay(TaskManagerDialog)
   const openAboutDialog = useOverlay(DesktopAboutDialog)
   const openUpdateDialog = useOverlay(DesktopUpdateDialog)
 
   // 仅当 dsh-tauri 插件启用（已安装）时显示左侧导航控件
   const tauriEnabled = plugins.some(plugin => plugin.id === TAURI_PLUGIN_ID)
+  const isNightly = appIdentifier === 'dsh-tauri-nightly'
+  const showUpdateAvailable = appIdentifier != null && !isNightly && updateInfo != null
   function handleWindowAction(action: 'minimize' | 'maximize' | 'background') {
     const appWindow = getCurrentWindow()
     switch (action) {
@@ -298,14 +305,18 @@ export function Navbar({ sidebarCollapsed = false, onToggleSidebar, onNewChat, o
   }
 
   function onHelpAction(key: HelpAction) {
-    if (key === 'check-update')
+    if (key === 'toggle-devtools')
+      void toggleDevtools()
+    else if (key === 'task-manager')
+      void openTaskManager().catch(() => { })
+    else if (key === 'check-update')
       void handleCheckUpdate()
     else if (key === 'about')
       void openAboutDialog().catch(() => { })
     else if (key === 'copy-run-logs')
       void copyRunLogs()
-    else if (key === 'documentation')
-      void openDocumentation()
+    else if (key === 'documentation' || key === 'desktop-feedback' || key === 'harness-feedback')
+      void openHelpLink(key)
     else if (key === 'keyboard-shortcuts')
       onOpenShortcuts?.()
   }
@@ -351,13 +362,34 @@ export function Navbar({ sidebarCollapsed = false, onToggleSidebar, onNewChat, o
     }
   }
 
-  /** 帮助 → 文档：交给系统浏览器打开官方文档站 */
-  async function openDocumentation() {
+  /** 切换开发者工具：Rust 侧就近作用于调用窗口（Windows 上只能反复打开，无法关闭检查器） */
+  async function toggleDevtools() {
     try {
-      await invoke('open_external_url', { url: DOCS_URL })
+      await invoke('toggle_devtools')
     }
     catch (error) {
-      console.error('[Navbar] failed to open documentation:', error)
+      console.error('[Navbar] failed to toggle devtools:', error)
+    }
+  }
+
+  async function openHelpLink(key: keyof typeof HELP_LINKS) {
+    try {
+      await invoke('open_external_url', { url: HELP_LINKS[key] })
+    }
+    catch (error) {
+      console.error(`[Navbar] failed to open ${key}:`, error)
+      toast(t('messages.open_link_failed'), {
+        variant: 'danger',
+        description: <span className="break-all">{HELP_LINKS[key]}</span>,
+        timeout: 10_000,
+        actionProps: {
+          children: t('buttons.copy_link'),
+          onPress: () => {
+            void writeClipboardText(HELP_LINKS[key], t('messages.copy_success'))
+              .catch(copyError => console.error('[Navbar] failed to copy help link:', copyError))
+          },
+        },
+      })
     }
   }
 
@@ -383,6 +415,11 @@ export function Navbar({ sidebarCollapsed = false, onToggleSidebar, onNewChat, o
   /** 「检查更新」：先检查，有更新才弹框；检查失败提示错误而非「已是最新」 */
   async function handleCheckUpdate() {
     try {
+      const identifier = await queryClient.ensureQueryData(APP_IDENTIFIER_QUERY)
+      if (identifier === 'dsh-tauri-nightly') {
+        await invoke('open_external_url', { url: 'https://github.com/dsh-tauri/deepseek-harness-desktop/releases/tag/nightly' })
+        return
+      }
       const info = await store.desktopUpdater.check()
       if (info)
         handleOpenUpdateDialog()
@@ -406,17 +443,44 @@ export function Navbar({ sidebarCollapsed = false, onToggleSidebar, onNewChat, o
     }
   }
 
-  // macOS 原生菜单 → 复用壳层已有操作；非 macOS 无原生菜单，直接忽略事件。
-  // （useListen 内部把回调放在 ref 转发，这里读到的始终是最新的处理函数。）
   useListen<string>('macos-menu-action', (event) => {
     if (!IS_MACOS)
       return
+    const viewCommand = DSH_VIEW_COMMANDS.find(item => item.action === event.payload)
+    if (viewCommand) {
+      onViewCommand?.(viewCommand.command)
+      return
+    }
     switch (event.payload) {
+      case 'desktop-zoom-in':
+        store.setting.zoom('increase')
+        break
+      case 'desktop-zoom-out':
+        store.setting.zoom('decrease')
+        break
+      case 'desktop-zoom-reset':
+        store.setting.zoom('reset')
+        break
       case 'desktop-config':
-        handleOpenConfig()
+        handleOpenConfig('application')
+        break
+      case 'desktop-profiles':
+        handleOpenConfig('profiles')
+        break
+      case 'desktop-plugins':
+        handleOpenConfig('plugins')
+        break
+      case 'desktop-harness':
+        handleOpenConfig('harness')
         break
       case 'desktop-about':
         handleOpenAbout()
+        break
+      case 'desktop-toggle-devtools':
+        void toggleDevtools()
+        break
+      case 'desktop-task-manager':
+        onHelpAction('task-manager')
         break
       case 'desktop-copy-run-logs':
         void copyRunLogs()
@@ -428,7 +492,16 @@ export function Navbar({ sidebarCollapsed = false, onToggleSidebar, onNewChat, o
         void store.harness.restart()
         break
       case 'desktop-documentation':
-        void openDocumentation()
+        void openHelpLink('documentation')
+        break
+      case 'desktop-feedback':
+        void openHelpLink('desktop-feedback')
+        break
+      case 'desktop-harness-feedback':
+        void openHelpLink('harness-feedback')
+        break
+      case 'desktop-keyboard-shortcuts':
+        onOpenShortcuts?.()
         break
       case 'desktop-new-window':
         void createWindow()
@@ -440,7 +513,7 @@ export function Navbar({ sidebarCollapsed = false, onToggleSidebar, onNewChat, o
         onOpenFolder?.()
         break
     }
-  })
+  }, { target: getCurrentWindow().label })
 
   return (
     <div
@@ -448,7 +521,7 @@ export function Navbar({ sidebarCollapsed = false, onToggleSidebar, onNewChat, o
         'relative flex h-11 w-full flex-none select-none items-center gap-0.5 bg-panel',
         {
           'hidden': IS_MACOS && isFullscreen,
-          'pl-20 pr-1.5': IS_MACOS && !isFullscreen,
+          'pl-24 pr-1.5': IS_MACOS && !isFullscreen,
           'px-1.5': !IS_MACOS || isFullscreen,
         },
       )}
@@ -457,7 +530,7 @@ export function Navbar({ sidebarCollapsed = false, onToggleSidebar, onNewChat, o
     >
       <If cond={onToggleSidebar != null && tauriEnabled}>
         <Button
-          className="rounded-lg size-7"
+          className="size-7"
           isIconOnly
           size="sm"
           variant="ghost"
@@ -472,9 +545,6 @@ export function Navbar({ sidebarCollapsed = false, onToggleSidebar, onNewChat, o
           />
         </Button>
       </If>
-      <If cond={onToggleSidebar != null}>
-        <ConnectDialog />
-      </If>
       <If cond={!IS_MACOS}>
         <div className="ml-1">
           {/* 文件：新建窗口 / 新聊天 / 打开文件夹 / 关闭 / 退出。
@@ -482,7 +552,7 @@ export function Navbar({ sidebarCollapsed = false, onToggleSidebar, onNewChat, o
               时禁用而不是留着点了没反应的死按钮，与左侧侧边栏开关同一取舍）。 */}
           <Dropdown>
             <Button
-              className="rounded-lg h-6 text-[12.5px] px-1.5"
+              className="h-6 text-[12.5px] px-1.5"
               size="sm"
               variant="ghost"
               aria-label={t('menu.file')}
@@ -490,10 +560,9 @@ export function Navbar({ sidebarCollapsed = false, onToggleSidebar, onNewChat, o
             >
               {t('menu.file')}
             </Button>
-            <Dropdown.Popover className="rounded-md min-w-55" data-testid="dsh-navbar-menu-popover">
+            <Dropdown.Popover className="min-w-55" data-testid="dsh-navbar-menu-popover">
               <Dropdown.Menu>
                 <Dropdown.Item
-                  className="rounded-md"
                   id="new-window"
                   data-testid="dsh-navbar-item-new-window"
                   textValue={t('menu.new_window')}
@@ -502,7 +571,6 @@ export function Navbar({ sidebarCollapsed = false, onToggleSidebar, onNewChat, o
                   <Label>{t('menu.new_window')}</Label>
                 </Dropdown.Item>
                 <Dropdown.Item
-                  className="rounded-md"
                   id="new-chat"
                   data-testid="dsh-navbar-item-new-chat"
                   isDisabled={onNewChat == null}
@@ -512,7 +580,6 @@ export function Navbar({ sidebarCollapsed = false, onToggleSidebar, onNewChat, o
                   <ShortcutLabel label={t('menu.new_chat')} hint={shortcutHint(shortcutRows, 'session.new')} />
                 </Dropdown.Item>
                 <Dropdown.Item
-                  className="rounded-md"
                   id="open-folder"
                   data-testid="dsh-navbar-item-open-folder"
                   isDisabled={onOpenFolder == null}
@@ -522,7 +589,6 @@ export function Navbar({ sidebarCollapsed = false, onToggleSidebar, onNewChat, o
                   <ShortcutLabel label={t('menu.open_folder')} hint={shortcutHint(shortcutRows, 'workspace.add')} />
                 </Dropdown.Item>
                 <Dropdown.Item
-                  className="rounded-md"
                   id="close"
                   data-testid="dsh-navbar-item-close"
                   textValue={t('menu.close')}
@@ -531,7 +597,6 @@ export function Navbar({ sidebarCollapsed = false, onToggleSidebar, onNewChat, o
                   <Label>{t('menu.close')}</Label>
                 </Dropdown.Item>
                 <Dropdown.Item
-                  className="rounded-md"
                   id="quit"
                   data-testid="dsh-navbar-item-quit"
                   textValue={t('menu.quit')}
@@ -542,42 +607,49 @@ export function Navbar({ sidebarCollapsed = false, onToggleSidebar, onNewChat, o
               </Dropdown.Menu>
             </Dropdown.Popover>
           </Dropdown>
-          {/* 「编辑」：与官方桌面端同一组编辑命令（撤销/重做/剪切/复制/粘贴/全选）。
-              动作经 `dsh://edit` 交给 iframe 内的 dsh-tauri 插件在文档上执行，
-              未安装插件（没有接收方）时整组禁用；加速键是系统/WebView 真实绑定，
-              只作为提示（粘贴仍走原生快捷键，脚本无权读剪贴板）。 */}
           <Dropdown>
             <Button
-              className="rounded-lg h-6 text-[12.5px] px-1.5"
+              className="h-6 text-[12.5px] px-1.5"
               size="sm"
               variant="ghost"
-              aria-label={t('menu.edit')}
-              data-testid="dsh-navbar-menu-edit"
+              aria-label={t('menu.view')}
+              data-testid="dsh-navbar-menu-view"
             >
-              {t('menu.edit')}
+              {t('menu.view')}
             </Button>
-            <Dropdown.Popover className="rounded-md min-w-55" data-testid="dsh-navbar-menu-popover">
+            <Dropdown.Popover className="min-w-55" data-testid="dsh-navbar-menu-popover">
               <Dropdown.Menu>
-                {EDIT_ITEMS.map(item => (
-                  <Dropdown.Item
-                    key={item.id}
-                    className="rounded-md"
-                    id={item.id}
-                    data-testid={`dsh-navbar-item-edit-${item.id}`}
-                    isDisabled={onEditAction == null}
-                    textValue={t(item.labelKey)}
-                    onAction={() => onEditAction?.(item.id)}
-                  >
-                    <ShortcutLabel label={t(item.labelKey)} hint={editAccelerator(item.key, item.shift)} />
+                <Dropdown.Section>
+                  {DSH_VIEW_COMMANDS.map(item => (
+                    <Dropdown.Item
+                      key={item.command}
+                      id={item.command}
+                      isDisabled={onViewCommand == null || !shortcutRows.some(row => row.id === item.command && row.available === true)}
+                      textValue={t(item.label)}
+                      onAction={() => onViewCommand?.(item.command)}
+                    >
+                      <ShortcutLabel label={t(item.label)} hint={shortcutHint(shortcutRows, item.command)} />
+                    </Dropdown.Item>
+                  ))}
+                </Dropdown.Section>
+                <Dropdown.Section>
+                  <Dropdown.Item id="zoom-in" textValue={t('menu.zoom_in')} onAction={() => store.setting.zoom('increase')}>
+                    <ShortcutLabel label={t('menu.zoom_in')} hint="Ctrl + +" />
                   </Dropdown.Item>
-                ))}
+                  <Dropdown.Item id="zoom-out" textValue={t('menu.zoom_out')} onAction={() => store.setting.zoom('decrease')}>
+                    <ShortcutLabel label={t('menu.zoom_out')} hint="Ctrl + -" />
+                  </Dropdown.Item>
+                  <Dropdown.Item id="zoom-reset" textValue={t('menu.actual_size')} onAction={() => store.setting.zoom('reset')}>
+                    <ShortcutLabel label={t('menu.actual_size')} hint="Ctrl + 0" />
+                  </Dropdown.Item>
+                </Dropdown.Section>
               </Dropdown.Menu>
             </Dropdown.Popover>
           </Dropdown>
           <Dropdown isOpen={runMenuOpen} onOpenChange={setRunMenuOpen}>
             {' '}
             <Button
-              className="rounded-lg h-6 text-[12.5px] px-1.5"
+              className="h-6 text-[12.5px] px-1.5"
               size="sm"
               variant="ghost"
               aria-label={t('menu.run')}
@@ -585,52 +657,55 @@ export function Navbar({ sidebarCollapsed = false, onToggleSidebar, onNewChat, o
             >
               {t('menu.run')}
             </Button>
-            <Dropdown.Popover className="rounded-md min-w-55" data-testid="dsh-navbar-menu-popover">
+            <Dropdown.Popover className="min-w-55" data-testid="dsh-navbar-menu-popover">
               <Dropdown.Menu>
                 {CONFIG_TABS.map(item => (
-                  <Dropdown.Item
-                    key={item.id}
-                    className="rounded-md"
-                    id={item.id}
-                    data-testid={`dsh-navbar-item-${item.id}`}
-                    textValue={t(item.labelKey)}
-                    onAction={() => handleOpenConfig(item.id)}
-                  >
-                    <div className="flex w-full items-center justify-between gap-2">
-                      <Label>{t(item.labelKey)}</Label>
-                      <If cond={item.id === 'application'}>
-                        {/* 菜单项整行是 pressable，按钮外包一层专门拦冒泡：React Aria 的
+                  <Fragment key={item.id}>
+                    <Dropdown.Item
+                      id={item.id}
+                      data-testid={`dsh-navbar-item-${item.id}`}
+                      textValue={t(item.labelKey)}
+                      onAction={() => handleOpenConfig(item.id)}
+                    >
+                      <div className="flex w-full items-center justify-between gap-2">
+                        <Label>{t(item.labelKey)}</Label>
+                        <If cond={item.id === 'application'}>
+                          {/* 菜单项整行是 pressable，按钮外包一层专门拦冒泡：React Aria 的
                             pressable 只在 pointerdown / click 上收口，pointerup 会冒泡到菜单项，
                             被菜单项当成「按在别处、松手落在我身上」而自行补一次 click，
                             顺带把菜单项动作（打开配置面板）也触发了——所以 pointerup 必须在这里拦。 */}
-                        <span
-                          className="flex shrink-0 items-center"
-                          onClick={event => event.stopPropagation()}
-                          onPointerDown={event => event.stopPropagation()}
-                          onPointerUp={event => event.stopPropagation()}
-                        >
-                          <Button
-                            className="rounded-md size-6 hover:bg-background-tertiary"
-                            isIconOnly
-                            size="sm"
-                            variant="ghost"
-                            aria-label={t('app.restart')}
-                            data-testid="dsh-navbar-item-application-restart"
-                            onPress={handleQuickRestart}
+                          <span
+                            className="flex shrink-0 items-center"
+                            onClick={event => event.stopPropagation()}
+                            onPointerDown={event => event.stopPropagation()}
+                            onPointerUp={event => event.stopPropagation()}
                           >
-                            <ArrowRotateRight className="size-3.5" />
-                          </Button>
-                        </span>
-                      </If>
-                    </div>
-                  </Dropdown.Item>
+                            <Button
+                              className="size-6 hover:bg-background-tertiary"
+                              isIconOnly
+                              size="sm"
+                              variant="ghost"
+                              aria-label={t('app.restart')}
+                              data-testid="dsh-navbar-item-application-restart"
+                              onPress={handleQuickRestart}
+                            >
+                              <ArrowRotateRight className="size-3.5" />
+                            </Button>
+                          </span>
+                        </If>
+                      </div>
+                    </Dropdown.Item>
+                    <If cond={item.id === 'appearance'}>
+                      <Separator />
+                    </If>
+                  </Fragment>
                 ))}
               </Dropdown.Menu>
             </Dropdown.Popover>
           </Dropdown>
           <Dropdown>
             <Button
-              className="rounded-lg h-6 text-[12.5px] px-1.5"
+              className="h-6 text-[12.5px] px-1.5"
               size="sm"
               variant="ghost"
               aria-label={t('app.help')}
@@ -638,51 +713,9 @@ export function Navbar({ sidebarCollapsed = false, onToggleSidebar, onNewChat, o
             >
               {t('app.help')}
             </Button>
-            <Dropdown.Popover className="rounded-md min-w-55" data-testid="dsh-navbar-menu-popover">
+            <Dropdown.Popover className="min-w-55" data-testid="dsh-navbar-menu-popover">
               <Dropdown.Menu>
                 <Dropdown.Item
-                  className="rounded-md"
-                  id="keyboard-shortcuts"
-                  data-testid="dsh-navbar-item-keyboard-shortcuts"
-                  textValue={t('menu.keyboard_shortcuts')}
-                  onAction={() => onHelpAction('keyboard-shortcuts')}
-                >
-                  <ShortcutLabel label={t('menu.keyboard_shortcuts')} hint={shortcutHint(shortcutRows, 'shortcuts.open')} />
-                </Dropdown.Item>
-                <Dropdown.Item
-                  className="rounded-md"
-                  id="copy-run-logs"
-                  data-testid="dsh-navbar-item-copy-run-logs"
-                  textValue={t('menu.run_logs')}
-                  onAction={() => onHelpAction('copy-run-logs')}
-                >
-                  <Label>{t('menu.run_logs')}</Label>
-                </Dropdown.Item>
-                <Dropdown.Item
-                  className="rounded-md"
-                  id="check-update"
-                  data-testid="dsh-navbar-item-check-update"
-                  textValue={t('menu.check_update')}
-                  onAction={() => onHelpAction('check-update')}
-                >
-                  <span className="flex w-full items-center justify-between gap-3">
-                    <Label>{t('menu.check_update')}</Label>
-                    <If cond={updateInfo != null}>
-                      <Description>{t('menu.new_version')}</Description>
-                    </If>
-                  </span>
-                </Dropdown.Item>
-                <Dropdown.Item
-                  className="rounded-md"
-                  id="about"
-                  data-testid="dsh-navbar-item-about"
-                  textValue={t('menu.about')}
-                  onAction={() => onHelpAction('about')}
-                >
-                  <Label>{t('menu.about')}</Label>
-                </Dropdown.Item>
-                <Dropdown.Item
-                  className="rounded-md"
                   id="documentation"
                   data-testid="dsh-navbar-item-documentation"
                   textValue={t('menu.documentation')}
@@ -690,11 +723,106 @@ export function Navbar({ sidebarCollapsed = false, onToggleSidebar, onNewChat, o
                 >
                   <Label>{t('menu.documentation')}</Label>
                 </Dropdown.Item>
+                <Dropdown.Item
+                  id="keyboard-shortcuts"
+                  data-testid="dsh-navbar-item-keyboard-shortcuts"
+                  isDisabled={onOpenShortcuts == null}
+                  textValue={t('menu.keyboard_shortcuts')}
+                  onAction={() => onHelpAction('keyboard-shortcuts')}
+                >
+                  <ShortcutLabel label={t('menu.keyboard_shortcuts')} hint={shortcutHint(shortcutRows, 'shortcuts.open')} />
+                </Dropdown.Item>
+                <Separator />
+                <Dropdown.Item
+                  id="desktop-feedback"
+                  data-testid="dsh-navbar-item-desktop-feedback"
+                  textValue={t('menu.desktop_feedback')}
+                  onAction={() => onHelpAction('desktop-feedback')}
+                >
+                  <Label>{t('menu.desktop_feedback')}</Label>
+                </Dropdown.Item>
+                <Dropdown.Item
+                  id="harness-feedback"
+                  data-testid="dsh-navbar-item-harness-feedback"
+                  textValue={t('menu.harness_feedback')}
+                  onAction={() => onHelpAction('harness-feedback')}
+                >
+                  <Label>{t('menu.harness_feedback')}</Label>
+                </Dropdown.Item>
+                <Separator />
+                <Dropdown.Item
+                  id="toggle-devtools"
+                  data-testid="dsh-navbar-item-toggle-devtools"
+                  textValue={t('menu.toggle_devtools')}
+                  onAction={() => onHelpAction('toggle-devtools')}
+                >
+                  <Label>{t('menu.toggle_devtools')}</Label>
+                </Dropdown.Item>
+                <Dropdown.Item
+                  id="task-manager"
+                  data-testid="dsh-navbar-item-task-manager"
+                  textValue={t('menu.task_manager')}
+                  onAction={() => onHelpAction('task-manager')}
+                >
+                  <Label>{t('menu.task_manager')}</Label>
+                </Dropdown.Item>
+                <Dropdown.Item
+                  id="copy-run-logs"
+                  data-testid="dsh-navbar-item-copy-run-logs"
+                  textValue={t('menu.run_logs')}
+                  onAction={() => onHelpAction('copy-run-logs')}
+                >
+                  <Label>{t('menu.run_logs')}</Label>
+                </Dropdown.Item>
+                <Separator />
+                <Dropdown.Item
+                  id="check-update"
+                  data-testid="dsh-navbar-item-check-update"
+                  textValue={t('menu.check_update')}
+                  onAction={() => onHelpAction('check-update')}
+                >
+                  <span className="flex w-full items-center justify-between gap-3">
+                    <Label>{t('menu.check_update')}</Label>
+                    <If cond={showUpdateAvailable}>
+                      <Description>{t('menu.new_version')}</Description>
+                    </If>
+                  </span>
+                </Dropdown.Item>
+                <Dropdown.Item
+                  id="about"
+                  data-testid="dsh-navbar-item-about"
+                  textValue={t('menu.about')}
+                  onAction={() => onHelpAction('about')}
+                >
+                  <Label>{t('menu.about')}</Label>
+                </Dropdown.Item>
               </Dropdown.Menu>
             </Dropdown.Popover>
           </Dropdown>
         </div>
       </If>
+
+      <If cond={isNightly}>
+        <Then>
+          <Chip color="accent" size="sm" variant="soft" className="ml-1 text-xs mr-1">
+            {t('navbar.nightly_build')}
+          </Chip>
+        </Then>
+        <Else>
+          <If cond={showUpdateAvailable}>
+            <Chip
+              color="success"
+              size="sm"
+              variant="soft"
+              className="ml-1 cursor-pointer text-xs mr-1"
+              onClick={handleOpenUpdateDialog}
+            >
+              {t('update.chip_available')}
+            </Chip>
+          </If>
+        </Else>
+      </If>
+
       <If cond={import.meta.env.DEV}>
         <Chip size="sm" variant="primary" color="warning" className="text-xs text-background ml-1" data-testid="dsh-navbar-dev-chip">
           {t('app.dev_env')}
@@ -719,30 +847,16 @@ export function Navbar({ sidebarCollapsed = false, onToggleSidebar, onNewChat, o
           同参数的 `background` / `backdrop-filter` 过渡（见 `getOverlayMarkedStyle`）。 */}
       <div className="absolute" style={dshStyle.marked || {}} />
 
-      {/* 「更新可用」chip：紧跟「帮助」右侧。检测到新版本即出现（安装包此时已在静默下载），
-          点击进入更新对话框查看进度 / 打开已下载的安装包。macOS 的「帮助」在原生菜单栏，
-          这里同样显示该 chip，保证三平台都有可见的更新入口。 */}
-      <If cond={updateInfo != null}>
-        <Chip
-          color="success"
-          size="sm"
-          variant="soft"
-          className="ml-1 cursor-pointer text-xs mr-1"
-          onClick={handleOpenUpdateDialog}
-        >
-          {t('update.chip_available')}
-        </Chip>
+      {/* 右侧控件：入站分享（远程）排在本地/远端切换器之前；切换器在 SSH 未启用时自身不渲染。 */}
+      <If cond={onToggleSidebar != null}>
+        <RemoteShare onManage={onOpenRemoteAccess} />
       </If>
 
-      {/* 「本地」/ 远端机器切换器：SSH 功能启用后才出现（未启用时组件自身不渲染），
-          位置固定在「更新可用」右侧，与左侧的文件/运行/帮助菜单分列两端。 */}
-      <If cond={onToggleSidebar != null}>
-        <RemoteSwitcher onManage={onOpenMachineManager} onSync={onOpenSyncToRemote} />
-      </If>
+      <RemoteSwitcher onChange={onRemoteChange} visible={onToggleSidebar != null} onManage={onOpenMachineManager} onSync={onOpenSyncToRemote} />
 
       <If cond={!IS_MACOS}>
         <Button
-          className="rounded-lg size-7"
+          className="size-7"
           isIconOnly
           size="sm"
           variant="ghost"
@@ -753,7 +867,7 @@ export function Navbar({ sidebarCollapsed = false, onToggleSidebar, onNewChat, o
         </Button>
 
         <Button
-          className="rounded-lg size-7"
+          className="size-7"
           isIconOnly
           size="sm"
           variant="ghost"
@@ -768,7 +882,7 @@ export function Navbar({ sidebarCollapsed = false, onToggleSidebar, onNewChat, o
         </Button>
 
         <Button
-          className="rounded-lg size-7 transition-colors enabled:hover:bg-danger/16 enabled:hover:text-danger"
+          className="size-7 transition-colors enabled:hover:bg-danger/16 enabled:hover:text-danger"
           isIconOnly
           size="sm"
           variant="ghost"

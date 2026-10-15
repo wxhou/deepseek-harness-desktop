@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager, Runtime, WebviewWindow};
 
 use crate::config;
-use crate::service::core::{active_source, local_core_package_dir, CoreSource};
+use crate::service::core::active_core_dir;
 
 /// 对某个 dsh 包文件的一次性幂等补丁判定结果。
 #[derive(Debug, PartialEq, Eq)]
@@ -16,18 +16,6 @@ pub enum PatchOutcome {
     Patched(String),
 }
 
-/// 活动核心安装目录：本地核心用其包目录（全局安装路径），预打包用桌面端目录。
-///
-/// 与 [`crate::service::core::active_dsh_binary`] 的取舍一致——本地核心解析在调用
-/// 瞬间失效时回退预打包目录，绝不让补丁打到永不加载的预打包文件上。
-fn active_core_install_dir(app_handle: &tauri::AppHandle) -> PathBuf {
-    match active_source(app_handle) {
-        CoreSource::Local => local_core_package_dir(app_handle)
-            .unwrap_or_else(|| config::get_dsh_install_path(app_handle)),
-        CoreSource::App => config::get_dsh_install_path(app_handle),
-    }
-}
-
 /// 对活动核心安装目录下的某个 dsh 包文件应用一次性幂等补丁。
 ///
 /// - `rel_path`：相对活动核心安装目录的包内路径，例如
@@ -37,13 +25,13 @@ fn active_core_install_dir(app_handle: &tauri::AppHandle) -> PathBuf {
 ///
 /// 统一处理「定位文件 → 读取 → 打补丁 → 写回」与对应的日志。文件缺失、已打过、
 /// 锚点变更均静默跳过并返回 Ok；只有真实读/写失败才返回 Err（不阻断启动的调用方
-/// 据此仅告警）。活动核心的判定与 [`active_core_install_dir`] 一致。
+/// 据此仅告警）。活动核心的判定与 [`active_core_dir`] 一致。
 pub fn patch_dsh(
     app_handle: &tauri::AppHandle,
     rel_path: &str,
     patch: impl FnOnce(&str) -> PatchOutcome,
 ) -> Result<(), String> {
-    patch_core_file(&active_core_install_dir(app_handle), rel_path, patch)
+    patch_core_file(&active_core_dir(app_handle), rel_path, patch)
 }
 
 /// [`patch_dsh`] 的目录版本：对显式给定的核心安装目录施加同一个补丁。
@@ -114,15 +102,6 @@ pub fn show_main_window<R: Runtime>(app: &AppHandle<R>) {
     } else {
         log::warn!("[window] main window not found, skip show");
     }
-}
-
-pub fn app_icon_temp_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
-    let icon = app.default_window_icon()?;
-    let path = std::env::temp_dir().join(format!("dsh-notification-{}.png", std::process::id()));
-    let rgba = icon.rgba().to_vec();
-    let img = image::RgbaImage::from_raw(icon.width(), icon.height(), rgba)?;
-    img.save(&path).ok()?;
-    Some(path)
 }
 
 /// 解码子进程输出的一行。

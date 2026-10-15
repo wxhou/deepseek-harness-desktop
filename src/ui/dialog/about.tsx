@@ -39,21 +39,21 @@ export function DesktopAboutDialog(props: DesktopAboutDialogProps) {
                 <img src="/favicon.svg" alt={t('about.title')} className="w-12 h-12 rounded-md" />
 
                 <div className="text-base font-semibold text-ink">
-                  {about?.powered_by ?? 'DeepSeek Harness Desktop'}
+                  {about?.poweredBy ?? 'DeepSeek Harness Desktop'}
                 </div>
                 <Description className="text-xs">
-                  {t('about.powered_by', { name: about?.powered_by ?? 'Hairy & DeepSeek' })}
+                  {t('about.powered_by')}
                 </Description>
               </div>
               <div className="space-y-1.5 border-t border-line/40 pt-3">
                 <Info term={t('ui.current_version')}>{about?.version ?? '-'}</Info>
-                <Info term={t('about.release_date')}>{about?.published_at ? formatDate(about.published_at) : '-'}</Info>
+                <Info term={t('about.release_date')}>{about?.publishedAt ? formatDate(about.publishedAt) : '-'}</Info>
                 <div className="flex items-center justify-between text-sm border-t border-line/40 pt-2 ">
                   <span className="text-muted">{t('about.source_code')}</span>
                   <Button
                     variant="ghost"
                     size="sm"
-                    className="rounded-md h-8"
+                    className="h-8"
                     onPress={() => {
                       if (about?.repo)
                         void invoke('open_external_url', { url: about.repo })

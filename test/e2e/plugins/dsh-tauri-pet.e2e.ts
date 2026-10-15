@@ -18,14 +18,13 @@ import {
   launchDshBrowser,
   newDshPage,
   openSettings,
-  PET_STYLES,
   selectSettingsSection,
   SETTINGS_NAV_ITEM,
   SETTINGS_TRIGGER,
 } from '../support/browser'
 
 /** 与 `packages/dsh-tauri-pet/src/shared/constants.ts` 的 SESSION_STREAM_PATH 对齐。 */
-const SESSION_STREAM_PATH = '/api/desktop/dsh-tauri-pet/session/stream'
+const SESSION_STREAM_PATH = '/api/tauri/pet/session/stream'
 
 /** `/api/**` 要求浏览器会话；Cookie 由编排在根路径用一次性 token 换得。 */
 function apiHeaders(extra: Record<string, string> = {}): Record<string, string> {
@@ -226,14 +225,12 @@ describe('L2 客户端', () => {
       await openSettings(top.page, top.frame, top.syntheticFallbacks)
 
       const slots = await top.frame.evaluate(() => ({
-        hasTrigger: document.querySelector('.dshp-settings-trigger') !== null,
-        petStyles: document.querySelectorAll('style[cssr-id="dsh-tauri-pet-styles"]').length,
+        hasTrigger: document.querySelector('[data-settings-trigger]') !== null,
         petSections: document.querySelectorAll('[id="dsh-tauri-pet-settings"]').length,
       }))
 
       expect(slots.hasTrigger, '顶层页面必须真的渲染出设置触发器（否则这条断言是空转）').toBe(true)
-      expect(slots.petStyles, '顶层页面不得挂载桌宠样式与菜单补丁（window.parent === window 早退）').toBe(0)
-      expect(slots.petSections, '顶层页面不得注册桌宠设置分区').toBe(0)
+      expect(slots.petSections, '顶层页面不得注册桌宠设置分区（window.parent === window 早退）').toBe(0)
       expectNoSyntheticFallbacks(top)
       expect(top.errors, '早退路径不得产出应用级错误').toEqual([])
     }
@@ -243,23 +240,23 @@ describe('L2 客户端', () => {
   })
 
   it('验证 iframe 内桌宠设置分区正常渲染且无崩溃', async () => {
-    const app = await newDshPage(browser, { ready: PET_STYLES })
+    const app = await newDshPage(browser, { ready: SETTINGS_TRIGGER })
     try {
       await openSettings(app.page, app.frame, app.syntheticFallbacks)
 
       const nav = app.frame.locator(SETTINGS_NAV_ITEM).filter({ hasText: '宠物' })
       expect(await nav.count(), '桌宠分区必须在导航里注册且唯一（同 id 不得重复注册）').toBe(1)
       expect(
-        await nav.first().evaluate(element => element.className.includes('nav-item')),
+        await nav.first().evaluate(element => element.closest('[data-slot-sidebar="dsh-tauri-ui"]') !== null),
         '分区导航项必须由设置侧栏渲染',
       ).toBe(true)
 
       await selectSettingsSection(app.page, app.frame, '宠物', app.syntheticFallbacks)
 
-      const panel = app.frame.locator('.dshp-pet__page')
+      const panel = app.frame.locator('[data-pet-page]')
       await expect.poll(
         async () => await panel.count(),
-        { timeout: 20_000, message: '切到桌宠分区后必须渲染出 dshp-pet__page' },
+        { timeout: 20_000, message: '切到桌宠分区后必须渲染出 [data-pet-page]' },
       ).toBe(1)
 
       const panelState = await panel.evaluate(element => ({

@@ -2,7 +2,7 @@
   "name": "dsh-tauri-pet",
   "type": "module",
   "version": "0.1.0",
-  "description": "Desktop pet for DeepSeek Harness — toggle, pet selection and a transparent always-on-top window bridged through Tauri invoke.",
+  "description": "DeepSeek Harness 桌面宠：常驻动画宠物按会话活动切换状态并显示气泡，内置 Chat/Codex 宠物库，经 Tauri invoke 桥接透明置顶窗口。",
   "author": "Hairyf <wwu710632@gmail.com>",
   "license": "MIT",
   "homepage": "https://github.com/dsh-tauri-desk/dsh-tauri-plugins#readme",
@@ -60,14 +60,11 @@
   },
   "dependencies": {
     "@deepseek-ai/dsh-skill-filesystem": "catalog:dsh",
-    "dsh-tauri": "workspace:*"
+    "dsh-h3": "catalog:",
+    "dsh-tauri": "workspace:*",
+    "h3": "catalog:"
   },
   "devDependencies": {
-    "@deepseek-ai/cordis": "catalog:dsh",
-    "@deepseek-ai/dsh-client-store": "catalog:dsh",
-    "@deepseek-ai/dsh-client-ui-layout": "catalog:dsh",
-    "@deepseek-ai/dsh-client-ui-renderer": "catalog:dsh",
-    "@deepseek-ai/dsh-client-ui-slots": "catalog:dsh",
     "dsh-tauri-tsdown": "workspace:*",
     "dsh-tauri-ui": "workspace:*",
     "react": "catalog:runtime",

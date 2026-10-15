@@ -20,16 +20,15 @@ import {
   launchDshBrowser,
   newDshPage,
   openSettings,
-  PET_STYLES,
   SETTINGS_SIDEBAR,
   SETTINGS_TRIGGER,
 } from '../support/browser'
 
-/** 与 `packages/dsh-tauri-ui/src/host/routes/index.ts:5` 的唯一路由对齐。 */
-const RESUME_PATH = '/api/desktop/dsh-tauri-ui/session/resume'
+/** 与 `packages/dsh-tauri-ui/src/host/server/index.ts:6` 的会话恢复路由对齐。 */
+const RESUME_PATH = '/api/tauri/ui/session/resume'
 
-/** 未分组目录解析路由（`packages/dsh-tauri-ui/src/host/routes/ungrouped/get.ts`）。 */
-const UNGROUPED_PATH = '/api/desktop/dsh-tauri-ui/ungrouped'
+/** 未分组目录解析路由（`packages/dsh-tauri-ui/src/host/server/ungrouped/get.ts`）。 */
+const UNGROUPED_PATH = '/api/tauri/ui/ungrouped'
 
 /** `/api/**` 要求浏览器会话；Cookie 由编排在根路径用一次性 token 换得。 */
 function headers(): Record<string, string> {
@@ -37,13 +36,13 @@ function headers(): Record<string, string> {
 }
 
 /** 插件接管后的英雄区工作区 chip（`ui/hero-workspace.tsx` 渲染）。 */
-const HERO_WORKSPACE_CHIP = '.dshp-hero-workspace'
+const HERO_WORKSPACE_CHIP = '[data-hero-workspace]'
 
 /**
  * 官方英雄区工作区 chip：与插件 chip 共用 aria-label（官方 conversation 词典 `hero.chooseWorkspace`），
- * 用 `:not(.dshp-hero-workspace)` 把两者分开。官方行类名取自官方 ConversationRoot 模块。
+ * 用 `:not([data-hero-workspace])` 把两者分开。官方行类名取自官方 ConversationRoot 模块。
  */
-const OFFICIAL_HERO_WORKSPACE_CHIP = '[class$="heroWorkspaceRow"] button[aria-label="选择工作区"]:not(.dshp-hero-workspace)'
+const OFFICIAL_HERO_WORKSPACE_CHIP = '[class$="heroWorkspaceRow"] button[aria-label="选择工作区"]:not([data-hero-workspace])'
 
 /**
  * 官方侧边栏「新建会话」按钮（官方 sidebar 词典 `session.new.label`）。
@@ -126,10 +125,10 @@ describe('L2 客户端', () => {
   })
 
   it('验证设置侧栏与触发器被注入 dsh 界面', async () => {
-    const app = await newDshPage(browser, { ready: PET_STYLES })
+    const app = await newDshPage(browser, { ready: SETTINGS_TRIGGER })
     try {
       const triggerHost = await app.frame.evaluate(() => {
-        const trigger = document.querySelector('.dshp-settings-trigger')
+        const trigger = document.querySelector('[data-settings-trigger]')
         const sidebar = document.querySelector('[data-slot="sidebar"]')
         return {
           triggerInsideSidebar: Boolean(trigger && sidebar?.contains(trigger)),
@@ -261,8 +260,8 @@ describe('L2 客户端', () => {
           rowExists: row !== null,
           officialInRow: official !== null,
           officialDisplay: official === null ? null : getComputedStyle(official).display,
-          oursInRow: row?.querySelector('.dshp-hero-workspace') !== null,
-          oursCount: document.querySelectorAll('.dshp-hero-workspace').length,
+          oursInRow: row?.querySelector('[data-hero-workspace]') !== null,
+          oursCount: document.querySelectorAll('[data-hero-workspace]').length,
         }
       }, OFFICIAL_HERO_WORKSPACE_CHIP)
 
@@ -280,20 +279,41 @@ describe('L2 客户端', () => {
       // 只认当前**可见**的菜单：文档里可能同时挂着别的已挂载菜单（portal 到 body），
       // 不限定范围会把别的菜单条目当成这条选择器的结果。
       const menu = await app.frame.evaluate(() => {
-        const chip = document.querySelector('.dshp-hero-workspace')
+        const chip = document.querySelector('[data-hero-workspace]')
         const menus = Array.from(document.querySelectorAll('[role="menu"]'))
           .filter(menu => menu.getClientRects().length > 0)
         const items = Array.from(menus[0]?.querySelectorAll('button[role="menuitem"]') ?? []) as HTMLButtonElement[]
+        const anchor = chip?.getBoundingClientRect() ?? null
+        const rect = menus[0]?.getBoundingClientRect() ?? null
         return {
           expanded: chip?.getAttribute('aria-expanded') ?? null,
           visibleMenus: menus.length,
           count: items.length,
           labels: items.map(item => item.textContent?.trim() ?? ''),
           firstDisabled: items[0]?.disabled ?? null,
+          visibility: menus[0] === undefined ? null : getComputedStyle(menus[0]).visibility,
+          left: rect === null ? null : Math.round(rect.left),
+          top: rect === null ? null : Math.round(rect.top),
+          width: rect === null ? null : Math.round(rect.width),
+          gapBelowChip: rect === null || anchor === null ? null : Math.round(rect.top - anchor.bottom),
+          leftOffsetFromChip: rect === null || anchor === null ? null : Math.round(rect.left - anchor.left),
         }
       })
 
       expect(menu.expanded, '菜单打开时 chip 必须回报 aria-expanded').toBe('true')
+      // 定位断言：chip 未把 ref 转交给 button 时 `getAnchorRect()` 恒返回 null，
+      // 官方 Menu 会静默跳过定位，菜单留在测量态（内联 `visibility: hidden` + `left/top: 0`）。
+      // 只断言「有可见菜单」抓不到这个故障——测量态菜单仍参与布局，同样满足 `getClientRects().length > 0`。
+      expect(menu.visibility, '菜单必须完成定位，不得停在测量态').not.toBe('hidden')
+      expect(menu.left, '菜单不得停在左上角原点（测量态特征）').toBeGreaterThan(0)
+      expect(menu.top, '菜单不得停在左上角原点（测量态特征）').toBeGreaterThan(0)
+      expect(menu.width, '菜单必须有真实宽度，而非零尺寸测量态').toBeGreaterThan(0)
+      // 几何契约取自官方 primitives 的 portal 定位：`side === 'bottom'` 时 `y = anchor.bottom + 4`，
+      // `align === 'start'` 时 `x = anchor.left`，随后各自按 12px 视口边距夹紧。
+      expect(menu.gapBelowChip, '菜单必须紧贴 chip 下方').toBeGreaterThanOrEqual(0)
+      expect(menu.gapBelowChip, '菜单必须紧贴 chip 下方').toBeLessThanOrEqual(16)
+      expect(menu.leftOffsetFromChip, '菜单左缘必须对齐 chip 左缘').toBeGreaterThanOrEqual(0)
+      expect(menu.leftOffsetFromChip, '菜单左缘必须对齐 chip 左缘').toBeLessThanOrEqual(12)
       expect(menu.visibleMenus, '打开后必须只有本选择器这一个可见菜单（否则断言对象不确定）').toBe(1)
       expect(menu.count, '打开后必须渲染菜单条目').toBeGreaterThan(0)
       expect(menu.labels[0], '「未分组」必须是第一个选项').toBe('未分组')
@@ -333,7 +353,7 @@ describe('L2 客户端', () => {
       await app.frame.locator(SIDEBAR_NEW_SESSION).first().click()
 
       await expect.poll(
-        async () => await app.frame.evaluate(() => document.querySelector('.dshp-hero-workspace')?.textContent?.trim() ?? null),
+        async () => await app.frame.evaluate(() => document.querySelector('[data-hero-workspace]')?.textContent?.trim() ?? null),
         { timeout: 20_000, message: '新建会话后 chip 必须显示「未分组」' },
       ).toBe('未分组')
 
@@ -392,7 +412,7 @@ describe('L2 客户端', () => {
    * 症状就是用户报的「偶发 UI 整体混乱，刷新才好」。断言对象是真实页面里的 DOM。
    */
   it('验证插件 cssr 样式标签都自报 data-plugin 归属，不会被别人的重载连带删除', async () => {
-    const app = await newDshPage(browser, { ready: PET_STYLES })
+    const app = await newDshPage(browser, { ready: SETTINGS_TRIGGER })
     try {
       const ownership = await app.frame.evaluate(() => {
         const tags = Array.from(document.querySelectorAll('style[cssr-id]'))

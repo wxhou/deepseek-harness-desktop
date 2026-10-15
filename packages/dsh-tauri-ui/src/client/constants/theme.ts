@@ -6,6 +6,8 @@ export const styles = {
   borderL2: 'var(--dsw-alias-border-l2)',
   borderL3: 'var(--dsw-alias-border-l3)',
   borderL4: 'var(--dsw-alias-border-l4)',
+  // 宿主未定义 --dsw-alias-border-weak，保留官方插件页原本的 fallback（否则 border-color 会落到 currentColor）。
+  borderWeak: 'var(--dsw-alias-border-weak, rgba(127, 127, 127, 0.2))',
   brand: 'var(--dsw-alias-brand-primary)',
   business: 'var(--dsw-alias-state-business-primary)',
   layer1: 'var(--dsw-alias-bg-layer-1)',

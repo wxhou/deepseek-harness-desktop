@@ -1,58 +1,60 @@
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(windows)]
 use std::sync::Arc;
+#[cfg(windows)]
+use std::sync::OnceLock;
 #[cfg(target_os = "macos")]
 use std::sync::{Mutex, OnceLock};
 
+#[cfg(target_os = "macos")]
+use objc2_app_kit::{NSWindow, NSWindowButton, NSWindowStyleMask};
+#[cfg(target_os = "macos")]
+use objc2_foundation::NSPoint;
 use tauri::{ipc::Invoke, Emitter, Manager, Runtime, WebviewUrl, WebviewWindowBuilder, Wry};
 
-// 托盘相关的 tauri 类型只在非 Linux 路径使用：Linux 走 desktop::linux_tray 的
-// KSNI 托盘（见该文件的背景说明），届时这些导入会变成未使用。
-#[cfg(not(target_os = "linux"))]
+#[cfg(windows)]
+use windows_sys::Win32::UI::{
+    Shell::ExtractIconExW,
+    WindowsAndMessaging::{SendMessageW, HICON, ICON_BIG, ICON_SMALL, WM_GETICON, WM_SETICON},
+};
+
 use tauri::menu::{Menu, MenuEvent, MenuItem};
-#[cfg(not(target_os = "linux"))]
 use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
 
 #[cfg(target_os = "macos")]
 use tauri::menu::{PredefinedMenuItem, Submenu};
 
 #[cfg(target_os = "macos")]
-static MACOS_FULLSCREEN_MENU_ITEM: OnceLock<Mutex<Option<PredefinedMenuItem<Wry>>>> =
-    OnceLock::new();
+static MACOS_FULLSCREEN_MENU_ITEM: OnceLock<Mutex<Option<MenuItem<Wry>>>> = OnceLock::new();
+
+// MainEventsCleared 每轮都触发，但只有窗口布局变化后红绿灯才可能被 AppKit 重置。
+// 无脑每轮校准会克隆窗口句柄，而该克隆会 CFRunLoopWakeUp 主 RunLoop，令
+// MainEventsCleared 立刻再次触发，把主线程烧成 100% CPU（issue #880）。
+#[cfg(target_os = "macos")]
+static MACOS_TITLEBAR_SYNC_PENDING: AtomicBool = AtomicBool::new(true);
+
+#[cfg(target_os = "macos")]
+const MACOS_VIEW_COMMANDS: [(&str, &str); 4] = [
+    ("desktop-toggle-sidebar", "menu.toggle_sidebar"),
+    ("desktop-toggle-right-panel", "menu.toggle_right_panel"),
+    ("desktop-open-terminal", "menu.open_terminal"),
+    ("desktop-search-chats", "menu.search_chats"),
+];
 
 #[cfg(windows)]
 use crate::desktop::window::on_page_load;
 use crate::desktop::window::{on_download, on_new_window};
-// 只在 tauri::tray 路径（Windows / macOS）里按短名使用；Linux 的 KSNI 托盘在
-// desktop::linux_tray 内自行引用，且下面单例回调用的是完整路径。
-#[cfg(not(target_os = "linux"))]
 use crate::utils::show_main_window;
 
-/// 壳层（`Navbar`）导航栏高度，单位 CSS px。
-///
-/// 这是「前端高度类 ↔ 后端交通灯纵向位置」的唯一真值入口：前端
-/// `src/layout/components/navbar.tsx` 根元素的 `h-11` 是它的体现（Tailwind 4
-/// 间距刻度 11 × 4px = 44px），macOS 交通灯的纵向位置也由它推导。issue #524
-/// 之前两处各写一份数值（`h-11` 与 `24.0`）互不知情，改一处就会错位；现在由
-/// `shell_nav_height_matches_navbar_height_class` 测试把这份耦合显式化——
-/// 改栏高忘了同步另一边，CI 直接失败。
 pub const SHELL_NAV_HEIGHT: u32 = 44;
 
-/// 交通灯距窗口左边缘的内边距（逻辑像素）。
 #[cfg(target_os = "macos")]
-const TRAFFIC_LIGHT_INSET_X: f64 = 14.0;
+const TRAFFIC_LIGHT_INSET_X: f64 = 18.0;
 
-/// 交通灯纵向锚点相对「栏高 / 2」的修正量（逻辑像素）。
-///
-/// tao 的 `inset_traffic_lights` 只把标题栏容器高度改成 `close_rect.height + y`，
-/// AppKit 按钮仍贴着容器底边，故传入 y 与按钮视觉圆心近似 1:1 平移（实测 y = 24
-/// 时圆心落在窗口顶端下方 26px）。2x 截图实测：圆心在设备行 54，而栏内 flex 居中
-/// 的折叠/展开按钮圆心在设备行 45（= 栏内容盒中心），低 9 设备像素 = 4.5 逻辑像素，
-/// 故锚点要回退 4.5：44 / 2 + (−2.5) = 19.5。
 #[cfg(target_os = "macos")]
-const TRAFFIC_LIGHT_VISUAL_OFFSET: f64 = -2.5;
+const TRAFFIC_LIGHT_VISUAL_OFFSET: f64 = 2.0;
 
 /// WebView2 原生拖拽区域所需的参数。
 ///
@@ -62,19 +64,14 @@ const TRAFFIC_LIGHT_VISUAL_OFFSET: f64 = -2.5;
 #[cfg(windows)]
 const WINDOWS_DRAG_BROWSER_ARGS: &str = "--enable-features=msWebView2EnableDraggableRegions --disable-features=ElasticOverscroll,msWebOOUI,msPdfOOUI";
 
-#[cfg(windows)]
-fn windows_drag_browser_args() -> &'static str {
-    WINDOWS_DRAG_BROWSER_ARGS
-}
-
 /// 主窗口 label：壳层状态（几何恢复/落盘、托盘/单例唤起、macOS Reopen）都以它为准。
 pub const MAIN_WINDOW_LABEL: &str = "main";
 
 /// 「文件 → 新建窗口」的 label 序号（`window-1`、`window-2`…），保证 label 唯一。
 static EXTRA_WINDOW_SEQ: AtomicU64 = AtomicU64::new(0);
 
-/// WebView2 用户数据目录：必须与主窗口一致，否则同一进程内的多个窗口会尝试
-/// 使用不同的 User Data Folder 而失败。开发版与 release 分目录的原因见主窗口。
+/// WebView2 用户数据目录：壳层窗口必须共用；开发版与 release 分目录，避免已有
+/// 实例或热重启残留占用同一 User Data 管道，触发 HRESULT 0x8007139F。
 #[cfg(windows)]
 fn webview_data_directory(app: &tauri::AppHandle<Wry>) -> std::path::PathBuf {
     // E2E 独占 profile：`app_local_data_dir()` 走 `SHGetKnownFolderPath`，重定向
@@ -113,16 +110,8 @@ pub fn setup(app_handle: tauri::AppHandle) {
     // workflow::sweep_orphan_harness），避免新实例一路漂移端口
     crate::service::workflow::sweep_orphan_harness(&app_handle);
 
-    // 旧版 AppData data/dsh → 官方 $DSH_HOME（~/.dsh）数据迁移。
-    // 必须在 sweep 之后（先杀掉占用文件句柄的残留 dsh 进程）、scheduler/
-    // auto_start 之前（迁移完成前不启动 dsh）。失败仅告警不阻断：旧数据
-    // 原地保留，下次启动重试。
-    if let Err(e) = crate::service::migrate::migrate(&app_handle) {
-        log::warn!("dsh home migration deferred (old data kept): {e}");
-    }
-
-    // 启动自愈：清理指向旧位置的 pnpm `.modules.yaml`。老版本完成迁移后该文件
-    // 仍记录旧 $DSH_HOME（AppData）下的绝对路径，导致任何 pnpm 操作抛
+    // 启动自愈：清理指向旧位置的 pnpm `.modules.yaml`。老版本完成数据搬迁后该
+    // 文件仍记录旧 $DSH_HOME（AppData）下的绝对路径，导致任何 pnpm 操作抛
     // `ERR_PNPM_UNEXPECTED_VIRTUAL_STORE`（插件安装/更新失败，issue #103）。
     // 幂等、best-effort：仅在检测到失效路径时删除，下次 pnpm 操作自动重建。
     let dsh_home = crate::config::get_dsh_data_path(&app_handle);
@@ -174,18 +163,23 @@ pub fn setup(app_handle: tauri::AppHandle) {
 
 /// 构建系统托盘。
 ///
-/// Linux 用上游 tray-icon 的 KSNI 后端自建（`tauri::tray` 固定依赖的 tray-icon 0.24
-/// 在 Linux 上不上报任何托盘事件，见 `desktop::linux_tray` 的平台说明与 issue #386）；
-/// Windows / macOS 沿用 `tauri::tray`。
-#[cfg(target_os = "linux")]
+/// 托盘是可选壳层能力：Linux 桌面没有 SNI watcher（例如未装 AppIndicator 扩展的
+/// GNOME）或会话总线不可用时只记日志，不让应用启动失败。
 pub fn tray<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<()> {
-    crate::desktop::linux_tray::build(app);
+    #[cfg(target_os = "linux")]
+    if let Err(error) = build_tray(app) {
+        log::warn!("[tray] LINUX_TRAY_FAILED: {error}");
+    }
+    #[cfg(not(target_os = "linux"))]
+    build_tray(app)?;
     Ok(())
 }
 
-/// 构建系统托盘（Windows / macOS：`tauri::tray`）。
-#[cfg(not(target_os = "linux"))]
-pub fn tray<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<()> {
+/// Linux 后端由 Cargo.toml 里 `tray-icon` 的 `ksni` 特性选定（tauri 自己只开
+/// libappindicator，而后者在 Linux 上不上报托盘事件，见 issue #386）；tauri 在
+/// `App::run` 里给同一个 tray-icon / muda 实例装全局处理器，因此 Linux 上同样能收到
+/// 单击与菜单事件。
+fn build_tray<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<()> {
     // 平台差异的托盘图标策略：
     // - macOS：使用 scoped template 透明图标（NSImage template），由系统按菜单栏
     //   深浅/半透明材质自动着色，呈现与系统一致的半透明玻璃观感，而非彩色方块。
@@ -196,11 +190,13 @@ pub fn tray<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<()> {
     let icon = app.default_window_icon().unwrap().clone();
 
     // 构建菜单
+    let open_label = crate::config::i18n::t("menu.open_panel");
+    let quit_label = crate::config::i18n::t("menu.quit");
     let menu = Menu::with_items(
         app,
         &[
-            &MenuItem::with_id(app, "open", "打开面板", true, None::<&str>)?,
-            &MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?,
+            &MenuItem::with_id(app, "open", open_label, true, None::<&str>)?,
+            &MenuItem::with_id(app, "quit", quit_label, true, None::<&str>)?,
         ],
     )?;
 
@@ -232,7 +228,7 @@ pub fn tray<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<()> {
         .icon_as_template(true)
         .menu(&menu)
         .show_menu_on_left_click(false)
-        .tooltip("Deepseek Harness Desktop")
+        .tooltip(crate::desktop::product_name(app))
         .on_menu_event(move |app, event| handle_menu_event(app, &event))
         .on_tray_icon_event(move |tray, event| handle_tray_icon_event(tray, &event))
         .build(app)?;
@@ -242,7 +238,7 @@ pub fn tray<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<()> {
         .icon(icon)
         .menu(&menu)
         .show_menu_on_left_click(false)
-        .tooltip("Deepseek Harness Desktop")
+        .tooltip(crate::desktop::product_name(app))
         .on_menu_event(move |app, event| handle_menu_event(app, &event))
         .on_tray_icon_event(move |tray, event| handle_tray_icon_event(tray, &event))
         .build(app)?;
@@ -257,10 +253,7 @@ pub fn tray<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<()> {
 #[cfg(target_os = "macos")]
 pub fn install_macos_menu(app: &tauri::AppHandle<Wry>) -> tauri::Result<()> {
     let setting = crate::config::get_store_dat_setting(app);
-    crate::config::i18n::set_language(match setting.language.as_str() {
-        "en" | "en-US" => crate::config::i18n::Lang::En,
-        _ => crate::config::i18n::Lang::Zh,
-    });
+    crate::config::i18n::set_language(crate::config::i18n::lang_from_setting(&setting.language));
 
     let config = MenuItem::with_id(
         app,
@@ -269,44 +262,24 @@ pub fn install_macos_menu(app: &tauri::AppHandle<Wry>) -> tauri::Result<()> {
         true,
         Some("CmdOrCtrl+,"),
     )?;
-    let application_separator = PredefinedMenuItem::separator(app)?;
-    let is_fullscreen = app
-        .get_webview_window("main")
-        .and_then(|window| window.is_fullscreen().ok())
-        .unwrap_or(false);
-    let fullscreen_label = crate::config::i18n::t(if is_fullscreen {
-        "menu.exit_fullscreen"
-    } else {
-        "menu.enter_fullscreen"
-    });
-    let fullscreen = PredefinedMenuItem::fullscreen(app, Some(&fullscreen_label))?;
-    let application_menu = Submenu::with_id_and_items(
+    let profiles = MenuItem::with_id(
         app,
-        "desktop-application-menu",
-        crate::config::i18n::t("menu.application"),
+        "desktop-profiles",
+        crate::config::i18n::t("menu.profiles"),
         true,
-        &[&config, &application_separator, &fullscreen],
+        None::<&str>,
     )?;
-
-    let hide = PredefinedMenuItem::hide(app, None)?;
-    let hide_others = PredefinedMenuItem::hide_others(app, None)?;
-    let show_all = PredefinedMenuItem::show_all(app, None)?;
-    let quit_separator = PredefinedMenuItem::separator(app)?;
-    let quit = PredefinedMenuItem::quit(app, None)?;
-    // macOS 会把首个菜单标题强制显示为应用名称；这里只承载必要的系统动作，
-    // 真正可见的“应用”功能菜单放在其后，避免再次被系统改名。
-    let system_application_menu = Submenu::with_id_and_items(
+    let plugins = MenuItem::with_id(
         app,
-        "desktop-system-application-menu",
-        app.package_info().name.clone(),
+        "desktop-plugins",
+        crate::config::i18n::t("menu.plugins"),
         true,
-        &[&hide, &hide_others, &show_all, &quit_separator, &quit],
+        None::<&str>,
     )?;
-
-    let run_logs = MenuItem::with_id(
+    let harness = MenuItem::with_id(
         app,
-        "desktop-copy-run-logs",
-        crate::config::i18n::t("menu.run_logs"),
+        "desktop-harness",
+        crate::config::i18n::t("menu.harness"),
         true,
         None::<&str>,
     )?;
@@ -317,10 +290,143 @@ pub fn install_macos_menu(app: &tauri::AppHandle<Wry>) -> tauri::Result<()> {
         true,
         None::<&str>,
     )?;
+    let run_separator = PredefinedMenuItem::separator(app)?;
+    let is_fullscreen = app
+        .get_webview_window("main")
+        .and_then(|window| window.is_fullscreen().ok())
+        .unwrap_or(false);
+    let fullscreen_label = crate::config::i18n::t(fullscreen_menu_label_key(is_fullscreen));
+    // AppKit 会因标准 toggleFullScreen: 菜单项省略“窗口”中的自动全屏入口。
+    let fullscreen = MenuItem::with_id(
+        app,
+        "desktop-fullscreen",
+        &fullscreen_label,
+        true,
+        Some("Ctrl+Super+F"),
+    )?;
+    let run_menu = Submenu::with_id_and_items(
+        app,
+        "desktop-run-menu",
+        crate::config::i18n::t("menu.run"),
+        true,
+        &[&profiles, &plugins, &harness, &run_separator, &restart],
+    )?;
+    let view_commands = MACOS_VIEW_COMMANDS
+        .iter()
+        .map(|(id, key)| {
+            MenuItem::with_id(app, *id, crate::config::i18n::t(key), false, None::<&str>)
+        })
+        .collect::<tauri::Result<Vec<_>>>()?;
+    let view_separator = PredefinedMenuItem::separator(app)?;
+    let zoom_in = MenuItem::with_id(
+        app,
+        "desktop-zoom-in",
+        crate::config::i18n::t("menu.zoom_in"),
+        true,
+        Some("CmdOrCtrl+Equal"),
+    )?;
+    let zoom_out = MenuItem::with_id(
+        app,
+        "desktop-zoom-out",
+        crate::config::i18n::t("menu.zoom_out"),
+        true,
+        Some("CmdOrCtrl+-"),
+    )?;
+    let zoom_reset = MenuItem::with_id(
+        app,
+        "desktop-zoom-reset",
+        crate::config::i18n::t("menu.actual_size"),
+        true,
+        Some("CmdOrCtrl+0"),
+    )?;
+    let fullscreen_separator = PredefinedMenuItem::separator(app)?;
+    let view_menu = Submenu::with_id_and_items(
+        app,
+        "desktop-view-menu",
+        crate::config::i18n::t("menu.view"),
+        true,
+        &[
+            &view_commands[0],
+            &view_commands[1],
+            &view_commands[2],
+            &view_commands[3],
+            &view_separator,
+            &zoom_in,
+            &zoom_out,
+            &zoom_reset,
+            &fullscreen_separator,
+            &fullscreen,
+        ],
+    )?;
+
+    let about = MenuItem::with_id(
+        app,
+        "desktop-about",
+        crate::config::i18n::t("menu.about"),
+        true,
+        None::<&str>,
+    )?;
+    let about_separator = PredefinedMenuItem::separator(app)?;
     let check_update = MenuItem::with_id(
         app,
         "desktop-check-update",
         crate::config::i18n::t("menu.check_update"),
+        true,
+        None::<&str>,
+    )?;
+    let settings_separator = PredefinedMenuItem::separator(app)?;
+    let services =
+        PredefinedMenuItem::services(app, Some(&crate::config::i18n::t("menu.services")))?;
+    let services_separator = PredefinedMenuItem::separator(app)?;
+    let app_name = crate::desktop::product_name(app);
+    let hide_label = format!("{} {}", crate::config::i18n::t("menu.hide"), app_name);
+    let hide = PredefinedMenuItem::hide(app, Some(&hide_label))?;
+    let hide_others =
+        PredefinedMenuItem::hide_others(app, Some(&crate::config::i18n::t("menu.hide_others")))?;
+    let show_all =
+        PredefinedMenuItem::show_all(app, Some(&crate::config::i18n::t("menu.show_all")))?;
+    let quit_separator = PredefinedMenuItem::separator(app)?;
+    let quit_label = format!("{} {}", crate::config::i18n::t("menu.quit"), app_name);
+    let quit = PredefinedMenuItem::quit(app, Some(&quit_label))?;
+    let system_application_menu = Submenu::with_id_and_items(
+        app,
+        "desktop-system-application-menu",
+        app_name,
+        true,
+        &[
+            &about,
+            &about_separator,
+            &config,
+            &check_update,
+            &settings_separator,
+            &services,
+            &services_separator,
+            &hide,
+            &hide_others,
+            &show_all,
+            &quit_separator,
+            &quit,
+        ],
+    )?;
+
+    let run_logs = MenuItem::with_id(
+        app,
+        "desktop-copy-run-logs",
+        crate::config::i18n::t("menu.run_logs"),
+        true,
+        None::<&str>,
+    )?;
+    let toggle_devtools = MenuItem::with_id(
+        app,
+        "desktop-toggle-devtools",
+        crate::config::i18n::t("menu.toggle_devtools"),
+        true,
+        None::<&str>,
+    )?;
+    let task_manager = MenuItem::with_id(
+        app,
+        "desktop-task-manager",
+        crate::config::i18n::t("menu.task_manager"),
         true,
         None::<&str>,
     )?;
@@ -332,31 +438,46 @@ pub fn install_macos_menu(app: &tauri::AppHandle<Wry>) -> tauri::Result<()> {
         true,
         None::<&str>,
     )?;
-    let about = MenuItem::with_id(
+    let keyboard_shortcuts = MenuItem::with_id(
         app,
-        "desktop-about",
-        crate::config::i18n::t("menu.about"),
+        "desktop-keyboard-shortcuts",
+        crate::config::i18n::t("menu.keyboard_shortcuts"),
         true,
         None::<&str>,
     )?;
+    let desktop_feedback = MenuItem::with_id(
+        app,
+        "desktop-feedback",
+        crate::config::i18n::t("menu.desktop_feedback"),
+        true,
+        None::<&str>,
+    )?;
+    let harness_feedback = MenuItem::with_id(
+        app,
+        "desktop-harness-feedback",
+        crate::config::i18n::t("menu.harness_feedback"),
+        true,
+        None::<&str>,
+    )?;
+    let feedback_separator = PredefinedMenuItem::separator(app)?;
     let help_menu = Submenu::with_id_and_items(
         app,
         "desktop-help-menu",
         crate::config::i18n::t("menu.help"),
         true,
         &[
-            &run_logs,
-            &restart,
-            &check_update,
-            &help_separator,
             &documentation,
-            &about,
+            &keyboard_shortcuts,
+            &help_separator,
+            &desktop_feedback,
+            &harness_feedback,
+            &feedback_separator,
+            &run_logs,
+            &toggle_devtools,
+            &task_manager,
         ],
     )?;
 
-    // 文件菜单：非 macOS 上同一组项渲染在壳层导航栏（`layout/components/navbar.tsx`）。
-    // 图标化的系统动作（新建窗口/新聊天/打开文件夹/关闭/退出）本身只发动作 id，
-    // 由前端复用壳层实现——新建窗口更必须在异步运行时里建窗（见 desktop::window）。
     let new_window = MenuItem::with_id(
         app,
         "desktop-new-window",
@@ -379,11 +500,7 @@ pub fn install_macos_menu(app: &tauri::AppHandle<Wry>) -> tauri::Result<()> {
         Some("CmdOrCtrl+O"),
     )?;
     let file_separator_close = PredefinedMenuItem::separator(app)?;
-    // 关闭：走系统 close_window（⌘W）。主窗口的 CloseRequested 由壳层接管为
-    // 「隐藏到托盘」（setting.close_action=tray），语义与导航栏「关闭」一致。
     let close = PredefinedMenuItem::close_window(app, Some(&crate::config::i18n::t("menu.close")))?;
-    let file_separator_quit = PredefinedMenuItem::separator(app)?;
-    let file_quit = PredefinedMenuItem::quit(app, Some(&crate::config::i18n::t("menu.quit")))?;
     let file_menu = Submenu::with_id_and_items(
         app,
         "desktop-file-menu",
@@ -395,25 +512,17 @@ pub fn install_macos_menu(app: &tauri::AppHandle<Wry>) -> tauri::Result<()> {
             &open_folder,
             &file_separator_close,
             &close,
-            &file_separator_quit,
-            &file_quit,
         ],
     )?;
 
-    // 编辑菜单：macOS 设置了主菜单后，⌘X/⌘C/⌘V/⌘A 等组合键会先经菜单的
-    // key-equivalent 路由，若不挂载标准编辑项，WebView 的编辑快捷键会被吞掉，
-    // 输入框内无法剪切/复制/粘贴（#85）。这些预定义项绑定标准 NSMenu 选择器
-    // （cut:/copy:/paste:/selectAll:/undo:/redo:），由 AppKit 把命令转发给聚焦视图
-    // （WebView），同时保持菜单条上的撤销/重做/剪切/复制/粘贴/全选。
     let undo = PredefinedMenuItem::undo(app, Some(&crate::config::i18n::t("menu.undo")))?;
     let redo = PredefinedMenuItem::redo(app, Some(&crate::config::i18n::t("menu.redo")))?;
+    let edit_separator = PredefinedMenuItem::separator(app)?;
     let cut = PredefinedMenuItem::cut(app, Some(&crate::config::i18n::t("menu.cut")))?;
     let copy = PredefinedMenuItem::copy(app, Some(&crate::config::i18n::t("menu.copy")))?;
     let paste = PredefinedMenuItem::paste(app, Some(&crate::config::i18n::t("menu.paste")))?;
     let select_all =
         PredefinedMenuItem::select_all(app, Some(&crate::config::i18n::t("menu.select_all")))?;
-    let edit_separator_after_redo = PredefinedMenuItem::separator(app)?;
-    let edit_separator_before_select_all = PredefinedMenuItem::separator(app)?;
     let edit_menu = Submenu::with_id_and_items(
         app,
         "desktop-edit-menu",
@@ -422,44 +531,195 @@ pub fn install_macos_menu(app: &tauri::AppHandle<Wry>) -> tauri::Result<()> {
         &[
             &undo,
             &redo,
-            &edit_separator_after_redo,
+            &edit_separator,
             &cut,
             &copy,
             &paste,
-            &edit_separator_before_select_all,
             &select_all,
         ],
+    )?;
+
+    let minimize =
+        PredefinedMenuItem::minimize(app, Some(&crate::config::i18n::t("menu.minimize")))?;
+    let zoom = PredefinedMenuItem::maximize(app, Some(&crate::config::i18n::t("menu.zoom")))?;
+    let window_separator = PredefinedMenuItem::separator(app)?;
+    let bring_all_to_front = PredefinedMenuItem::bring_all_to_front(
+        app,
+        Some(&crate::config::i18n::t("menu.bring_all_to_front")),
+    )?;
+    let window_menu = Submenu::with_id_and_items(
+        app,
+        "desktop-window-menu",
+        crate::config::i18n::t("menu.window"),
+        true,
+        &[&minimize, &zoom, &window_separator, &bring_all_to_front],
     )?;
 
     let menu = Menu::with_items(
         app,
         &[
             &system_application_menu,
-            &application_menu,
             &file_menu,
             &edit_menu,
+            &view_menu,
+            &run_menu,
+            &window_menu,
             &help_menu,
         ],
     )?;
     let _ = app.set_menu(menu)?;
+    window_menu.set_as_windows_menu_for_nsapp()?;
+    help_menu.set_as_help_menu_for_nsapp()?;
     *MACOS_FULLSCREEN_MENU_ITEM
         .get_or_init(|| Mutex::new(None))
         .lock()
         .unwrap_or_else(|error| error.into_inner()) = Some(fullscreen);
+    app.emit("macos-menu-rebuilt", ())?;
+    Ok(())
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn fullscreen_menu_label_key(is_fullscreen: bool) -> &'static str {
+    if is_fullscreen {
+        "menu.exit_fullscreen"
+    } else {
+        "menu.enter_fullscreen"
+    }
+}
+
+fn help_menu_window_label<'a>(
+    windows: impl IntoIterator<Item = (&'a str, bool)>,
+) -> Option<&'a str> {
+    let mut main_window = None;
+    for (label, focused) in windows {
+        if label == crate::desktop::pet::PET_WINDOW_LABEL {
+            continue;
+        }
+        if focused {
+            return Some(label);
+        }
+        if label == MAIN_WINDOW_LABEL {
+            main_window = Some(label);
+        }
+    }
+    main_window
+}
+
+#[cfg(test)]
+mod help_menu_tests {
+    use super::help_menu_window_label;
+
+    #[test]
+    fn help_links_prefer_the_focused_shell_window() {
+        for windows in [
+            [("main", false), ("window-1", true), ("pet", false)],
+            [("window-1", true), ("main", false), ("pet", false)],
+        ] {
+            assert_eq!(help_menu_window_label(windows), Some("window-1"));
+        }
+        assert_eq!(
+            help_menu_window_label([("window-1", false), ("main", true)]),
+            Some("main")
+        );
+    }
+
+    #[test]
+    fn help_links_fall_back_to_main_when_only_the_pet_is_focused() {
+        assert_eq!(
+            help_menu_window_label([("main", false), ("window-1", false), ("pet", true)]),
+            Some("main")
+        );
+    }
+
+    #[test]
+    fn help_links_fall_back_to_main_when_all_windows_are_unfocused() {
+        for windows in [
+            [("main", false), ("window-1", false), ("pet", false)],
+            [("window-1", false), ("pet", false), ("main", false)],
+        ] {
+            assert_eq!(help_menu_window_label(windows), Some("main"));
+        }
+    }
+
+    #[test]
+    fn help_links_never_fall_back_to_a_pet_or_an_arbitrary_extra_window() {
+        assert_eq!(
+            help_menu_window_label([("window-1", false), ("pet", true)]),
+            None
+        );
+        assert_eq!(help_menu_window_label([]), None);
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub struct ViewMenuEntry {
+    id: String,
+    enabled: bool,
+    shortcut: Option<String>,
+}
+
+#[tauri::command]
+pub fn sync_view_menu(
+    window: tauri::WebviewWindow<Wry>,
+    entries: Vec<ViewMenuEntry>,
+) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        if window.label() == crate::desktop::pet::PET_WINDOW_LABEL
+            || !window.is_focused().unwrap_or(false)
+        {
+            return Ok(());
+        }
+        let Some(menu) = window.app_handle().menu() else {
+            return Ok(());
+        };
+        let Some(view) = menu.get("desktop-view-menu") else {
+            return Ok(());
+        };
+        let Some(view) = view.as_submenu() else {
+            return Ok(());
+        };
+        for (id, key) in MACOS_VIEW_COMMANDS {
+            let Some(item) = view.get(id) else {
+                continue;
+            };
+            let Some(item) = item.as_menuitem() else {
+                continue;
+            };
+            let entry = entries.iter().find(|entry| entry.id == id);
+            let enabled = entry.is_some_and(|entry| entry.enabled);
+            let mut label = crate::config::i18n::t(key);
+            if enabled {
+                if let Some(shortcut) = entry
+                    .and_then(|entry| entry.shortcut.as_deref())
+                    .filter(|shortcut| shortcut.len() <= 80)
+                {
+                    label.push_str("    ");
+                    label.push_str(shortcut);
+                }
+            }
+            item.set_text(label)
+                .and_then(|_| item.set_enabled(enabled))
+                .map_err(|error| format!("VIEW_MENU_SYNC_FAILED: {error}"))?;
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (window, entries);
     Ok(())
 }
 
 /// 原生全屏动画会连续触发 Resize；只在状态真正变化时刷新菜单文案。
 #[cfg(target_os = "macos")]
 fn sync_macos_fullscreen_menu(window: &tauri::Window<Wry>) {
+    if window.label() == crate::desktop::pet::PET_WINDOW_LABEL
+        || !window.is_focused().unwrap_or(false)
+    {
+        return;
+    }
     let Ok(is_fullscreen) = window.is_fullscreen() else {
         return;
     };
-    let label = crate::config::i18n::t(if is_fullscreen {
-        "menu.exit_fullscreen"
-    } else {
-        "menu.enter_fullscreen"
-    });
+    let label = crate::config::i18n::t(fullscreen_menu_label_key(is_fullscreen));
     let item = MACOS_FULLSCREEN_MENU_ITEM
         .get_or_init(|| Mutex::new(None))
         .lock()
@@ -474,6 +734,295 @@ fn sync_macos_fullscreen_menu(window: &tauri::Window<Wry>) {
     if let Err(error) = item.set_text(label) {
         log::warn!("[menu] failed to update macOS fullscreen label: {error}");
     }
+}
+
+/// 从 PE 文件的内嵌图标资源里取「大 + 小」两枚 HICON（`ExtractIconExW` 按系统 DPI
+/// 选帧，且保留 32 位 alpha）。
+///
+/// 句柄所有权随返回值交给调用方；提取失败时（包括只取到一半）本函数负责把已经拿到
+/// 的句柄销毁，不把半份结果漏出去。
+#[cfg(windows)]
+fn load_exe_icons(exe: &std::path::Path) -> Option<(HICON, HICON)> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::UI::WindowsAndMessaging::DestroyIcon;
+
+    let wide: Vec<u16> = exe
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let (mut large, mut small): (HICON, HICON) = (std::ptr::null_mut(), std::ptr::null_mut());
+    let extracted = unsafe { ExtractIconExW(wide.as_ptr(), 0, &mut large, &mut small, 1) };
+    if extracted > 0 && !large.is_null() && !small.is_null() {
+        return Some((large, small));
+    }
+    unsafe {
+        if !large.is_null() {
+            DestroyIcon(large);
+        }
+        if !small.is_null() {
+            DestroyIcon(small);
+        }
+    }
+    None
+}
+
+/// 进程级共享的 exe 图标句柄（大 + 小）。
+///
+/// `ExtractIconExW` 出来的 HICON 所有权在调用方，但「有主」不等于「用完就销毁」：
+/// 只要还有窗口或任务栏缓存引用它，它就必须活着。这里缓存成进程级单例，所有窗口共用
+/// 同一对句柄——总数恒为 2，既不随窗口开关累积（review：原实现每个壳层窗口各留两枚），
+/// 也不存在「窗口销毁时把还在用的句柄删掉」的悬垂窗口。
+#[cfg(windows)]
+fn shared_exe_icons() -> Option<(HICON, HICON)> {
+    struct Icons(HICON, HICON);
+    // SAFETY: HICON 是 GDI 句柄，只读共享；进程存活期间永不销毁，因此跨线程安全。
+    unsafe impl Send for Icons {}
+    unsafe impl Sync for Icons {}
+
+    static ICONS: OnceLock<Option<Icons>> = OnceLock::new();
+    ICONS
+        .get_or_init(|| {
+            std::env::current_exe()
+                .ok()
+                .as_deref()
+                .and_then(load_exe_icons)
+                .map(|(large, small)| Icons(large, small))
+        })
+        .as_ref()
+        .map(|icons| (icons.0, icons.1))
+}
+
+/// 填上 Windows 任务栏 / Alt+Tab 用的**大图标**槽位（issue #744）。
+///
+/// 任务栏与 Alt+Tab 取的是 ICON_BIG，而 tao 的 `set_window_icon` 只写 ICON_SMALL
+/// （`IconType::Small`），大图标槽位始终为 0；`.icon()` 递下去的那份也救不了场：
+/// tauri-codegen 只取 icon.ico 的第一帧（32×32）转 RGBA（`CachedIcon::new_ico` 的
+/// `entries()[0]`），tao 再用 `CreateIcon` 重建 HICON——`CreateIcon` 的色位图是 DDB，
+/// 不带 alpha，只能得到 1 位掩码的硬边剪影。任务栏于是画出一块拉伸过的模糊色块。
+///
+/// 绕开 RGBA 通道：直接从 exe 内嵌的图标资源取多帧 HICON（资源由 tauri-build 在
+/// 打包时嵌入），大小两个槽位一并覆盖。
+///
+/// 图标按系统 DPI 尺寸取一次（96 DPI 下 32/16），非 100% 缩放下由系统等比拉伸；
+/// 要做到逐 DPI 锐利，需要改用 `PrivateExtractIconsW` + `GetSystemMetricsForDpi`
+/// 按窗口 DPI 取帧，并在 `ScaleFactorChanged` 时重设。
+#[cfg(windows)]
+fn apply_windows_window_icon(window: &tauri::WebviewWindow<Wry>) {
+    let Some((large, small)) = shared_exe_icons() else {
+        log::warn!("[icon] exe icon resource unavailable, taskbar keeps the degraded small icon");
+        return;
+    };
+    let hwnd = match window.hwnd() {
+        Ok(hwnd) => hwnd.0,
+        Err(error) => {
+            log::warn!("[icon] window handle unavailable: {error}");
+            return;
+        }
+    };
+    unsafe {
+        SendMessageW(hwnd, WM_SETICON, ICON_BIG as usize, large as isize);
+        SendMessageW(hwnd, WM_SETICON, ICON_SMALL as usize, small as isize);
+        if SendMessageW(hwnd, WM_GETICON, ICON_BIG as usize, 0) == 0 {
+            log::warn!("[icon] ICON_BIG still unset after registration");
+        }
+    }
+}
+
+fn with_shell_chrome<'a>(
+    app: &'a tauri::AppHandle<Wry>,
+    builder: WebviewWindowBuilder<'a, Wry, tauri::AppHandle<Wry>>,
+) -> tauri::Result<WebviewWindowBuilder<'a, Wry, tauri::AppHandle<Wry>>> {
+    let appearance = crate::config::get_store_dat_setting(app).appearance;
+    let transparent = appearance.transparency;
+    let builder = builder
+        .transparent(transparent)
+        .initialization_script(format!(
+            "window.__DSH_TRANSPARENT__ = {transparent}; window.__DSH_STORE_FILE__ = {};",
+            serde_json::json!(crate::config::store_dat_file_name())
+        ))
+        // 启动期外观引导必须落在 document-start 且覆盖所有 frame：内嵌 dsh 的 boot 页
+        // （HARNESS + Loading plugins…）由内核在插件加载之前绘出，晚于首绘的帧桥改不动它。
+        .initialization_script_for_all_frames(crate::desktop::appearance::APPEARANCE_BOOTSTRAP_JS)
+        .inner_size(1280.0, 840.0)
+        .min_inner_size(860.0, 620.0)
+        .resizable(true);
+
+    #[cfg(any(windows, target_os = "macos"))]
+    let builder = if appearance.native_blur_enabled() {
+        builder.effects(
+            tauri::window::EffectsBuilder::new()
+                .effects([
+                    tauri::window::Effect::Acrylic,
+                    tauri::window::Effect::Mica,
+                    tauri::window::Effect::UnderWindowBackground,
+                ])
+                .state(tauri::window::EffectState::FollowsWindowActiveState)
+                .build(),
+        )
+    } else {
+        builder
+    };
+
+    #[cfg(windows)]
+    let builder = builder
+        .data_directory(webview_data_directory(app))
+        .additional_browser_args(WINDOWS_DRAG_BROWSER_ARGS)
+        .icon(app.default_window_icon().unwrap().clone())?;
+
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .decorations(true)
+        .title_bar_style(tauri::TitleBarStyle::Overlay)
+        .hidden_title(true)
+        .traffic_light_position(tauri::LogicalPosition::new(
+            TRAFFIC_LIGHT_INSET_X,
+            f64::from(SHELL_NAV_HEIGHT) / 2.0 + TRAFFIC_LIGHT_VISUAL_OFFSET,
+        ))
+        .theme(match crate::config::get_dsh_theme(app) {
+            crate::config::DshTheme::System => None,
+            crate::config::DshTheme::Light => Some(tauri::Theme::Light),
+            crate::config::DshTheme::Dark => Some(tauri::Theme::Dark),
+        });
+
+    #[cfg(not(target_os = "macos"))]
+    let builder = builder.decorations(false);
+
+    #[cfg(not(any(windows, target_os = "macos")))]
+    let _ = app;
+
+    Ok(builder)
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn on_macos_titlebar_event(event: &tauri::WindowEvent) {
+    if matches!(
+        event,
+        tauri::WindowEvent::Resized(_)
+            | tauri::WindowEvent::ScaleFactorChanged { .. }
+            | tauri::WindowEvent::ThemeChanged(_)
+            | tauri::WindowEvent::Focused(_)
+    ) {
+        MACOS_TITLEBAR_SYNC_PENDING.store(true, Ordering::Relaxed);
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn sync_macos_titlebars<I>(windows: impl FnOnce() -> I)
+where
+    I: IntoIterator<Item = tauri::WebviewWindow<Wry>>,
+{
+    if !MACOS_TITLEBAR_SYNC_PENDING.swap(false, Ordering::Relaxed) {
+        return;
+    }
+    for webview in windows() {
+        let Ok(handle) = webview.ns_window() else {
+            continue;
+        };
+        let window = unsafe { &*handle.cast::<NSWindow>() };
+        if window.styleMask().contains(NSWindowStyleMask::FullScreen) {
+            continue;
+        }
+        let Some(button) = window.standardWindowButton(NSWindowButton::CloseButton) else {
+            continue;
+        };
+        let bounds = button.bounds();
+        let center = button.convertPoint_toView(
+            NSPoint::new(bounds.size.width / 2.0, bounds.size.height / 2.0),
+            None,
+        );
+        let expected_x = TRAFFIC_LIGHT_INSET_X + bounds.size.width / 2.0;
+        let expected_y = f64::from(SHELL_NAV_HEIGHT) / 2.0;
+        let actual_y = window.frame().size.height - center.y;
+        // AppKit 在布局完成后重置按钮；仅在偏移时重绘 Wry（tauri#15451）。
+        if (center.x - expected_x).abs() > 0.5 || (actual_y - expected_y).abs() > 0.5 {
+            if let Some(content) = window.contentView() {
+                content.display();
+            }
+        }
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod macos_titlebar_tests {
+    use super::{on_macos_titlebar_event, sync_macos_titlebars, MACOS_TITLEBAR_SYNC_PENDING};
+    use std::cell::Cell;
+    use std::sync::atomic::Ordering;
+    use tauri::{PhysicalPosition, PhysicalSize, Theme, WindowEvent};
+
+    #[test]
+    fn only_layout_events_arm_a_single_titlebar_sync() {
+        let scans = Cell::new(0);
+        let windows = || {
+            scans.set(scans.get() + 1);
+            std::iter::empty::<tauri::WebviewWindow<tauri::Wry>>()
+        };
+        for event in [
+            WindowEvent::Moved(PhysicalPosition::new(10, 10)),
+            WindowEvent::Destroyed,
+        ] {
+            MACOS_TITLEBAR_SYNC_PENDING.store(false, Ordering::Relaxed);
+            on_macos_titlebar_event(&event);
+            assert!(
+                !MACOS_TITLEBAR_SYNC_PENDING.load(Ordering::Relaxed),
+                "{event:?} 不该触发校准：拖动窗口时 Moved 会持续高频触发，\
+                 逐帧校准会克隆窗口句柄并唤醒主 RunLoop，把主线程烧满（issue #880）"
+            );
+            sync_macos_titlebars(&windows);
+            assert_eq!(scans.get(), 0, "{event:?} 不得枚举窗口（issue #880）");
+        }
+
+        for event in [
+            WindowEvent::Resized(PhysicalSize::new(800, 600)),
+            WindowEvent::ThemeChanged(Theme::Dark),
+            WindowEvent::Focused(true),
+            WindowEvent::Focused(false),
+        ] {
+            let scans_before = scans.get();
+            MACOS_TITLEBAR_SYNC_PENDING.store(false, Ordering::Relaxed);
+            on_macos_titlebar_event(&event);
+            on_macos_titlebar_event(&event);
+            assert!(
+                MACOS_TITLEBAR_SYNC_PENDING.load(Ordering::Relaxed),
+                "{event:?} 会改变标题栏布局，必须触发一次校准"
+            );
+            sync_macos_titlebars(&windows);
+            assert_eq!(
+                scans.get(),
+                scans_before + 1,
+                "同一轮重复的 {event:?} 只能枚举一次窗口（issue #880）"
+            );
+            assert!(
+                !MACOS_TITLEBAR_SYNC_PENDING.load(Ordering::Relaxed),
+                "{event:?} 校准后必须消费标记，否则会重新唤醒主 RunLoop（issue #880）"
+            );
+            for _ in 0..1000 {
+                sync_macos_titlebars(&windows);
+            }
+            assert_eq!(
+                scans.get(),
+                scans_before + 1,
+                "连续空闲同步不得再次枚举窗口（issue #880）"
+            );
+            assert!(
+                !MACOS_TITLEBAR_SYNC_PENDING.load(Ordering::Relaxed),
+                "空闲同步不得重新设置校准标记（issue #880）"
+            );
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn with_shell_scripts<'a>(
+    builder: WebviewWindowBuilder<'a, Wry, tauri::AppHandle<Wry>>,
+) -> WebviewWindowBuilder<'a, Wry, tauri::AppHandle<Wry>> {
+    builder
+        .initialization_script_for_all_frames(crate::desktop::compat::ABORT_SIGNAL_ANY_SHIM_JS)
+        .initialization_script_for_all_frames(crate::desktop::compat::ITERATOR_HELPERS_SHIM_JS)
+        .initialization_script_for_all_frames(crate::desktop::notification::NOTIFICATION_SHIM_JS)
+        .initialization_script_for_all_frames(crate::desktop::paste::PASTE_SHIM_JS)
+        .initialization_script_for_all_frames(crate::desktop::frame_log::FRAME_LOG_BRIDGE_JS)
+        .initialization_script_for_all_frames(crate::desktop::plugin_boot::PLUGIN_BOOT_RELOAD_JS)
 }
 
 /// 构建主窗口。
@@ -498,54 +1047,14 @@ pub fn build_main_window(app: &tauri::AppHandle<Wry>) -> tauri::Result<tauri::We
 
     let webview_builder =
         WebviewWindowBuilder::new(app, MAIN_WINDOW_LABEL, WebviewUrl::App("index.html".into()))
-            .title("Deepseek Harness Desktop")
-            .inner_size(1280.0, 840.0)
-            .min_inner_size(860.0, 620.0)
-            .resizable(true);
+            .title(crate::desktop::product_name(app));
 
     // Windows/WebView2 在 build() 尚未返回时就可能绘制窗口。先隐藏创建，
     // 等保存的几何恢复完成再显示，避免启动时先闪出默认尺寸再跳到历史尺寸。
     #[cfg(windows)]
-    let webview_builder = webview_builder
-        .visible(false)
-        // 开发版使用独立 WebView2 数据目录，避免已有 release 实例、热重启残留
-        // 或其他同标识实例占用同一 User Data 管道，触发 HRESULT 0x8007139F。
-        .data_directory(webview_data_directory(app))
-        // WebView2 原生非客户区可直接接收触摸输入；同时禁用会抢占手势的弹性滚动。
-        .additional_browser_args(windows_drag_browser_args())
-        // Windows 任务栏图标来源：窗口 .icon() > 可执行文件嵌入资源 > 系统默认。
-        // 未调用 .icon() 时任务栏显示系统默认图标；显式设置 default_window_icon
-        // 以在任务栏呈现与应用品牌一致的图标（macOS 用 TitleBar 无需此设置）。
-        .icon(app.default_window_icon().unwrap().clone())?;
+    let webview_builder = webview_builder.visible(false);
 
-    // macOS 保留原生交通灯：绿色按钮由 AppKit 进入独立 Space 的原生全屏，
-    // 同时用 Overlay 让壳层导航栏继续与窗口 chrome 融合。其他平台
-    // 仍由 ShellNavBar 的右侧按钮提供窗口控制。
-    #[cfg(target_os = "macos")]
-    let webview_builder = webview_builder
-        .decorations(true)
-        .title_bar_style(tauri::TitleBarStyle::Overlay)
-        .hidden_title(true)
-        // 交通灯纵向位置由 SHELL_NAV_HEIGHT 与 TRAFFIC_LIGHT_VISUAL_OFFSET 推导
-        // （见常量注释），使视觉圆心与随栏高 flex 居中的折叠/展开按钮同一水平线（issue #524）。
-        // 位置只在窗口创建时生效：Tauri 2.11.5 没有运行期交通灯 API，而 wry
-        // 0.55.1 会在自身重绘时按创建时的值回放（`WryWebViewParent::drawRect:`），
-        // 所以运行期改 NSWindow 会被随时覆盖——改栏高必须同步上面的常量。
-        .traffic_light_position(tauri::LogicalPosition::new(
-            TRAFFIC_LIGHT_INSET_X,
-            f64::from(SHELL_NAV_HEIGHT) / 2.0 + TRAFFIC_LIGHT_VISUAL_OFFSET,
-        ))
-        // 在创建时就把原生标题栏外观设为 dsh 主题偏好，避免启动瞬间出现
-        // 「内容已亮、顶栏仍暗」的闪变（issue #93）。system → None 即跟随系统。
-        // 后续偏好变化由 `config::check_and_emit_theme` 调用 `apply_window_theme` 同步。
-        .theme(match crate::config::get_dsh_theme(app) {
-            crate::config::DshTheme::System => None,
-            crate::config::DshTheme::Light => Some(tauri::Theme::Light),
-            crate::config::DshTheme::Dark => Some(tauri::Theme::Dark),
-        });
-
-    #[cfg(not(target_os = "macos"))]
-    let webview_builder = webview_builder.decorations(false);
+    let webview_builder = with_shell_chrome(app, webview_builder)?;
 
     let webview_builder = webview_builder
         // 恢复 iframe 内 HTML5 拖拽（拖入图片/拖动元素）：
@@ -577,19 +1086,16 @@ pub fn build_main_window(app: &tauri::AppHandle<Wry>) -> tauri::Result<tauri::We
 
     // 非 Windows（macOS/Linux）没有 WebView2 的 FrameCreated/ContentLoading 流程，
     // 直接用 Tauri 的 initialization_script_for_all_frames 把兼容桥、通知桥、
-    // 剪贴板图片桥、帧内日志桥与 boot 探测桥注入所有 frame（脚本均带幂等守卫，重复注入安全）。
+    // 剪贴板图片桥、帧内日志桥、启动期外观引导与 boot 探测桥注入所有 frame
+    // （脚本均带幂等守卫，重复注入安全）。
     // 导航桥（侧边栏）、缩放快捷键与 iframe 全局样式已分别由 dsh-tauri /
     // dsh-tauri-ui 插件在 iframe 内实现，不再注入对应脚本。
     #[cfg(not(windows))]
-    let webview_builder = webview_builder
-        .initialization_script_for_all_frames(crate::desktop::compat::ABORT_SIGNAL_ANY_SHIM_JS)
-        .initialization_script_for_all_frames(crate::desktop::compat::ITERATOR_HELPERS_SHIM_JS)
-        .initialization_script_for_all_frames(crate::desktop::notification::NOTIFICATION_SHIM_JS)
-        .initialization_script_for_all_frames(crate::desktop::paste::PASTE_SHIM_JS)
-        .initialization_script_for_all_frames(crate::desktop::frame_log::FRAME_LOG_BRIDGE_JS)
-        .initialization_script_for_all_frames(crate::desktop::plugin_boot::PLUGIN_BOOT_RELOAD_JS);
+    let webview_builder = with_shell_scripts(webview_builder);
 
     let webview_window = webview_builder.build()?;
+    #[cfg(windows)]
+    apply_windows_window_icon(&webview_window);
     // 首帧前把窗口底色设成主题画布色（见 `config::window_background`），否则
     // 「窗口可见 → 前端取回偏好」之间会闪一次错色。
     apply_window_background(app, &webview_window);
@@ -632,9 +1138,12 @@ pub fn build_main_window(app: &tauri::AppHandle<Wry>) -> tauri::Result<tauri::We
 /// macOS 未实现窗口底色接口，`set_background_color` 会返回错误并被忽略——那里由
 /// `config::apply_window_theme` 同步原生外观。
 fn apply_window_background(app: &tauri::AppHandle<Wry>, window: &tauri::WebviewWindow<Wry>) {
-    let Some(color) =
+    let background = if crate::config::get_store_dat_setting(app).appearance.transparency {
+        Some(tauri::webview::Color(0, 0, 0, 0))
+    } else {
         crate::config::window_background(crate::config::get_dsh_theme(app), window.theme().ok())
-    else {
+    };
+    let Some(color) = background else {
         return;
     };
     if let Err(error) = window.as_ref().set_background_color(Some(color)) {
@@ -653,54 +1162,19 @@ pub fn build_shell_window(
     app: &tauri::AppHandle<Wry>,
     label: String,
     title: &str,
+    path: std::path::PathBuf,
 ) -> tauri::Result<tauri::WebviewWindow<Wry>> {
     let app_handle = app.clone();
 
-    let webview_builder =
-        WebviewWindowBuilder::new(app, label, WebviewUrl::App("index.html".into()))
-            .title(title)
-            .inner_size(1280.0, 840.0)
-            .min_inner_size(860.0, 620.0)
-            .resizable(true);
-
-    #[cfg(windows)]
-    let webview_builder = webview_builder
-        // 与主窗口共用同一 User Data Folder：同一进程内多个窗口各自指定不同
-        // 目录会直接建窗失败。
-        .data_directory(webview_data_directory(app))
-        .additional_browser_args(windows_drag_browser_args())
-        .icon(app.default_window_icon().unwrap().clone())?;
+    let webview_builder = with_shell_chrome(
+        app,
+        WebviewWindowBuilder::new(app, label, WebviewUrl::App(path)).title(title),
+    )?;
 
     // 非 Windows 平台没有 WebView2 的 FrameCreated/ContentLoading 流程，兼容桥、
     // 通知桥、剪贴板图片桥、帧内日志桥与 boot 探测桥必须按窗口重新注入（与主窗口一致）。
     #[cfg(not(windows))]
-    let webview_builder = webview_builder
-        .initialization_script_for_all_frames(crate::desktop::compat::ABORT_SIGNAL_ANY_SHIM_JS)
-        .initialization_script_for_all_frames(crate::desktop::compat::ITERATOR_HELPERS_SHIM_JS)
-        .initialization_script_for_all_frames(crate::desktop::notification::NOTIFICATION_SHIM_JS)
-        .initialization_script_for_all_frames(crate::desktop::paste::PASTE_SHIM_JS)
-        .initialization_script_for_all_frames(crate::desktop::frame_log::FRAME_LOG_BRIDGE_JS)
-        .initialization_script_for_all_frames(crate::desktop::plugin_boot::PLUGIN_BOOT_RELOAD_JS);
-
-    #[cfg(target_os = "macos")]
-    let webview_builder = webview_builder
-        .decorations(true)
-        .title_bar_style(tauri::TitleBarStyle::Overlay)
-        .hidden_title(true)
-        // 与主窗口同一真值：附加窗口用的是同一个壳层导航栏（h-11 = 44px），
-        // 交通灯必须落在同一水平线上（写死锚点值会随 #524 的栏高/修正量改动错位）。
-        .traffic_light_position(tauri::LogicalPosition::new(
-            TRAFFIC_LIGHT_INSET_X,
-            f64::from(SHELL_NAV_HEIGHT) / 2.0 + TRAFFIC_LIGHT_VISUAL_OFFSET,
-        ))
-        .theme(match crate::config::get_dsh_theme(app) {
-            crate::config::DshTheme::System => None,
-            crate::config::DshTheme::Light => Some(tauri::Theme::Light),
-            crate::config::DshTheme::Dark => Some(tauri::Theme::Dark),
-        });
-
-    #[cfg(not(target_os = "macos"))]
-    let webview_builder = webview_builder.decorations(false);
+    let webview_builder = with_shell_scripts(webview_builder);
 
     let webview_builder = webview_builder
         .disable_drag_drop_handler()
@@ -721,6 +1195,8 @@ pub fn build_shell_window(
     };
 
     let window = webview_builder.build()?;
+    #[cfg(windows)]
+    apply_windows_window_icon(&window);
     apply_window_background(app, &window);
 
     // 启动/真值变化时由主窗口应用缩放；新窗口需要自己应用一次当前真值。
@@ -736,23 +1212,52 @@ pub fn build_shell_window(
 }
 
 /// 「文件 → 新建窗口」：`window-<N>` 序号 label，chrome 全部取 `build_shell_window`。
-pub fn build_extra_window(app: &tauri::AppHandle<Wry>) -> tauri::Result<tauri::WebviewWindow<Wry>> {
+pub fn build_extra_window(
+    app: &tauri::AppHandle<Wry>,
+    path: std::path::PathBuf,
+) -> tauri::Result<tauri::WebviewWindow<Wry>> {
     let sequence = EXTRA_WINDOW_SEQ.fetch_add(1, Ordering::SeqCst) + 1;
-    build_shell_window(app, format!("window-{sequence}"), "Deepseek Harness Desktop")
+    build_shell_window(
+        app,
+        format!("window-{sequence}"),
+        crate::desktop::product_name(app),
+        path,
+    )
 }
 
 #[cfg(all(test, windows))]
 mod tests {
-    use super::windows_drag_browser_args;
+    use super::{load_exe_icons, WINDOWS_DRAG_BROWSER_ARGS};
+    use windows_sys::Win32::UI::WindowsAndMessaging::DestroyIcon;
 
     #[test]
     fn windows_drag_args_enable_touch_drag_and_disable_overscroll() {
-        let args = windows_drag_browser_args();
+        let args = WINDOWS_DRAG_BROWSER_ARGS;
         assert!(args.contains("--enable-features=msWebView2EnableDraggableRegions"));
         assert!(args.contains("--disable-features=ElasticOverscroll"));
         assert!(args.contains("msWebOOUI,msPdfOOUI"));
         let smart_screen = ["ms", "SmartScreen", "Protection"].concat();
         assert!(!args.contains(smart_screen.as_str()));
+    }
+
+    /// 任务栏大图标依赖 `ExtractIconExW`（issue #744）。测试二进制自己带不带图标资源
+    /// 不确定，换一个必然有图标组的系统 DLL 验证提取路径，并确认大/小两枚句柄都在。
+    #[test]
+    fn exe_icon_group_yields_large_and_small_handles() {
+        let root = std::env::var("SystemRoot").expect("SystemRoot must be set on Windows");
+        let shell32 = std::path::Path::new(&root)
+            .join("System32")
+            .join("shell32.dll");
+        let (large, small) =
+            load_exe_icons(&shell32).unwrap_or_else(|| panic!("no icon group in shell32.dll"));
+        assert!(!large.is_null() && !small.is_null());
+        assert_ne!(large, small, "大/小图标不应是同一个句柄");
+        unsafe {
+            DestroyIcon(large);
+            DestroyIcon(small);
+        }
+
+        assert!(load_exe_icons(std::path::Path::new("C:/dsh-missing-icon.exe")).is_none());
     }
 }
 
@@ -797,6 +1302,77 @@ mod shell_nav_tests {
 }
 
 #[cfg(test)]
+mod menu_tests {
+    use super::{fullscreen_menu_label_key, menu_action_window_label};
+    use crate::desktop::pet::PET_WINDOW_LABEL;
+
+    #[test]
+    fn menu_actions_prefer_the_focused_shell_window_in_any_iteration_order() {
+        let windows = [
+            ("main", false),
+            ("window-1", true),
+            (PET_WINDOW_LABEL, false),
+        ];
+        assert_eq!(menu_action_window_label(windows), Some("window-1"));
+        assert_eq!(
+            menu_action_window_label(windows.into_iter().rev()),
+            Some("window-1")
+        );
+    }
+
+    #[test]
+    fn menu_actions_target_main_when_it_is_focused() {
+        assert_eq!(
+            menu_action_window_label([("main", true), ("window-1", false)]),
+            Some("main")
+        );
+    }
+
+    #[test]
+    fn menu_actions_fall_back_to_main_when_only_the_pet_is_focused() {
+        assert_eq!(
+            menu_action_window_label([
+                (PET_WINDOW_LABEL, true),
+                ("window-1", false),
+                ("main", false)
+            ]),
+            Some("main")
+        );
+    }
+
+    #[test]
+    fn menu_actions_fall_back_to_main_when_all_windows_are_unfocused() {
+        assert_eq!(
+            menu_action_window_label([("window-1", false), ("main", false)]),
+            Some("main")
+        );
+    }
+
+    #[test]
+    fn menu_actions_target_a_focused_secondary_window_without_main() {
+        assert_eq!(
+            menu_action_window_label([("window-1", true)]),
+            Some("window-1")
+        );
+    }
+
+    #[test]
+    fn menu_actions_have_no_target_without_a_focused_shell_or_main() {
+        assert_eq!(
+            menu_action_window_label([(PET_WINDOW_LABEL, true), ("window-1", false)]),
+            None
+        );
+        assert_eq!(menu_action_window_label([]), None);
+    }
+
+    #[test]
+    fn fullscreen_menu_label_tracks_native_fullscreen_state() {
+        assert_eq!(fullscreen_menu_label_key(false), "menu.enter_fullscreen");
+        assert_eq!(fullscreen_menu_label_key(true), "menu.exit_fullscreen");
+    }
+}
+
+#[cfg(test)]
 mod security_tests {
     use serde_json::Value;
 
@@ -819,6 +1395,22 @@ mod security_tests {
                 "unexpected remote origin: {url}"
             );
         }
+    }
+
+    #[test]
+    fn native_appearance_effects_are_local_shell_only() {
+        let appearance: Value =
+            serde_json::from_str(include_str!("../../capabilities/appearance-effects.json")).unwrap();
+        // 这个能力一旦带上 remote，就会把窗口级 setEffects 暴露给回环承载的 Harness 页面。
+        assert!(appearance.get("remote").is_none());
+
+        let default_permissions = capability()["permissions"]
+            .as_array()
+            .expect("permissions must be an array")
+            .clone();
+        assert!(!default_permissions.iter().any(|permission| {
+            permission.as_str() == Some("core:window:allow-set-effects")
+        }));
     }
 
     #[test]
@@ -933,19 +1525,28 @@ pub fn handler() -> impl Fn(Invoke<Wry>) -> bool + Send + Sync + 'static {
         crate::bridge::quarantine_broken_patch_layers,
         crate::bridge::strip_unresolved_patch_entries,
         crate::bridge::get_dsh_status,
+        crate::bridge::get_task_manager_processes,
+        crate::bridge::end_task_manager_process,
         crate::bridge::is_dev_build,
         crate::bridge::get_preinstall_plugins,
         crate::bridge::get_preinstall_pending,
         crate::bridge::install_preinstall_plugins,
-        crate::bridge::cancel_preinstall_plugins,
+        crate::bridge::install_plugin_specs,
+        crate::bridge::inspect_plugin_specs,
+        crate::bridge::get_local_plugin_hmr,
+        crate::bridge::set_local_plugin_hmr,
+        crate::bridge::pick_local_plugin_dir,
+        crate::bridge::cancel_plugin_processes,
+        crate::bridge::allow_plugin_versions,
+        crate::bridge::allow_plugin_policy_versions,
         crate::bridge::skip_preinstall_plugins,
         crate::bridge::ensure_internal_plugins,
         crate::bridge::cancel_internal_plugins,
         crate::bridge::open_preinstall_repo,
         crate::bridge::get_dsh_plugins,
         crate::bridge::refresh_plugin_updates,
-        crate::bridge::update_dsh_plugin,
-        crate::bridge::remove_dsh_plugin,
+        crate::bridge::update_dsh_plugins,
+        crate::bridge::remove_dsh_plugins,
         crate::bridge::disable_dsh_plugin,
         crate::bridge::enable_dsh_plugin,
         crate::bridge::snapshot_plugin,
@@ -962,7 +1563,10 @@ pub fn handler() -> impl Fn(Invoke<Wry>) -> bool + Send + Sync + 'static {
         crate::bridge::remove_profile,
         crate::bridge::reset_profile,
         crate::bridge::clone_profile,
+        crate::bridge::analyze_profile_migration,
+        crate::bridge::migrate_profile_data,
         crate::bridge::backup_profile,
+        crate::bridge::export_recovery_backup,
         crate::bridge::restore_profile,
         crate::bridge::list_backups,
         crate::bridge::delete_backup,
@@ -972,16 +1576,25 @@ pub fn handler() -> impl Fn(Invoke<Wry>) -> bool + Send + Sync + 'static {
         crate::bridge::remove_core,
         crate::bridge::update_local_core,
         crate::bridge::proxy_health_check,
+        crate::bridge::harness_ownership,
         crate::bridge::get_runtime_info,
         crate::bridge::runtime_ready,
         crate::bridge::get_app_config,
         crate::bridge::update_app_config,
+        crate::bridge::get_effective_heap_limit_mb,
+        crate::bridge::test_proxy,
         crate::bridge::get_launch_on_login,
         crate::bridge::set_launch_on_login,
         crate::bridge::get_cli_link_status,
         crate::bridge::open_in_browser,
         crate::bridge::copy_service_url,
         crate::bridge::reveal_data_dir,
+        crate::bridge::get_data_dir_status,
+        crate::bridge::pick_data_dir,
+        crate::bridge::list_data_dir_entries,
+        crate::bridge::preview_data_dir_migration,
+        crate::bridge::migrate_data_dir,
+        crate::bridge::rollback_data_dir,
         crate::bridge::reveal_in_folder,
         crate::bridge::open_dir,
         crate::bridge::read_service_logs,
@@ -996,10 +1609,12 @@ pub fn handler() -> impl Fn(Invoke<Wry>) -> bool + Send + Sync + 'static {
         crate::bridge::get_desktop_about,
         crate::bridge::open_external_url,
         crate::bridge::read_clipboard_image,
+        crate::bridge::read_clipboard_text,
         crate::bridge::write_clipboard_text,
-        crate::desktop::notification::show_native_notification,
         crate::desktop::window::create_app_window,
+        crate::desktop::builder::sync_view_menu,
         crate::desktop::window::quit_app,
+        crate::desktop::window::toggle_devtools,
         crate::bridge::log_frontend,
         crate::bridge::get_pet_status,
         crate::bridge::get_pet_overlay_supported,
@@ -1008,20 +1623,44 @@ pub fn handler() -> impl Fn(Invoke<Wry>) -> bool + Send + Sync + 'static {
         crate::bridge::set_pet_enabled,
         crate::bridge::set_active_pet,
         crate::bridge::set_pet_size,
+        crate::bridge::set_pet_throw_enabled,
         crate::bridge::push_pet_session,
         crate::bridge::move_pet_window,
+        crate::bridge::persist_pet_window_position,
         crate::bridge::set_pet_ignore_cursor_events,
         crate::bridge::list_pets,
         crate::bridge::import_pet,
+        crate::bridge::delete_pet,
+        crate::bridge::import_pet_repository,
+        crate::bridge::check_pet_updates,
+        crate::bridge::update_pet_repository,
         crate::bridge::get_pet_asset,
         crate::bridge::list_preset_pets,
         crate::desktop::pet_mouse::start_pet_mouse_stream,
+        crate::bridge::remote::remote,
         crate::bridge::remote_bridge_ping,
         crate::bridge::remote_open_window,
     ]
 }
 
-// configure tauri builder
+fn menu_action_window_label<'a>(
+    windows: impl IntoIterator<Item = (&'a str, bool)>,
+) -> Option<&'a str> {
+    let mut main = None;
+    for (label, focused) in windows {
+        if label == crate::desktop::pet::PET_WINDOW_LABEL {
+            continue;
+        }
+        if focused {
+            return Some(label);
+        }
+        if label == MAIN_WINDOW_LABEL {
+            main = Some(label);
+        }
+    }
+    main
+}
+
 pub fn builder() -> tauri::Builder<tauri::Wry> {
     let mut builder = tauri::Builder::default();
 
@@ -1037,17 +1676,15 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
         .manage(crate::desktop::pet_mouse::PetMouseStreamState::default())
         .setup(|app| {
             let app_handle = app.handle().clone();
-            // 标识符改名（app-data 目录名同步变化）：旧目录必须在任何 store 读写之前
-            // 搬过来，否则升级用户会被误判成首装（见
-            // service::migrate::migrate_app_data_dir）。失败仅告警，不阻断启动。
-            if let Err(error) = crate::service::migrate::migrate_app_data_dir(&app_handle) {
-                log::warn!("[migrate] app data dir migration failed: {error}");
-            }
+            crate::desktop::autostart::init(&app_handle)?;
             // 首装检测必须最先执行：窗口几何恢复/退出保存等任何 store 写入都会
             // 创建 store 文件，判定晚于它们会把首装误判为升级（见
             // config::detect_first_install 的时序说明）。
             crate::config::detect_first_install(&app_handle);
             build_main_window(&app_handle)?;
+            // 菜单文案在构建时就取当前语言，语言初始化必须早于菜单/托盘构建。
+            let language = crate::config::get_store_dat_setting(&app_handle).language;
+            crate::config::i18n::set_language(crate::config::i18n::lang_from_setting(&language));
             #[cfg(target_os = "macos")]
             install_macos_menu(&app_handle)?;
             tray(&app_handle)?;
@@ -1064,17 +1701,81 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
             Ok(())
         })
         .on_menu_event(|app, event| match event.id().as_ref() {
+            "desktop-toggle-sidebar"
+            | "desktop-toggle-right-panel"
+            | "desktop-open-terminal"
+            | "desktop-search-chats"
+            | "desktop-zoom-in"
+            | "desktop-zoom-out"
+            | "desktop-zoom-reset"
+            | "desktop-task-manager" => {
+                if let Some(window) = app.webview_windows().into_values().find(|window| {
+                    window.label() != crate::desktop::pet::PET_WINDOW_LABEL
+                        && window.is_focused().unwrap_or(false)
+                }) {
+                    if let Err(error) =
+                        app.emit_to(window.label(), "macos-menu-action", event.id().as_ref())
+                    {
+                        log::warn!("[menu] failed to emit View action: {error}");
+                    }
+                }
+            }
+            "desktop-documentation" | "desktop-feedback" | "desktop-harness-feedback" => {
+                let windows = app.webview_windows();
+                let target = help_menu_window_label(
+                    windows
+                        .values()
+                        .map(|window| (window.label(), window.is_focused().unwrap_or(false))),
+                );
+                if let Some(label) = target {
+                    if let Err(error) = app.emit_to(label, "macos-menu-action", event.id().as_ref())
+                    {
+                        log::warn!("[menu] failed to emit Help action: {error}");
+                    }
+                } else {
+                    log::warn!("[menu] HELP_WINDOW_NOT_FOUND");
+                }
+            }
+            #[cfg(target_os = "macos")]
+            "desktop-fullscreen" => {
+                if let Some(window) = app.webview_windows().into_values().find(|window| {
+                    window.label() != crate::desktop::pet::PET_WINDOW_LABEL
+                        && window.is_focused().unwrap_or(false)
+                }) {
+                    if let Err(error) = window
+                        .is_fullscreen()
+                        .and_then(|is_fullscreen| window.set_fullscreen(!is_fullscreen))
+                    {
+                        log::warn!("[menu] FULLSCREEN_TOGGLE_FAILED: {error}");
+                    }
+                }
+            }
             "desktop-config"
+            | "desktop-profiles"
+            | "desktop-plugins"
+            | "desktop-harness"
             | "desktop-about"
             | "desktop-copy-run-logs"
+            | "desktop-toggle-devtools"
             | "desktop-check-update"
             | "desktop-restart"
-            | "desktop-documentation"
+            | "desktop-keyboard-shortcuts"
             | "desktop-new-window"
             | "desktop-new-chat"
             | "desktop-open-folder" => {
-                if let Err(error) = app.emit("macos-menu-action", event.id().as_ref()) {
-                    log::warn!("[menu] failed to emit macOS menu action: {error}");
+                let windows = app.webview_windows();
+                let target = menu_action_window_label(
+                    windows
+                        .values()
+                        .map(|window| (window.label(), window.is_focused().unwrap_or(false))),
+                );
+                if let Some(label) = target {
+                    if let Err(error) = app.emit_to(label, "macos-menu-action", event.id().as_ref())
+                    {
+                        log::warn!("[menu] failed to emit macOS menu action: {error}");
+                    }
+                } else {
+                    log::warn!("[menu] MENU_WINDOW_NOT_FOUND: {}", event.id().as_ref());
                 }
             }
             _ => {}
@@ -1107,7 +1808,7 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
                 // get_store_dat_setting 内部已归一化，取值只可能是 tray 或 quit
                 let close_action =
                     crate::config::get_store_dat_setting(window.app_handle()).close_action;
-                if close_action == crate::desktop::activation::CLOSE_ACTION_QUIT {
+                if close_action == crate::config::CLOSE_ACTION_QUIT {
                     // 不 prevent_close、不 hide：直接退出。app.exit(0) 会走
                     // RunEvent::ExitRequested，既有的几何保存逻辑照常触发
                     window.app_handle().exit(0);
@@ -1139,24 +1840,23 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
                         log::error!("[activation] APP_HIDE_FAILED: {error}");
                     }
                 }
+                // 隐藏窗口**不会**停掉页面里的动画 tick：WebView2 的「隐藏后照跑」是
+                // By Design 行为（WebView2Feedback #3207），微软那边的建议是按 webview
+                // 可见性停 tick，而不是把窗口移出屏幕。`background_throttling()` 只在
+                // WKWebView 上生效（wry CHANGELOG 0.48.1），Windows/WebView2 上是空转
+                // API；tauri/wry 也都不调用 `TrySuspendAsync`（WebView2Feedback #2398），
+                // 最小化同样不改变 webview 可见性（tauri-runtime-wry 只在窗口 Show/Hide
+                // 时 `set_visible`）。要真正停 tick 只能显式把 webview 可见性设为 false
+                // （已有的 `with_webview` 通路，webview2-com 已是直接依赖）。
                 #[cfg(not(target_os = "macos"))]
                 let _ = window.hide();
             }
-            // 移动/缩放主窗口时记录几何，重启后据此恢复（见 config::window_state）。
-            // 只认主窗口 label：附加窗口的几何与主窗口共用同一份记录，采样会污染它。
-            tauri::WindowEvent::Moved(_) => match window.label() {
-                label if label == crate::desktop::pet::PET_WINDOW_LABEL => {
-                    crate::desktop::pet::save_pet_window_geometry(window);
-                }
-                label if label == MAIN_WINDOW_LABEL => crate::config::save_geometry(window),
-                _ => {}
-            },
             tauri::WindowEvent::ScaleFactorChanged { .. } => {
                 if window.label() == crate::desktop::pet::PET_WINDOW_LABEL {
                     crate::desktop::pet::apply_pet_size(window.app_handle());
                 }
             }
-            tauri::WindowEvent::Resized(_) => {
+            tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) => {
                 match window.label() {
                     label if label == crate::desktop::pet::PET_WINDOW_LABEL => {
                         crate::desktop::pet::save_pet_window_geometry(window);
@@ -1164,17 +1864,20 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
                     label if label == MAIN_WINDOW_LABEL => crate::config::save_geometry(window),
                     _ => {}
                 }
-                // 全屏菜单文案与 Accessory 切换都只针对主窗口：附加窗口没有
-                // 独立的全屏菜单项，也不参与「关闭主窗口即后台化」的激活策略。
                 #[cfg(target_os = "macos")]
                 {
-                    if window.label() == MAIN_WINDOW_LABEL {
-                        // 退出全屏后补做全屏期间被推迟的 Accessory 切换
+                    if matches!(event, tauri::WindowEvent::Resized(_)) {
+                        // 全屏文案跟随聚焦的壳层窗口，Accessory 切换仍只处理主窗口。
                         sync_macos_fullscreen_menu(window);
-                        crate::desktop::activation::on_window_resized(window);
+                        if window.label() == MAIN_WINDOW_LABEL {
+                            // 退出全屏后补做全屏期间被推迟的 Accessory 切换。
+                            crate::desktop::activation::on_window_resized(window);
+                        }
                     }
                 }
             }
+            #[cfg(target_os = "macos")]
+            tauri::WindowEvent::Focused(true) => sync_macos_fullscreen_menu(window),
             _ => {}
         });
 
@@ -1200,16 +1903,9 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
     let builder = builder.plugin(crate::desktop::tauri_internals::shim());
 
     let builder = builder
-        // 官方跨平台登录启动实现：Windows HKCU Run、macOS LaunchAgent、Linux XDG。
-        .plugin(
-            tauri_plugin_autostart::Builder::new()
-                .app_name(crate::desktop::autostart::app_name())
-                .build(),
-        )
         // Opener plugin
         .plugin(tauri_plugin_opener::init())
-        // Notification plugin（Windows 上以 tauri-winrt-notification 实现点击回调，
-        // 注册官方插件保留跨平台回退能力）
+        // Notification plugin（官方插件）：权限查询等通用通知能力。
         .plugin(tauri_plugin_notification::init())
         // FS plugin
         .plugin(tauri_plugin_fs::init())
@@ -1221,6 +1917,30 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
         // OS plugin：前端据此判断系统版本（macOS 10.15 没有 `WKWebView.pageZoom`，
         // 不能把缩放应用到 WebView），见 `hooks/use-zoom-factor.ts`。
         .plugin(tauri_plugin_os::init());
+
+    // Notifications plugin（Choochmeque fork）：壳层发带交互按钮的通知，并通过
+    // `onNotificationClicked` / `onAction` 收点击与按钮动作——官方插件在桌面端 `show()`
+    // 之后即丢弃 handle，拿不到这两类事件。macOS 上它需要 Xcode 16+（Swift 6 typed throws），
+    // CI 见 .github/workflows/ci.yml 的 `Select Xcode 16`。
+    //
+    // macOS 上它还要求进程跑在 `.app` 包内（`UNUserNotificationCenter` 的前置条件，见 vendor 的
+    // `macos::validation::require_bundle`）：`tauri dev` 跑的是裸二进制，注册它会让插件初始化
+    // 直接报错、整个应用起不来，所以未打包时跳过这条通路（打包后自动生效）。
+    #[cfg(target_os = "macos")]
+    let in_app_bundle = std::env::current_exe()
+        .map(|exe| exe.to_string_lossy().contains(".app/Contents/MacOS/"))
+        .unwrap_or(false);
+    #[cfg(not(target_os = "macos"))]
+    let in_app_bundle = true;
+    let builder = if in_app_bundle {
+        builder.plugin(tauri_plugin_notifications::init())
+    } else {
+        log::warn!(
+            "未运行在 .app 包内，跳过 tauri-plugin-notifications：macOS 的系统通知需要 .app 包，\
+             打包后自动生效"
+        );
+        builder
+    };
 
     // `dsh://` 深链（成功页「打开应用」按钮）只在打包态启用：debug 注册会把系统
     // `dsh:` 指向调试产物，与官方 Electron 的 `app.isPackaged` 门禁一致。

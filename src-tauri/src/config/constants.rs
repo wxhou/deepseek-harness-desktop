@@ -13,9 +13,14 @@ pub const NODE_MIRROR_BASE_URL: &str = "https://npmmirror.com/mirrors/node/";
 pub const DSH_CORE_URL: &str =
     "https://github.com/dsh-tauri-desk/deepseek-harness-pkg/releases/latest/download/";
 
-/// GitHub Release 的 ghfast.top 中转前缀（透传官方 URL，下载内容一致、
-/// 仍可做 SHA-256 完整性校验），用作官方直连失败时的兜底镜像。
-pub const DSH_MIRROR_PREFIX: &str = "https://ghfast.top/";
+/// GitHub Release 的代理镜像前缀列表（透传官方 URL，下载内容一致、
+/// 仍可做 SHA-256 完整性校验），按实测延迟从低到高排列，官方直连失败时依次兜底。
+pub const DSH_MIRROR_PREFIXES: &[&str] = &[
+    "https://gh-proxy.com/",
+    "https://gh.llkk.cc/",
+    "https://ghfast.top/",
+    "https://ghproxy.net/",
+];
 
 /// 站点自有 Cloudflare 反代前缀（Pages Function `/dl/*`，白名单限域、边缘缓存），
 /// 位于官方直连之后、公益镜像之前——自有域名不受公益镜像限速/停服影响。
@@ -50,6 +55,11 @@ pub const PNPM_MIRROR_BASE_URL: &str = "https://registry.npmmirror.com/pnpm/-/";
 
 /// Harness 服务地址与默认端口
 pub const DSH_HOST: &str = "http://127.0.0.1";
+
+pub fn get_dsh_service_url(port: u16) -> String {
+    format!("{DSH_HOST}:{port}")
+}
+
 /// 生产（release）默认端口
 pub const DSH_PORT: u16 = 3080;
 /// 开发（debug）默认端口：与生产隔离，避免 `pnpm tauri dev` 与已安装桌面端
@@ -64,14 +74,10 @@ pub const DSH_HOME_DIR_NAME: &str = ".dsh";
 /// 同时运行时互不干扰，也不会互相污染对方的会话数据。
 pub const DSH_HOME_DEV_DIR_NAME: &str = ".dsh.dev";
 
-/// 应用标识符：`app_data_dir()` / `app_local_data_dir()` 的目录名，必须与
-/// `tauri.conf.json` 的 `identifier` 逐字一致（日志目录同样由它派生）。
-pub const APP_IDENTIFIER: &str = "dsh-tauri";
+/// 启动前的目录解析也读取有效构建配置，避免夜间版读写正式版日志和 Store。
+pub const APP_IDENTIFIER: &str = env!("DSH_APP_IDENTIFIER");
 
-/// 历史应用标识符（`io.github.hairyf.deepseek-harness-desktop`）：标识符缩短为
-/// `dsh-tauri` 后旧用户的 app-data 目录名，仅用于迁移来源识别（见
-/// `service::migrate::migrate_app_data_dir`）。
-pub const LEGACY_APP_IDENTIFIER: &str = "io.github.hairyf.deepseek-harness-desktop";
+pub const HARNESS_PID_MARKER_NAMES: [&str; 2] = [".harness.pid", ".harness-nightly.pid"];
 
 /// 开发构建在 AppData 下使用的独立子目录。Node、Harness、pnpm、Git 等可执行
 /// 核心不应与 release 共用，否则开发版更新/切换核心会替换正在运行的生产文件。
@@ -84,10 +90,6 @@ pub const DSH_MANIFEST_RELATIVE: &str = "package.json";
 /// 开发构建的用户级 shim 根目录名，不与 release 的 CLI 集成目录冲突。
 #[cfg_attr(not(windows), allow(dead_code))] // 仅 Windows 的 bin 目录计算使用
 pub const CLI_ROOT_DEV_DIR_NAME: &str = "dev-dsh";
-
-/// 旧版数据目录名：迁移前 $DSH_HOME 位于 `{app_data}/data/dsh`，
-/// 现仅用于 legacy 路径识别（见 service::migrate）。新 $DSH_HOME = 官方 `~/.dsh`。
-pub const DSH_DATA_DIR_NAME: &str = "dsh";
 
 /// 简单 Store 持久化
 pub const STORE_DAT_FILE: &str = ".store.dat";
@@ -117,6 +119,7 @@ pub const DOWNLOAD_CACHE_ENV_VAR: &str = "DSH_DOWNLOAD_CACHE_DIR";
 /// 无效，因此 debug 构建的 WebView2 profile（`EBWebView-dev`，内含 localStorage）
 /// 会与用户正在使用的开发版共用：E2E 写入的语言等前端状态会污染开发会话，用例
 /// 之间也会互相串。E2E 把它指向 scratch home 即可每次运行独占。
+#[cfg(target_os = "windows")]
 pub const E2E_WEBVIEW_DATA_DIR_ENV_VAR: &str = "DSH_E2E_WEBVIEW_DATA_DIR";
 pub const STORE_SETTING_KEY: &str = "setting";
 /// Store 中记录主窗口几何（位置/大小/最大化）的键
@@ -128,5 +131,45 @@ pub const STORE_PET_WINDOW_STATE_KEY: &str = "pet_window_state";
 /// 必须由 Rust 精确读写（见 service::update::pending）。
 pub const STORE_PENDING_INSTALLER_KEY: &str = "desktop_pending_installer";
 
-/// 健康检查超时
+/// 健康检查的整体请求截止时间（reqwest `.timeout()`：从开始建连到响应体读完）。
 pub const HEALTH_CHECK_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// 回环探测的建连超时。
+///
+/// 装了 TUN 式网络过滤器（Clash/Mihomo TUN、Fake-IP 等）的机器上，**失败**的回环
+/// `connect` 会固定阻塞约 2s（实测 2014–2067ms，`curl`/`.NET`/裸 winsock 一致）。
+/// 2s 落在整体截止时间（[`HEALTH_CHECK_TIMEOUT`]）的余量内，失败照旧发生在建连阶段，
+/// 端口尚未监听的每一轮健康检查因此都要白等 2s；回环建连本身在微秒级完成，只对建连
+/// 单独限时即可把这段等待压到百毫秒级。
+pub const LOOPBACK_CONNECT_TIMEOUT: Duration = Duration::from_millis(250);
+
+/// spawn → 客户端模块就绪超过该阈值时，日志给出 `STARTUP_SLOW` 归因（正常机器实测 5–8s）。
+pub const SLOW_STARTUP_THRESHOLD: Duration = Duration::from_secs(15);
+
+/// 代理连通性测试的探测目标：更新检查实际依赖的 GitHub 发布源。
+///
+/// 走 `github.com` 而非 `api.github.com`，不受未认证 API 限流约束；该地址可达即代表
+/// 下载与更新检查这条出网链路可用。
+pub const PROXY_TEST_URL: &str = "https://github.com/hairyf/deepseek-harness-desktop/releases.atom";
+
+/// 代理连通性测试的整体请求截止时间（reqwest `.timeout()`：从开始建连到响应头读完）。
+///
+/// 比更新检查的 5s 宽松：手动点击的测试允许慢代理建连，也不至于让用户干等。
+pub const PROXY_TEST_TIMEOUT: Duration = Duration::from_secs(10);
+
+#[cfg(test)]
+mod tests {
+    use super::get_dsh_service_url;
+
+    #[test]
+    fn service_url_preserves_loopback_origin_and_entire_port_range() {
+        for (port, expected) in [
+            (0, "http://127.0.0.1:0"),
+            (3080, "http://127.0.0.1:3080"),
+            (3081, "http://127.0.0.1:3081"),
+            (65535, "http://127.0.0.1:65535"),
+        ] {
+            assert_eq!(get_dsh_service_url(port), expected);
+        }
+    }
+}

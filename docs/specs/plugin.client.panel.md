@@ -109,7 +109,7 @@ export function definePanel(ctx: ClientContext, entry: PanelEntry): PanelHandle
 
 3. **面板容器样式**：
 * 宿主不再强制包裹面板列宽；面板根节点不再自持列宽，而是由 `definePanel` 的 `render` 外层统一包裹 `dsh-tauri-ui/client` 导出的 `PanelPage`。该页容器逐条对齐官方插件页 `@deepseek-ai/dsh-client-ui-plugin-manager` 的 `.X_2TxG_page`：页根为 `height:100%` + `overflow:auto` 的全宽 flex 列（`align-items:center` + `gap:32px` + `padding:28px clamp(24px,4vw,48px) 48px`），每条直接子项再由 `>*` 规则夹到 `width:100%` + `max-width:960px`。
-* 面板自身根节点（如 `.dshp-scheduler__shell`、`.dshp-extension__section`）因此**只负责内容排版**，严禁再声明 `max-width` / `margin-inline:auto` / 纵向 `padding-block` 等页级几何；这些几何已由 `PanelPage` 承担。`--dsh-chat-content-width` 与会话列宽公式对面板不再适用，不要再引用。
+* 面板自身根节点（如 `.dshp-scheduler__shell`、`.dshp-session__page`）因此**只负责内容排版**，严禁再声明 `max-width` / `margin-inline:auto` / 纵向 `padding-block` 等页级几何；这些几何已由 `PanelPage` 承担。`--dsh-chat-content-width` 与会话列宽公式对面板不再适用，不要再引用。
 
 
 

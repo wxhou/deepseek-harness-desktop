@@ -8,18 +8,96 @@
 
 ## 同步基线（固定版本）
 
-| 上游仓库 | 子模块 HEAD | 版本 | 用途 |
+| 上游仓库 | 已采纳基线 | 版本 | 用途 |
 | --- | --- | --- | --- |
-| `source/dsh-pet` | `e1ff8c1` | v0.2.6 | 预设资产与工作状态语义来源 |
-| `source/dsh-dafeiyu` | `f4f4482` | v0.1.9 | 气泡文案/优先级逻辑参考（不下载资产） |
+| `source/dsh-pet` | `631c531` | v0.2.12 | 预设资产与工作状态语义来源 |
+| `source/dsh-dafeiyu` | `9c0588c` | v0.1.14 | 气泡文案/优先级逻辑参考（不下载资产） |
 
-- 预设清单 `src-tauri/resources/preset-pets.json` 的素材地址内嵌 ref
-  `e1ff8c1e4001878cbb80441262d530e16541f138`（须与 dsh-pet 已采纳 HEAD 保持一致，
+- **资产 ref 与代码基线解耦**：`src-tauri/resources/manifest.jsonc` 的 `pets.built-in` 素材地址内嵌 ref
+  `e1ff8c1e4001878cbb80441262d530e16541f138`（须与 dsh-pet 的**已采纳资产基线**保持一致，
   新 WebM 资产在 `903dfde` 才入库，低于此的 ref 会取不到 6 个工作状态动画）；
   macOS 侧为 `dsh-pet-mov` 的 `be0f3bb494cb71a4c73f916c0b92d25a3ab4d002`。
+  代码基线已推进到 `v0.2.12`，但**资产 ref 有意留在 `e1ff8c1`**：`e1ff8c1..v0.2.12` 期间
+  `assets/webm`、`assets/mov` **零新增**，升级 ref 无动画收益，反而会让 `config` 指向含
+  `whisperImageEnabled`/`chatImageEnabled`/`memes` 的新 `assets/config.jsonc`（本地渲染层不消费这些字段）。
+- 子模块工作区 HEAD（与已采纳基线不必一致，仅作取证起点）：`source/dsh-pet` = `4c09729`（v0.2.10）、
+  `source/dsh-dafeiyu` = `9c0588c`（v0.1.14）。
 - 旧研究参考固定 `docs/plugins/expired/pet.todo.md:96` 指向 `899150e`，仅历史参考。
 
 ## 同步记录
+
+### 2026 —— dsh-pet-component v0.2.4：仓库迁到 `dsh-tauri/`，单击语义改为「每次有效单击」
+
+不是上游同步，而是渲染层依赖升级（`dsh-pet-component@^0.2.3` → `^0.2.4`），
+记录在此以便核对单击语义与命令面。类型声明只增不改（`dist/index.d.mts` 净增 20 行），宿主侧无需改动。
+
+- **仓库迁移**：0.2.4 的 `package.json` 把 `homepage`/`repository`/`bugs` 由 `hairyf/dsh-pet-component` 改为
+  `dsh-tauri/dsh-pet-component`；`README.md`、`README.en.md`、`README.es.md` 的组件链接同步改名
+  （本文档历史条目保留当时的旧名；`docs/specs/upstram.sync.md` 已固定禁止修改，其 §1.1 仍写作 `hairyf/`）。
+- **单击语义**：原「双击（< `DOUBLE_CLICK_MS`）插播一次 waving、保留既有双击合约」改为**每次有效左键单击**
+  都插播一次 waving（dsh 侧取动作池 `animations.clicks`，Codex 配置走 waving 行）。本仓 `src/pet/app.tsx`
+  未使用单击/双击语义（`onHitboxPointerDown/Up` 交给 `useWindowDraggable`），观感变化仅是多一次动作插播。
+- **新增对话输入（本仓未启用）**：`PetCommonProps` 新增 `dialogue?: boolean`、`onDialogue?: PetDialogueHandler`、
+  `toastRef?: Ref<HTMLDivElement>`，`PetRef` 新增 `reply(text, options?)`，并导出 `PetReplyOptions`/`PetDialogueHandler`。
+  启用 `dialogue` 后 500 ms 内的第二次有效单击打开输入 toast；本仓气泡仍走宿主 `pet.bubble`，故不启用。
+- **供应链登记**：`minimumReleaseAgeExclude` 条目同步改为 `dsh-pet-component@0.2.4`（新版本未满最短发布时长）；
+  **删除** `trustPolicyExclude: dsh-pet-component@0.2.3` —— 0.2.4 带 npm provenance 证明，不再被
+  `trustPolicy: no-downgrade` 判为降级；删除后 `pnpm install --lockfile-only` 仍报
+  `✓ Lockfile passes supply-chain policies (1171 entries)`。
+- 校验：`pnpm typecheck`、`pnpm exec vitest run src/pet test/pet-asset-headers.test.ts`（97 passed）。
+
+### 2026 —— 技能 `hatch-dsh-pet` 改述上游素材生成流程（上游 `README.md` @ `d73a2bb`，运行期基线不变）
+
+用户指出原技能「不是对 dsh-pet 视频生成流程的描述」：它只讲本机 Codex 图集契约，第 2 步直说
+「DSH 不自带图像生成工具」，把素材获取整个推给用户。现按上游 `PC2005-cloud/dsh-pet`
+`README.md:430-528`「从零生成你自己的宠物（完整流程）」改写为 ① 提示词 → 源视频、
+② 源视频 → 透明动画（`scripts/` 素材链，路线 A 自动抠像 / 路线 B PR 手工抠像）、
+③ 动画 → 落点 三段；③ 的落点换成本机图集——上游是把 webm `cp` 进它自己的插件包
+（`dsh-pet/assets/webm/`、`$DSH_HOME/dsh-pet/` pet pack），而本机只认
+`<DSH_HOME>/pets/<petId>/` 的 8 列图集，视频宠物只能来自 `manifest.jsonc` 的远端 https 地址
+（`src-tauri/src/bridge/preset_pet.rs` 的出厂校验强制）。
+
+- 新增 `skills/hatch-dsh-pet/references/dsh-pet-video-flow.md`：上游流程逐条转述（提示词通用前缀与
+  按秒分解、素材链命令与依赖 Python 3 + ffmpeg + numpy + scipy、②.5 macOS HEVC-alpha mov、
+  ③ 发布/安装、方式四 pet pack、动作池名对照、项目结构、许可与非商用/署名条款），方便后续核对原文。
+- 新增 `skills/hatch-dsh-pet/references/atlas-compose.md`：上游动作 → 本机 11 行的映射，
+  以及 ffmpeg 等间隔取帧 / 全动作共用裁切框 / 缩放进 192×208 / 空格透明 / `tile=8x11` 拼图 /
+  WebP 无损收缩的配方；帧数与 `atlas-layout.md` 的表严格对齐（逐帧时长写死在组件里）。
+- `SKILL.md` 与 `references/atlas-layout.md` 相应改写：先分清「上游视频产线」与「本机图集落点」，
+  再走 ①②③；`pet.json`、图集契约、失效表现、边界等本机契约事实逐条保留。
+- **不涉及运行期**：代码基线仍为 `631c531`(v0.2.12)、资产 ref 仍为 `e1ff8c1`，
+  未改任何 `src/**`、`src-tauri/**` 或 `manifest.jsonc`。
+- `THIRD_PARTY_NOTICES.md` 补记上游素材条款（允许开源使用、**禁止商用**、二创须署名上游地址）。
+
+### 2026 —— dsh-pet v0.2.7–v0.2.12 / dafeiyu v0.1.10–v0.1.14：采纳 2 项（goal 续跑轮判定、任务文案）
+
+基线推进：dsh-pet `e1ff8c1`(v0.2.6) → `631c531`(v0.2.12)；dafeiyu `f4f4482`(v0.1.9) → `9c0588c`(v0.1.14)。
+逐条评估后**只采纳 2 项**，其余全部不采纳（原因见「审查结论与未采纳项」）。**资产 ref 不动**，仍为 `e1ff8c1`。
+
+- **goal 自动续跑轮的中间轮不再判成功**（上游 dsh-pet `db73c36`，v0.2.7 段）。
+  本仓 `turn/end` 的 `reason.kind === 'completed'` 原先**无条件**写 `workStatus = 'success'`，
+  于是多轮 goal 任务每收一轮尾都播雀跃庆祝，未完成的中间轮与真正完结无法区分。
+  现按 goal 续跑轮判定：`user/message` 的 `source.kind === 'goal' && round > 0` 置 `goalRound`，
+  `update_goal` 的 `action` 为 `complete`/`blocked` 时置 `goalClosing`；`turn/end(completed)` 改走
+  `completedStatus()` —— 非 goal 轮 `success`，续跑轮未声明收尾只到 `result`，
+  `complete`→`success`，`blocked`→`error`（阻塞不是崩溃，**不写** `lastAgentError`）。
+  goal 标志在 `turn/end` 与 `settleIdle` 一并失效，避免漏发 `turn/end` 时泄漏到下一轮。
+  - 判据取 `round > 0` 而非上游的 `kind === 'goal'`，与内核 `isGoalRound`
+    （`source/deepseek-harness/packages/goal/goal-round-driver/src/index.ts:48`）一致：
+    `round === 0` 是用户 `/goal` 触发的**激活轮**，终局语义按普通回合处理。
+  - 上游同批的终态 TTL 60s 清理与展示优先级 `result:25 > success:20` 不需要：本仓 reducer 是
+    纯函数、无定时器，档位优先级由渲染层 `dsh-pet-component` 持有（见「审查结论与未采纳项」）。
+- **任务文案取最后一个 `in_progress` 并按码点截断**（上游 dsh-pet `bf7c4fb`，v0.2.12 段，issue #59）。
+  上游该提交含四处修复，本地已具备其中三处（`task` 按会话存、`turn/start` 清 `task`、
+  清单无 `in_progress`/`pending` 时清空并回落档位文案），故只移植本地确实缺失的两处：
+  - `currentTaskFromTodo` 取**最后一个** `in_progress`：agent 常把新步骤标 `in_progress` 却忘标
+    上一步 `completed`，取第一个会让文案永远停在最早那步；无进行中项时仍回落第一个 `pending`。
+  - 文案按**码点**（`Array.from`）截断到 `PET_TASK_TEXT_MAX = 40` 并加省略号。气泡最大宽只有
+    宠物宽的 0.5 倍，长 `todo` 原文会把气泡撑成多行；用码点而非 `slice` 避免劈开代理对或 emoji。
+  - 不做上游的 `WorkStatusStore` 重构与类字段 `declare` 改写：本仓
+    `states: Map<string, PetSessionState>` 已实现同等的会话隔离。
+- 验证见文末「验证记录」。两处改动各带突变验证：把 `completedStatus` 换回常量 `success` 后
+  7 例新增测试中 4 例变红；把 `findLast` 换回 `find` 后取值用例变红。
 
 ### 2026 —— dsh-pet-component v0.2.2：Codex 图集逐帧时长（idle 呼吸节奏对齐参考实现）
 
@@ -265,6 +343,43 @@
 
 ## 审查结论与未采纳项（防重复评估）
 
+### 本轮新增（dsh-pet `e1ff8c1..631c531` / dafeiyu `f4f4482..9c0588c`，已逐条评估）
+
+- **dsh-pet 渲染层全部不适用**：`867cfab`/`20d154d`/`9896027`/`1ec7d42`/`53886bd`/`01e4b1b`
+  （档位候选数组/轮换/事件后恢复循环/终态气泡粘性/拖拽恢复）、`f6e0fce`/`22d664f`
+  （`ANIMATION_EXT` 集中开关 + macOS mov 改由 dsh-pet 自身固定 tag Release 发布）、
+  `70170a3`/`6dcf087`/`b3eb1c0`/`27011f0`/`e67cd5f`（memes 表情包配图）——
+  本仓渲染/播放/气泡/档位选择**不在 `packages/dsh-tauri-pet`**，而是整包托管给 npm `dsh-pet-component`
+  的 `<Pet>`（接线在 `src/pet/**`）。要跟进须升级该依赖，不是本包移植；终态气泡粘性
+  （`1ec7d42`）在 `src/pet/hooks/use-bubble-tracker.ts` 的 `terminalShown` 已等价实现。
+  macOS mov 的架构选择也不同：本仓用独立仓库 `dsh-tauri-desk/dsh-pet-mov` + 周更 Action，
+  不采用上游的「同仓库固定 tag Release」。
+- **dsh-pet Electron helper / 非本仓模块**：多显示器窗口逻辑（`cdf57a1`/`0038345`/`aac3a81`/
+  `a11ece0`/`ac8b8fe`）、notify 走 host 转发（`6180c8a`）、helper 生命周期/穿透/熔断
+  （`74bfc59`/`9a6902a`/`d3988fa`/`1670d2f`/`728dfcd`/`651a730`）、prepack 闸门（`a299370`）、
+  GIF 脚本（`2c327dc`）、whisper/balance（`6199d9d`）、设置页与存储说明（`b8cb017`/`22db345`/`b715fa3`）。
+- **dsh-pet 路由能力本包不存在**：本包只有**一条**路由（`session-stream`），没有 thumb 路由、
+  素材/asset 路由、notify 路由，也没有 `/pet` 命令注册与本地预设下载链路，因此
+  thumb `petId` 防穿越（`6f96508`/`f49f14a`）、素材 fetch+blob 与响应长度/缓存
+  （`0073ad7`/`08fcff5`/`a3cd0de`）、`/pet` 依赖 `commandUi` 就绪（`b5417a1`）全部不适用。
+- **资产 ref 升级无收益（保留 `e1ff8c1`）**：`e1ff8c1..v0.2.12` 期间 `assets/webm`、`assets/mov`
+  **零新增**，`assets` 下唯一被改的既有文件是 `assets/config.jsonc`（新增
+  `whisperImageEnabled`/`chatImageEnabled`/`memes` 映射），新增素材只有 `assets/memes/*.png`。
+  升 ref 若不实现 memes 功能，拿不到任何新动画，只会引入本地不消费的配置字段。
+- **dafeiyu `f4f4482..9c0588c` 零可移植文案**：新增代码集中在 `src/plugin.js`(+809)、
+  `src/index.js`、`src/helper-process.js`、`lib/client.js`、`native/macos/Sources/PetController.swift`、
+  `runtime/{asset_paths.py,helper.py}`、`scripts/import_dshpet_webm.py`、`assets/pet-manifest.json`(+2731)。
+  其 `plugin.js` 新增中文只有 Schema 描述与 `bubbleMode`(always/hidden/custom)、`bubbleStates`、
+  `includeSubagents`、`reducedMotion`、`soundEnabled`、`webOverlay` 等配置项，加一条占位文案
+  （`stage:'等待任务'` / `message:'我在这儿等新任务哦'`），**文案表几无变化**。
+  其中 `includeSubagents` opt-in 与本仓**相反**——本仓 `use-bubble-tracker.ts` 的 `apply()` 对
+  `session.origin === 'subagent'` 直接 forget+close，属有意差异，勿跟改。
+- **`source/dsh-plugin-codex-pets`**：`22e93f4..origin/main` 为空，无待评估项。
+- **`source/BongoCat`**：上游已用 Rust + gpui 整体重写（`1c570a0f`，2.0.0），技术栈与本仓 Tauri
+  完全不同；本仓只参考其「原生拖动 / DPI / 穿透」，期间数百条提交几乎全是 gpui/设置窗/CI/docs。
+
+### 历史结论
+
 - dsh-pet 的 `workStatusTick` 1s 轮询 `/dsh-pet-7340/work-status`（`ea0ca7e`）：
   **不需要**——本仓库已有事件驱动 host reducer，避免额外轮询。
 - dsh-pet 其余提交（`33ca8f2` renderer 拆分、`12d9f44` 气泡样式、`26d8017` 透明窗黑框、
@@ -280,19 +395,27 @@
 ## 后续同步流程
 
 1. 检查上游新提交：
-   `git -C source/dsh-pet fetch origin && git -C source/dsh-pet log --oneline e1ff8c1..origin/main`
-   （dsh-dafeiyu 同理）。
-2. 若 dsh-pet 有新版本：评估影响面（shared/work-status、host 事件映射、client 轮询、
-   资产入库 commit），确认新 WebM/config 字段后把 `preset-pets.json` ref 升到新 HEAD。
-3. 若预设 ref 升级：Rust `validate_preset_pet_config` 对未知字段自动放行，一般无需改
+   `git -C source/dsh-pet fetch origin && git -C source/dsh-pet log --oneline 631c531..origin/main`
+   （dsh-dafeiyu 同理，起点 `9c0588c`）。
+2. 若 dsh-pet 有新版本：评估影响面（`src/host/service/session-stream.utils.ts` 的事件映射、
+   `src/pet/**` 与 `dsh-pet-component` 的渲染职责划分、资产入库 commit），
+   确认新 WebM/config 字段后再决定是否升 `src-tauri/resources/manifest.jsonc` 的资产 ref。
+   **资产 ref 与代码基线解耦**：只有出现新 WebM/mov 时才升 ref（见文首「同步基线」）。
+3. 渲染/播放/气泡/档位选择改动**不在本包**：先看 `dsh-pet-component` 是否已具备，具备则升依赖，
+   不具备再考虑搬进 `src/pet/**`。本包只负责 host 侧「会话增量 → 展示态」与 Tauri 窗口/资产命令。
+4. 若资产 ref 升级：Rust `validate_preset_pet_config` 对未知字段自动放行，一般无需改
    Rust；按需补动画/气泡映射与测试。
-4. 验证四件套：
+   - 同时确认 macOS 侧 `manifest.jsonc` 的 `uri.mac` 是否要跟到 `dsh-pet-mov` 的新产物 commit
+     （该仓库按周跟随上游 `main` 重编并把 mov 提交回自己的 `main`；两边 ref 都要升，
+     否则 macOS 会停在旧动画集；该仓库无需 Release，桌面端直接下 codeload tarball）。
+5. 验证四件套：
    `pnpm --filter dsh-tauri-pet typecheck`、`pnpm typecheck`、
    `pnpm exec eslint src/pet packages/dsh-tauri-pet/src/client packages/dsh-tauri-pet/src/host --max-warnings=0`、
    `pnpm test -- --run`、`pnpm --filter dsh-tauri-pet build`、
    `cargo check --manifest-path src-tauri/Cargo.toml --lib`、
    `cargo test --manifest-path src-tauri/Cargo.toml --lib`、`git diff --check`。
-5. 完成后续回填本日志「同步记录」，并刷新「同步基线」。
+   注意：插件处于 dev 热重载时**禁止执行 build**（AGENTS.md 最高优先级）。
+6. 完成后续回填本日志「同步记录」，并刷新「同步基线」与 `docs/specs/upstram.sync.md` §5 登记表。
 
 ## dsh-tauri-pet 同步日志（历史记录）
 
@@ -351,7 +474,29 @@
 
 ### 验证记录
 
-最近一次本地验证（PR #414 + #415 合并后全量）：
+最近一次本地验证（本轮 dsh-pet v0.2.12 / dafeiyu v0.1.14 同步，提交 `677f66e8` + `7e7e3702`）：
+
+```text
+npx vitest run packages/dsh-tauri-pet/src/host/service/session-stream.utils.test.ts   # 41 passed
+pnpm --filter dsh-tauri-pet typecheck                    # tsc 无输出
+pnpm typecheck                                           # tsc --noEmit 无输出
+pnpm exec eslint src/pet packages/dsh-tauri-pet/src/client packages/dsh-tauri-pet/src/host --max-warnings=0
+pnpm test:unit -- --run                                  # 1742 passed | 16 failed | 4 skipped (165 files)
+git diff --check
+```
+
+- `pnpm test:unit` 的 16 个失败**全部**落在 `packages/dsh-tauri-ssh`（`bootstrap.test.ts` / `ssh-config.test.ts` /
+  `plugins-sync.test.ts`），属既有 Windows 环境失败（POSIX sh 执行、`~` 展开、部署树布局）；该包最后一次改动
+  是 `ec23df70`，与本轮路径完全不相交（本轮只改 `packages/dsh-tauri-pet/src/host/service/session-stream.*`）。
+  `packages/dsh-tauri-pet` 相关用例零失败。
+- 未跑全量 `pnpm test -- --run`：`desktop` 项目的前置校验拒绝运行
+  （`端口 3081 已被监听（debug 固定端口）`，即当前 dev/debug 实例在跑），本校验不自动杀进程。
+- 未跑 `pnpm --filter dsh-tauri-pet build`：插件处于 dev 热重载，AGENTS.md 最高优先级规则禁止。
+- 未跑 `cargo check/test`：本轮未改动 `src-tauri/**`（Rust 面与本轮两项修复无关）。
+- 突变验证：`completedStatus` 换回常量 `success` → 7 例新增 goal 测试中 4 例变红；
+  `findLast` 换回 `find` → 任务文案取值用例变红。
+
+上一轮本地验证（PR #414 + #415 合并后全量）：
 
 ```text
 cargo test --lib                        # 493 passed
@@ -367,21 +512,7 @@ PR #414、#415 的 GitHub CI 均已通过。
 
 ### 后续同步流程
 
-1. 获取参考仓库最新版本与提交：`git -C source/dsh-pet fetch origin && git -C source/dsh-pet log --oneline e1ff8c1..origin/main`（dsh-dafeiyu 同理）。
-2. 若 dsh-pet 有新版本：评估影响面（`src/shared/work-status.ts`、`src/host/work-status.ts`、client 轮询、资产入库 commit），
-   确认新 WebM/config 字段后升级 `preset-pets.json` 的 ref。
-   - 同时确认 `platforms.macos` 的 `ref` 是否要跟到 dsh-pet-mov 的新产物 commit
-     （该仓库按周跟随上游 `main` 重编并把 mov 提交回自己的 `main`；两边 ref 都要升，
-     否则 macOS 会停在旧动画集；该仓库无需 Release，桌面端直接下 codeload tarball）。
-3. 先更新本文件「同步基线」和「待同步」，再修改 host/client 实现。
-4. 同步协议时同时检查：
-   - `src-tauri/resources/preset-pets.json`
-   - `src-tauri/src/bridge/preset_pet.rs`
-   - `packages/dsh-tauri-pet/src/host/reducer.ts`
-   - `packages/dsh-tauri-pet/src/client/{types,constants,service,components}/**`
-   - `src/pet/{pet-config.ts,hooks/use-bubble.ts,hooks/bubble-copy.ts}`
-5. 完成后运行 lint、typecheck、test、build、cargo check/test，并回填「验证记录」。
-6. 将已完成项从「待同步」移到「已同步」，保留未实施项及原因。
+见本文档开头的「后续同步流程」（同一份流程只保留一处，避免两边路径漂移后各说各话）。
 
 ### 待同步项
 

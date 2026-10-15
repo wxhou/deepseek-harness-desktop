@@ -2,6 +2,7 @@ import { defineLocale } from 'dsh-tauri/client'
 import { PLUGIN_ID } from '../constants'
 
 const zh = {
+  openInNewWindow: '在新窗口打开',
   renameSession: '重命名会话',
   archiveSession: '归档会话',
   openInExplorer: '在资源管理器中打开',
@@ -56,9 +57,9 @@ const zh = {
   openFailed: '打开失败: {reason}',
   unknownError: '未知错误',
   clipboardUnavailable: '剪贴板不可用',
-  clipboardReadFailed: '无法读取剪贴板，请使用 Ctrl+V',
-  useUndoShortcut: '请使用 Ctrl+Z 撤销',
-  useRedoShortcut: '请使用 Ctrl+Y 重做',
+  clipboardReadFailed: '无法读取剪贴板，请使用 {key}',
+  useUndoShortcut: '请使用 {key} 撤销',
+  useRedoShortcut: '请使用 {key} 重做',
   invalidLink: '链接地址无效',
   officialRenameUnavailable: '无法打开官方重命名窗口',
   officialWorkspaceRenameUnavailable: '无法打开官方工作区重命名窗口',
@@ -68,11 +69,13 @@ const zh = {
   sessionUnknown: '无法确定当前会话',
   sessionNameEmpty: '会话名称不能为空',
   sessionServiceUnavailable: '无法取得官方会话服务',
+  newSessionUnavailable: '无法在该工作区新建会话',
   renameFailed: '重命名失败',
   editPositionUnknown: '无法确定编辑位置',
 } as const satisfies Record<string, string>
 
 const en: Record<keyof typeof zh, string> = {
+  openInNewWindow: 'Open in new window',
   renameSession: 'Rename session',
   archiveSession: 'Archive session',
   openInExplorer: 'Open in File Explorer',
@@ -127,9 +130,9 @@ const en: Record<keyof typeof zh, string> = {
   openFailed: 'Failed to open: {reason}',
   unknownError: 'Unknown error',
   clipboardUnavailable: 'Clipboard is unavailable',
-  clipboardReadFailed: 'Could not read the clipboard; use Ctrl+V',
-  useUndoShortcut: 'Use Ctrl+Z to undo',
-  useRedoShortcut: 'Use Ctrl+Y to redo',
+  clipboardReadFailed: 'Could not read the clipboard; use {key}',
+  useUndoShortcut: 'Use {key} to undo',
+  useRedoShortcut: 'Use {key} to redo',
   invalidLink: 'Invalid link URL',
   officialRenameUnavailable: 'Could not open the official rename dialog',
   officialWorkspaceRenameUnavailable: 'Could not open the official workspace rename dialog',
@@ -139,6 +142,7 @@ const en: Record<keyof typeof zh, string> = {
   sessionUnknown: 'Could not determine the current session',
   sessionNameEmpty: 'Session name cannot be empty',
   sessionServiceUnavailable: 'Official session service is unavailable',
+  newSessionUnavailable: 'Could not create a session in this workspace',
   renameFailed: 'Rename failed',
   editPositionUnknown: 'Could not determine the editing position',
 }

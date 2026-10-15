@@ -327,7 +327,6 @@ export function ConfigCore() {
           <Button
             size="sm"
             variant="tertiary"
-            className="h-7 shrink-0 rounded-md text-xs"
             isDisabled={busy || refreshing}
             aria-label={t('core.refresh')}
             onPress={onRefresh}
@@ -400,7 +399,7 @@ export function ConfigCore() {
                       <Button
                         size="sm"
                         variant="tertiary"
-                        className="h-6 w-6 shrink-0 rounded-md p-0"
+                        className="h-6 w-6 shrink-0 p-0"
                         isDisabled={busy}
                         aria-label={t('core.open_dir')}
                         onClick={(event) => {
@@ -441,7 +440,7 @@ export function ConfigCore() {
                       <Button
                         size="sm"
                         variant="tertiary"
-                        className="h-7 rounded-md text-xs"
+                        className="h-7 text-xs"
                         isDisabled={busy}
                         onClick={(event) => {
                           event.stopPropagation()
@@ -452,12 +451,12 @@ export function ConfigCore() {
                         {t('core.download')}
                       </Button>
                     </If>
-                    {/* 已下载且非激活（app 版本）：卸载入口。随包内核不可卸载（随应用分发） */}
-                    <If cond={core.present && !core.active && core.source === 'app' && !core.bundled}>
+                    {/* 已下载且非激活（app 版本）：卸载入口。随包内核随应用分发，就地安装的副本没有槽位目录，都不可卸载 */}
+                    <If cond={core.present && !core.active && core.removable}>
                       <Button
                         size="sm"
                         variant="tertiary"
-                        className="h-7 rounded-md text-xs"
+                        className="h-7 text-xs"
                         isDisabled={busy}
                         onClick={(event) => {
                           event.stopPropagation()
@@ -473,7 +472,7 @@ export function ConfigCore() {
                       <Button
                         size="sm"
                         variant="tertiary"
-                        className="h-7 rounded-md text-xs"
+                        className="h-7 text-xs"
                         isDisabled={busy}
                         onClick={(event) => {
                           event.stopPropagation()

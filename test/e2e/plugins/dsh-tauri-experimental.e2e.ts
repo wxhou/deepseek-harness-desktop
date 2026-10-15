@@ -17,8 +17,8 @@ import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest'
 import { launchDshBrowser, newDshPage } from '../support/browser'
 
-const SUMMARY_PATH = '/api/desktop/dsh-tauri-experimental/summary'
-const LIVE_PATH = '/api/desktop/dsh-tauri-experimental/live'
+const SUMMARY_PATH = '/api/tauri/experimental/summary'
+const LIVE_PATH = '/api/tauri/experimental/live'
 
 /** 插件自有数据目录（`$DSH_HOME/<feature>`，账本与私有快照仓都在其下）。 */
 const FEATURE_DIR = 'dsh-tauri-experimental'
@@ -26,8 +26,8 @@ const FEATURE_DIR = 'dsh-tauri-experimental'
 /** 两条只声明 GET 的读路径。 */
 const READ_PATHS = [SUMMARY_PATH, LIVE_PATH] as const
 
-/** 只读路由公布的方法集合（顺序属实现细节，实测为固定三元的字典序）。 */
-const READ_ONLY_ALLOW = ['GET', 'HEAD', 'OPTIONS']
+/** 只读路由公布的方法集合，按集合比较。 */
+const READ_ONLY_ALLOW = ['GET', 'HEAD']
 
 interface ErrorBody {
   error?: string
@@ -88,10 +88,10 @@ describe('宿主路由：方法矩阵', () => {
     for (const path of READ_PATHS) {
       const preflight = await fetch(url(path), { method: 'OPTIONS', headers: apiHeaders() })
 
-      expect(preflight.status, `OPTIONS ${path} 必须走默认 204 预检`).toBe(204)
+      expect(preflight.status, `OPTIONS ${path} 未声明，必须走原生 405`).toBe(405)
       expect(
         allowMethods(preflight),
-        `OPTIONS ${path} 的 allow 必须公布 GET / HEAD（GET 隐含）/ OPTIONS`,
+        `OPTIONS ${path} 的 allow 必须公布 GET / HEAD（GET 隐含）`,
       ).toEqual(READ_ONLY_ALLOW)
 
       const post = await fetch(url(path), {
@@ -113,6 +113,13 @@ describe('宿主路由：方法矩阵', () => {
 const COMPOSER_INPUT = '[data-composer-card] [data-composer-input]'
 
 /**
+ * 会话就绪的 composer 编辑器根：官方在会话尚未入库时把 `data-phase` 钉在 `inert`
+ * （无会话的「选择工作区」占位态），此时插件按契约不接管粘贴
+ * （`packages/dsh-tauri-experimental/src/client/register/paste-collapse.ts` 要求列表快照的 `current` 在位）。
+ */
+const COMPOSER_READY = `${COMPOSER_INPUT}:not([data-phase="inert"])`
+
+/**
  * 折叠粘贴后的引用 chip 宿主：官方 `ReferenceChipNode.createDOM` 写的 `data-composer-chip`，
  * 其值是本插件注册的引用源名（`packages/dsh-tauri-experimental/src/client/constants/index.ts` 的 `PASTE_CHIP_SOURCE`）。
  */
@@ -122,7 +129,7 @@ const PASTE_CHIP = '[data-composer-chip="dsh-tauri-experimental-paste"]'
 const SIDEBAR_NEW_SESSION = 'button[aria-label="新建会话"]:visible'
 
 /** `dsh-tauri-ui` 接管后的英雄区工作区 chip：本批的就绪锚点。 */
-const HERO_WORKSPACE_CHIP = '.dshp-hero-workspace'
+const HERO_WORKSPACE_CHIP = '[data-hero-workspace]'
 
 /** 长粘贴夹具：首行是 chip 标题来源，整体远超 500 字阈值（`register/paste-collapse.utils.ts`）。 */
 const LONG_PASTE = `### 环境信息 app:版本 1.0\n${'日志行'.repeat(200)}`
@@ -151,6 +158,21 @@ async function syntheticPaste(frame: import('playwright').Frame, text: string): 
   }, { editorSelector: COMPOSER_INPUT, text })
 }
 
+/**
+ * 点侧边栏「新建会话」并等到 composer 会话就绪。
+ *
+ * 新会话由宿主异步入库：编辑器 DOM 在会话在库之前就已挂载，停在官方 `data-phase="inert"`
+ * 的「选择工作区」占位态；此时粘贴既不会折叠也不会落文。就绪信号必须取会话输入面本身
+ * （`data-phase` 由官方 `input?.phase ?? "inert"` 出具），而不是编辑器是否出现。
+ */
+async function openNewSessionComposer(frame: import('playwright').Frame): Promise<void> {
+  await frame.locator(SIDEBAR_NEW_SESSION).first().click()
+  await expect.poll(
+    async () => await frame.locator(COMPOSER_READY).count(),
+    { timeout: 20_000, message: '新建会话后 composer 必须进入会话就绪态（脱离官方 data-phase="inert" 占位态），否则粘贴没有落点' },
+  ).toBe(1)
+}
+
 describe('L2 折叠粘贴', () => {
   let browser: Browser
 
@@ -165,11 +187,7 @@ describe('L2 折叠粘贴', () => {
   it('验证超过 500 字的粘贴折叠成引用 chip，chip 文案带首行与字数', async () => {
     const app = await newDshPage(browser, { ready: HERO_WORKSPACE_CHIP })
     try {
-      await app.frame.locator(SIDEBAR_NEW_SESSION).first().click()
-      await expect.poll(
-        async () => await app.frame.locator(COMPOSER_INPUT).count(),
-        { timeout: 20_000, message: '新建会话后 composer 编辑器必须挂载，否则本用例没有粘贴落点' },
-      ).toBe(1)
+      await openNewSessionComposer(app.frame)
 
       const paste = await syntheticPaste(app.frame, LONG_PASTE)
       expect(paste.editorFound, '夹具前置：composer 编辑器必须在位').toBe(true)
@@ -197,11 +215,7 @@ describe('L2 折叠粘贴', () => {
   it('验证 500 字以内的粘贴不折叠，原样进入编辑器', async () => {
     const app = await newDshPage(browser, { ready: HERO_WORKSPACE_CHIP })
     try {
-      await app.frame.locator(SIDEBAR_NEW_SESSION).first().click()
-      await expect.poll(
-        async () => await app.frame.locator(COMPOSER_INPUT).count(),
-        { timeout: 20_000, message: '新建会话后 composer 编辑器必须挂载，否则本用例没有粘贴落点' },
-      ).toBe(1)
+      await openNewSessionComposer(app.frame)
 
       const paste = await syntheticPaste(app.frame, SHORT_PASTE)
       expect(paste.editorFound, '夹具前置：composer 编辑器必须在位').toBe(true)

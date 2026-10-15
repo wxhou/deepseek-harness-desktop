@@ -1,18 +1,10 @@
-export interface AppSetting {
-  /** 依赖是否已安装（boot 流程据此决定是否走安装与更新检查） */
-  installed: boolean
-  port: number
-  harness_max_heap_mb: number | null
-  auto_start: boolean
-  cli_link_enabled: boolean
-  zoom_factor: number
-  close_action: string
-  backup_retention_count: number
-  backup_include_credentials: boolean
-}
+import type { Appearance } from '../../../../../packages/dsh-tauri/src/shared/appearance'
 
 export interface AppSettingUpdate {
+  proxyUrl?: string
+  appearance?: Appearance
   port?: number
+  zoomFactor?: number
   harnessMaxHeapMb?: number
   autoStart?: boolean
   cliLinkEnabled?: boolean

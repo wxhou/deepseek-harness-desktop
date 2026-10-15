@@ -2,7 +2,7 @@
   "name": "dsh-tauri-extension",
   "type": "module",
   "version": "1.0.0",
-  "description": "Skills, MCP, and the plugin market in the DSH Tauri extension panel.",
+  "description": "DSH Tauri 扩展面板：技能、MCP 与插件市场。",
   "author": "Hairyf <wwu710632@gmail.com>",
   "license": "MIT",
   "homepage": "https://github.com/dsh-tauri-desk/dsh-tauri-plugins#readme",
@@ -59,7 +59,9 @@
     "typecheck": "tsc"
   },
   "dependencies": {
+    "dsh-h3": "catalog:",
     "dsh-tauri": "workspace:*",
+    "h3": "catalog:",
     "hookable": "catalog:utils",
     "lodash-es": "catalog:utils",
     "ofetch": "catalog:utils",
@@ -68,8 +70,6 @@
     "yaml": "catalog:testing"
   },
   "devDependencies": {
-    "@deepseek-ai/cordis": "catalog:dsh",
-    "@deepseek-ai/dsh-skill-filesystem": "catalog:dsh",
     "@types/lodash-es": "catalog:types",
     "dompurify": "catalog:ui",
     "dsh-tauri-tsdown": "workspace:*",

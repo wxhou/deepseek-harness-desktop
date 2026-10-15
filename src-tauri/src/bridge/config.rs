@@ -13,6 +13,18 @@ pub async fn get_app_config(app_handle: AppHandle) -> Result<config::Setting, St
     Ok(config::get_store_dat_setting(&app_handle))
 }
 
+/// 当前设置下 Harness 进程实际生效的 V8 old-space 上限（MB）。
+///
+/// 与启动链路共用 `workflow::heap` 的同一个判定：用户设置 > 进程环境
+/// `NODE_OPTIONS` 里的上限 > 按物理内存算出的自动值。崩溃提示要用它，避免
+/// 提示里写死一个与真实上限无关的数字。
+#[tauri::command]
+pub fn get_effective_heap_limit_mb(app_handle: AppHandle) -> Option<u32> {
+    crate::service::workflow::effective_heap_limit_mb(
+        config::get_store_dat_setting(&app_handle).harness_max_heap_mb,
+    )
+}
+
 /// 当前桌面端是否为 dev 构建（`tauri dev` / `pnpm dev:desktop`）。
 ///
 /// 插件用它决定是否挂载只面向开发的调试入口（例如 dsh-tauri-ui 的「UI 组件」页）；
@@ -36,7 +48,10 @@ pub fn is_dev_build() -> bool {
 #[allow(clippy::too_many_arguments)]
 pub async fn update_app_config(
     app_handle: AppHandle,
+    proxy_url: Option<String>,
+    appearance: Option<config::Appearance>,
     port: Option<u16>,
+    zoom_factor: Option<f64>,
     harness_max_heap_mb: Option<u32>,
     auto_start: Option<bool>,
     cli_link_enabled: Option<bool>,
@@ -44,6 +59,10 @@ pub async fn update_app_config(
     backup_retention_count: Option<u32>,
     backup_include_credentials: Option<bool>,
 ) -> Result<config::Setting, String> {
+    let proxy_url = proxy_url
+        .as_deref()
+        .map(config::proxy::normalize_proxy_url)
+        .transpose()?;
     if let Some(port) = port {
         if port == 0 {
             return Err("port must be a positive number".to_string());
@@ -59,11 +78,20 @@ pub async fn update_app_config(
         }
     }
     let setting = config::update_store_dat_setting(&app_handle, |setting| {
+        if let Some(proxy_url) = proxy_url {
+            setting.proxy_url = proxy_url;
+        }
+        if let Some(appearance) = appearance {
+            setting.appearance = appearance;
+        }
         if let Some(port) = port {
             setting.port = port;
             // 记住用户手动选择的端口：自动避让递增后仍能回落回用户值，而不是
             // 一路顶高（issue #91，见 workflow::launch 的端口自愈逻辑）
             setting.manual_port = Some(port);
+        }
+        if let Some(zoom_factor) = zoom_factor {
+            setting.zoom_factor = zoom_factor;
         }
         if let Some(mb) = harness_max_heap_mb {
             setting.harness_max_heap_mb = (mb != 0).then_some(mb);
@@ -114,10 +142,7 @@ pub fn set_language(app_handle: AppHandle, lang: String) {
     let mut setting = config::get_store_dat_setting(&app_handle);
     setting.language = lang.clone();
     config::set_store_dat_setting(&app_handle, setting);
-    config::i18n::set_language(match lang.as_str() {
-        "en" | "en-US" => config::i18n::Lang::En,
-        _ => config::i18n::Lang::Zh,
-    });
+    config::i18n::set_language(config::i18n::lang_from_setting(&lang));
     #[cfg(target_os = "macos")]
     if let Err(error) = crate::desktop::builder::install_macos_menu(&app_handle) {
         log::warn!("[menu] failed to refresh macOS menu language: {error}");
@@ -128,6 +153,17 @@ pub fn set_language(app_handle: AppHandle, lang: String) {
 #[tauri::command]
 pub async fn toggle_sidebar() -> Result<bool, String> {
     Ok(true)
+}
+
+/// 用当前保存的代理地址向更新源发一次真实请求，返回连通性结果
+#[tauri::command]
+pub async fn test_proxy(app_handle: AppHandle) -> Result<config::proxy::ProxyTestResult, String> {
+    Ok(config::proxy::test(
+        &config::get_store_dat_setting(&app_handle).proxy_url,
+        config::PROXY_TEST_URL,
+        config::PROXY_TEST_TIMEOUT,
+    )
+    .await)
 }
 
 /// 当前 dsh 主题偏好（light/dark/system），用于让桌面外壳跟随内嵌页面主题

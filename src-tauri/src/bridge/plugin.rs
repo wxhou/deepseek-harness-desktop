@@ -7,7 +7,18 @@ use crate::config;
 use crate::service::plugin;
 use tauri::AppHandle;
 use tauri::Emitter;
+#[cfg(windows)]
+use tauri::Manager;
 use tauri_plugin_opener::OpenerExt;
+
+fn mark_preinstall_done(app_handle: &AppHandle) {
+    let mut setting = config::get_store_dat_setting(app_handle);
+    setting.preinstall_done = true;
+    if let Some(hash) = plugin::current_preset_hash(app_handle) {
+        setting.preset_hash = Some(hash);
+    }
+    config::set_store_dat_setting(app_handle, setting);
+}
 
 /// 获取预装插件列表（含已安装检测结果），首次启动引导界面渲染用
 #[tauri::command]
@@ -31,25 +42,22 @@ pub async fn install_preinstall_plugins(
 ) -> Result<(), String> {
     // 安装与卸载均为空：无需操作，直接标记完成
     if install_ids.is_empty() && uninstall_ids.is_empty() {
-        let mut setting = config::get_store_dat_setting(&app_handle);
-        setting.preinstall_done = true;
-        if let Some(hash) = plugin::current_preset_hash(&app_handle) {
-            setting.preset_hash = Some(hash);
-        }
-        config::set_store_dat_setting(&app_handle, setting);
+        mark_preinstall_done(&app_handle);
         return Ok(());
     }
 
     // 先卸载取消勾选的已安装插件（走 dsh plugin remove，与安装对称）
     // 卸载在前：避免新装插件与待卸载插件冲突；remove 内部会先停服务再执行
     log::info!("[preinstall] uninstall_ids={uninstall_ids:?}, install_ids={install_ids:?}");
-    for id in &uninstall_ids {
-        log::info!("[preinstall] removing plugin {id} via dsh plugin remove");
-        if let Err(e) = plugin::remove(&app_handle, id).await {
-            log::error!("[preinstall] failed to remove plugin {id}: {e}");
-            return Err(e);
-        }
-        log::info!("[preinstall] successfully removed plugin {id}");
+    if !uninstall_ids.is_empty() {
+        log::info!("[preinstall] removing plugins {uninstall_ids:?} via dsh plugin remove");
+        plugin::remove_many(&app_handle, &uninstall_ids)
+            .await
+            .map_err(|e| {
+                log::error!("[preinstall] failed to remove plugins {uninstall_ids:?}: {e}");
+                e
+            })?;
+        log::info!("[preinstall] successfully removed plugins {uninstall_ids:?}");
     }
 
     // 再安装新勾选的插件（会走 dsh plugin add）
@@ -58,30 +66,94 @@ pub async fn install_preinstall_plugins(
         plugin::install(&app_handle, &install_ids).await?;
     }
 
-    let mut setting = config::get_store_dat_setting(&app_handle);
-    setting.preinstall_done = true;
-    if let Some(hash) = plugin::current_preset_hash(&app_handle) {
-        setting.preset_hash = Some(hash);
-    }
-    config::set_store_dat_setting(&app_handle, setting);
+    mark_preinstall_done(&app_handle);
     Ok(())
 }
 
-/// 取消正在进行的预装插件安装（网络抖动/限流卡住时用户点“取消”）。
+/// 取消正在进行的插件进程（安装/升级/卸载，网络抖动/限流卡住时用户点“取消”）。
 #[tauri::command]
-pub async fn cancel_preinstall_plugins(app_handle: AppHandle) {
+pub async fn cancel_plugin_processes(app_handle: AppHandle) {
     plugin::cancel(&app_handle).await;
+}
+
+/// 按原始 spec 安装插件（插件市场 / 手动输入 entry）：支持一次传入多个 spec，
+/// 合并为单次 `dsh plugin add` 执行，输出同样经 `preinstall-log` 事件推送。
+///
+/// 与 `install_preinstall_plugins` 的区别只在 spec 来源：此处不走预设清单，
+/// 因而没有捆绑目录与版本矩阵，spec 原样交给 pnpm 解析。
+#[tauri::command]
+pub async fn install_plugin_specs(app_handle: AppHandle, specs: Vec<String>) -> Result<(), String> {
+    plugin::install_specs(&app_handle, &specs).await?;
+    plugin::watch::force_emit(&app_handle);
+    Ok(())
+}
+
+/// 本地插件热重载的当前状态：生效开关、补丁层路径与被监听的源码目录。
+#[tauri::command]
+pub async fn get_local_plugin_hmr(app_handle: AppHandle) -> Result<plugin::LocalHmrStatus, String> {
+    Ok(plugin::local_plugin_hmr_status(&app_handle))
+}
+
+/// 开关本地插件热重载：开关变化会立即复算补丁层，下次启动服务时生效。
+#[tauri::command]
+pub async fn set_local_plugin_hmr(
+    app_handle: AppHandle,
+    enabled: bool,
+) -> Result<plugin::LocalHmrStatus, String> {
+    config::update_store_dat_setting(&app_handle, |setting| {
+        setting.local_plugin_hmr = enabled;
+    });
+    let patch = plugin::local_plugin_hmr_sync(&app_handle);
+    log::info!(
+        "[hmr] local plugin hot reload set to {enabled}, layer: {:?}",
+        patch.as_ref().map(|path| path.display().to_string())
+    );
+    Ok(plugin::local_plugin_hmr_status(&app_handle))
+}
+
+/// 只读检查一组 spec 的兼容性（registry `latest` 上的 DSH 家族 peer 依赖），
+/// 不改动本地 profile；失败项收敛为结果里的 `problem`，不整体报错。
+#[tauri::command]
+pub async fn inspect_plugin_specs(
+    app_handle: AppHandle,
+    specs: Vec<String>,
+    dsh: Option<String>,
+) -> Result<Vec<plugin::compat::PluginInspect>, String> {
+    plugin::inspect_specs(&app_handle, &specs, dsh).await
+}
+
+/// 授予「插件版本豁免」：为被核心版本兼容性拒绝的精确 `包名@版本` 组合写授权。
+///
+/// 前端在风险提示中让用户逐项确认后调用（授权项来自 `install_preinstall_plugins`
+/// 返回的 `PLUGIN_VERSION_INCOMPATIBLE:` 载荷），随后重跑安装；豁免不随插件或
+/// 核心升级继承，且只对列出的精确版本 + 运行时版本生效。
+#[tauri::command]
+pub async fn allow_plugin_versions(
+    app_handle: AppHandle,
+    versions: Vec<plugin::IncompatibleVersion>,
+) -> Result<(), String> {
+    plugin::allow_version_exemptions(&app_handle, &versions).await
+}
+
+/// 记录发布时长策略豁免：用户确认接受「刚发布、还在 24 小时窗口内」的精确版本后调用。
+///
+/// 授权项来自 `PLUGIN_POLICY_BLOCKED:` 载荷（pnpm 的 `minimumReleaseAge` 门禁——档案
+/// 已声明这样的版本时，每次插件操作都会失败）。写的是精确 `包名@版本`，只让列出的条目
+/// 过闸，其余解析照旧受窗口约束；随后由界面重跑原操作。与 `allow_plugin_versions`
+/// （dsh 的版本兼容性豁免，写 `compatibility.json`）是两套互不相干的授权。
+#[tauri::command]
+pub async fn allow_plugin_policy_versions(
+    app_handle: AppHandle,
+    versions: Vec<plugin::PolicyBlockedVersion>,
+    expected_profile: Option<String>,
+) -> Result<(), String> {
+    plugin::allow_policy_versions(&app_handle, &versions, expected_profile.as_deref())
 }
 
 /// 跳过预装插件引导：记录状态与预设指纹，之后不再弹出（除非清单内容变更）
 #[tauri::command]
 pub async fn skip_preinstall_plugins(app_handle: AppHandle) -> Result<(), String> {
-    let mut setting = config::get_store_dat_setting(&app_handle);
-    setting.preinstall_done = true;
-    if let Some(hash) = plugin::current_preset_hash(&app_handle) {
-        setting.preset_hash = Some(hash);
-    }
-    config::set_store_dat_setting(&app_handle, setting);
+    mark_preinstall_done(&app_handle);
     Ok(())
 }
 
@@ -142,20 +214,25 @@ pub async fn refresh_plugin_updates(
     plugin::update::refresh(&app_handle).await
 }
 
-/// 升级单个已安装插件：`dsh plugin --profile <当前档案> update <id>`，
-/// 进程输出通过 `preinstall-log` 事件实时推送。
+/// 批量升级已安装插件：`dsh plugin --profile <当前档案> update <id...> --latest`，
+/// 合并为单次子进程执行，输出通过 `preinstall-log` 事件实时推送；升级前逐项
+/// 记录依赖指纹，命令返回后核验是否真实落盘（防 pnpm 假成功）。
+///
+/// `ids` 的每一项是 `<id>` 或 `<id>@<版本>`（保留参数名以免改动前端载荷键）：面板显示着
+/// 目标版本，带上它核验与显式安装兜底才有据可依（见 `plugin::update_many`）。
 #[tauri::command]
-pub async fn update_dsh_plugin(app_handle: AppHandle, id: String) -> Result<(), String> {
-    plugin::update(&app_handle, &id).await?;
+pub async fn update_dsh_plugins(app_handle: AppHandle, ids: Vec<String>) -> Result<(), String> {
+    plugin::update_many(&app_handle, &ids).await?;
     plugin::watch::force_emit(&app_handle);
     Ok(())
 }
 
-/// 卸载单个已安装插件：`dsh plugin --profile <当前档案> remove <id>`，
-/// 进程输出通过 `preinstall-log` 事件实时推送。
+/// 批量卸载已安装插件：`dsh plugin --profile <当前档案> remove <ids...>`，
+/// 合并为单次子进程执行，输出通过 `preinstall-log` 事件实时推送；命令后逐项核验，
+/// 仍残留且可行动的插件回退离线精准卸载（不依赖网络）。
 #[tauri::command]
-pub async fn remove_dsh_plugin(app_handle: AppHandle, id: String) -> Result<(), String> {
-    plugin::remove(&app_handle, &id).await?;
+pub async fn remove_dsh_plugins(app_handle: AppHandle, ids: Vec<String>) -> Result<(), String> {
+    plugin::remove_many(&app_handle, &ids).await?;
     plugin::watch::force_emit(&app_handle);
     Ok(())
 }
@@ -201,7 +278,7 @@ pub fn detect_plugin_recovery(
 
 /// 修复模式卸载单个插件：直接改 profile 清单（离线、精准），成功后推送新插件列表。
 ///
-/// 与 `remove_dsh_plugin`（走 `dsh plugin remove`）不同，此命令不依赖网络，专用于
+/// 与 `remove_dsh_plugins`（走 `dsh plugin remove`）不同，此命令不依赖网络，专用于
 /// 「插件异常修复」场景；前端随后 `restart()` 重启并重新检测。
 #[tauri::command]
 pub fn recover_plugin(app_handle: AppHandle, id: String) -> Result<(), String> {
@@ -210,9 +287,9 @@ pub fn recover_plugin(app_handle: AppHandle, id: String) -> Result<(), String> {
     Ok(())
 }
 
-/// 禁用单个已安装插件：从 profile 的 `dsh.profile.bundles` 移除（代码完全不加载），
-/// 并写入 profile 的独立禁用清单。与卸载不同，禁用保留 node_modules 内的包体，
-/// 启用时无需重新下载。
+/// 禁用单个已安装插件：在 profile 的 `cordis.patch.yml` 写入 `disabled: true` 覆盖
+/// （与官方 Plugins 页 / dshmarket 同一处状态）。与卸载不同，禁用保留 node_modules
+/// 内的包体与 `dsh.profile.bundles` 选择，启用时无需重新下载。
 #[tauri::command]
 pub fn disable_dsh_plugin(app_handle: AppHandle, id: String) -> Result<(), String> {
     plugin::disable(&app_handle, &id)?;
@@ -220,19 +297,13 @@ pub fn disable_dsh_plugin(app_handle: AppHandle, id: String) -> Result<(), Strin
     Ok(())
 }
 
-/// 启用单个已禁用的插件：加回 `dsh.profile.bundles` 并从独立禁用清单移除。
+/// 启用单个已禁用的插件：摘除 patch 里该插件的禁用覆盖（其余配置保留）。
 ///
-/// 若插件同时被 profile 的 `cordis.patch.yml` 配置覆盖禁用（`disabled: true`，
-/// 优先级高于桌面禁用清单），必须显式传 `clear_config_override=true`（前端
-/// 弹窗确认后）才会移除该覆盖；否则返回 `ENABLE_CONFIG_OVERRIDE`，避免
-/// 「声称启用成功、运行期却仍被配置禁用」的虚假成功（issue #399）。
+/// 未能摘除时会返回 `ENABLE_NOT_DISABLED`，避免「声称启用成功、运行期却仍被禁用」
+/// 的虚假成功（issue #399）。
 #[tauri::command]
-pub fn enable_dsh_plugin(
-    app_handle: AppHandle,
-    id: String,
-    clear_config_override: Option<bool>,
-) -> Result<(), String> {
-    plugin::enable(&app_handle, &id, clear_config_override.unwrap_or(false))?;
+pub fn enable_dsh_plugin(app_handle: AppHandle, id: String) -> Result<(), String> {
+    plugin::enable(&app_handle, &id)?;
     plugin::watch::force_emit(&app_handle);
     Ok(())
 }
@@ -240,7 +311,10 @@ pub fn enable_dsh_plugin(
 /// 创建单个插件的快照（覆盖式：已存在则整体替换），存档于
 /// `$DSH_HOME/.plugin-backups/<id>.tgz`。
 #[tauri::command]
-pub fn snapshot_plugin(app_handle: AppHandle, id: String) -> Result<plugin::snapshot::SnapshotInfo, String> {
+pub fn snapshot_plugin(
+    app_handle: AppHandle,
+    id: String,
+) -> Result<plugin::snapshot::SnapshotInfo, String> {
     plugin::snapshot::create(&app_handle, &id)
 }
 
@@ -255,10 +329,7 @@ pub fn snapshot_plugins(
 
 /// 查询单个插件的快照信息（存在性 + 时间 + 大小 + 是否含配置段）。
 #[tauri::command]
-pub fn get_plugin_backup(
-    app_handle: AppHandle,
-    id: String,
-) -> plugin::snapshot::PluginBackupInfo {
+pub fn get_plugin_backup(app_handle: AppHandle, id: String) -> plugin::snapshot::PluginBackupInfo {
     plugin::snapshot::get(&app_handle, &id)
 }
 
@@ -268,6 +339,50 @@ pub async fn restore_plugin(app_handle: AppHandle, id: String) -> Result<(), Str
     plugin::snapshot::restore(&app_handle, &id).await?;
     plugin::watch::force_emit(&app_handle);
     Ok(())
+}
+
+/// 弹出系统文件夹选择器，返回可直接安装的本地插件 `link:` spec（取消时为 `None`）。
+///
+/// Windows 的文件夹选择器是 COM 组件（`CoInitializeEx` 要求 STA 单元），而异步命令体跑在
+/// 线程池上、线程的 COM 单元不确定；因此把对话框搬到主线程（tao 建窗时已初始化 STA），
+/// 再同步等它关闭：阻塞的是原生对话框自身，异步运行时不阻塞。
+/// 其余平台走 `rfd` 的异步对话框（与 `pick_data_dir` 同一条路）：macOS 后端自己把面板
+/// 派发到主线程、不设父窗也会挂到主窗，Linux 用 xdg-desktop-portal，没有 portal 的会话会
+/// 回退 zenity。这两条路都拿不到用户选择时同样返回 `None`，与「用户取消」无法区分，
+/// 前端按取消处理（不弹错）。
+#[tauri::command]
+pub async fn pick_local_plugin_dir(app_handle: AppHandle) -> Result<Option<String>, String> {
+    #[cfg(windows)]
+    {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        let app = app_handle.clone();
+        app_handle
+            .run_on_main_thread(move || {
+                let mut dialog = rfd::FileDialog::new().set_title("选择本地插件目录");
+                if let Some(window) =
+                    app.get_webview_window(crate::desktop::builder::MAIN_WINDOW_LABEL)
+                {
+                    dialog = dialog.set_parent(&window);
+                }
+                let picked = dialog
+                    .pick_folder()
+                    .map(|dir| plugin::local_spec_from_path(&dir));
+                let _ = sender.send(picked);
+            })
+            .map_err(|error| format!("PLUGIN_PICK_FOLDER_FAILED: {error}"))?;
+        receiver
+            .await
+            .map_err(|error| format!("PLUGIN_PICK_FOLDER_FAILED: {error}"))
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = app_handle;
+        let picked = rfd::AsyncFileDialog::new()
+            .set_title("选择本地插件目录")
+            .pick_folder()
+            .await;
+        Ok(picked.map(|handle| plugin::local_spec_from_path(handle.path())))
+    }
 }
 
 /// 删除单个插件的快照（卸载级联清理 / 手动删除）：幂等，无快照视为成功。

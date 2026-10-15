@@ -12,7 +12,16 @@ export interface PetSessionEvent {
   seq: number
   time: number
   data?: Record<string, unknown>
+  /**
+   * 事件的表面（surface）标记：`'append'` 表示正常追加到会话表面，
+   * `{ op: 'replace', startSeq, endSeq }` 表示该事件只是替换既有事件区间的**记账标记**，
+   * 本身不开启新回合（如 rewind 回退、压缩 checkpoint）。
+   */
+  surfaceOp?: 'append' | { op?: string, startSeq?: number, endSeq?: number }
 }
+
+/** goal 自动续跑轮的收尾动作（`update_goal` 的 action）。 */
+export type PetGoalClosing = 'complete' | 'blocked'
 
 /** 从真实 session 对象上读取的最小输入（与运行时形状解耦）。 */
 export interface PetSessionPeer {
@@ -46,11 +55,14 @@ export interface PetSessionState {
   /** 当前「等用户回答」的问句工具调用 id。 */
   waitingCallId?: string
   workStatus?: PetWorkStatus
+  /** 本回合是否为 goal 自动续跑轮（`user/message` 的 `source.kind==='goal'` 且 `round>0`）。 */
+  goalRound?: boolean
+  /** 本回合内 `update_goal` 声明的收尾动作；未声明 = 目标仍在推进。 */
+  goalClosing?: PetGoalClosing
   /** 当前任务文本（todo/write 的 in_progress/pending 项 content）。 */
   task?: string
   /** 当前工具活动分类（最近一次 working 工具名分类）。 */
   toolActivity?: PetToolActivity
-  firstSeqAt: number
 }
 
 /** 宿主 `sessionTitle` 服务的读取面（可选：未挂载时回退 id）。 */
