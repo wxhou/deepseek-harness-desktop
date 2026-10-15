@@ -122,10 +122,10 @@ catalog:
   '@react-three/fiber': ^9.7.0
   '@tauri-apps/plugin-os': ^2.3.2
   '@tauri-apps/plugin-store': ^2.4.4
+  '@types/three': ^0.185.4
   dsh-h3: 0.2.1
   h3: 2.0.1
   react-native-lucide: npm:lucide-react-native@1.50.0
-  '@types/three': ^0.185.4
   three: ^0.185.1
   valtio: ^2.3.2
 
