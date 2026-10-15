@@ -40,6 +40,11 @@ promotional/.wrangler/
 .codegraph/
 .mcp.json
 # openspec-pw: begin managed block
+.codebuddy/
+CODEBUDDY.md
+tmp/
+playwright/.auth/
+tests/playwright/screenshots/
 .claude/
 .cursor/
 .opencode/
